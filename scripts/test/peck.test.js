@@ -36,6 +36,7 @@ function writeFixtureSkill (root, name, run, frontmatter = {}) {
   fs.writeFileSync(path.join(dir, 'SKILL.md'),
     '---\n' + Object.entries(fm).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join('\n') + '\n---\n')
   fs.writeFileSync(path.join(dir, 'run.js'), run)
+  require('../lib/skills').setSkillApproval(root, name, 'always') // user skills are gated until approved
 }
 
 /** Peck's tests must not see the repo's real bundled skills — disable every

@@ -6,7 +6,7 @@ const path = require('node:path')
 
 const {
   discoverSkills, describeSkills, runSkill, loadSkillsConfig, saveSkillsConfig,
-  setSkillEnabled, loadSearchSettings, saveSearchSettings, parseSkillCall, scrubInput
+  setSkillEnabled, setSkillApproval, loadSearchSettings, saveSearchSettings, parseSkillCall, scrubInput
 } = require('../lib/skills')
 const telemetry = require('../lib/telemetry')
 
@@ -17,19 +17,26 @@ function makeTempCoop () {
   return root
 }
 
-/** Writes <coop>/.henhouse/skills/<name>/{SKILL.md, run.js}. */
-function writeSkill (root, name, { frontmatter = {}, body = '', run = 'process.exit(0)' } = {}) {
+/** Writes <coop>/.henhouse/skills/<name>/{SKILL.md, run.js}. Auto-approves the
+ *  skill so existing runnability tests are unaffected; pass approve:false to
+ *  test the approval gate itself. */
+function writeSkill (root, name, { frontmatter = {}, body = '', run = 'process.exit(0)', approve = true } = {}) {
   const dir = path.join(root, '.henhouse', 'skills', name)
   fs.mkdirSync(dir, { recursive: true })
   const fm = Object.assign({ name, description: `test skill ${name}`, entry: 'run.js' }, frontmatter)
   const yaml = Object.entries(fm).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join('\n')
   fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\n${yaml}\n---\n${body}\n`)
   fs.writeFileSync(path.join(dir, 'run.js'), run)
+  if (approve) setSkillApproval(root, name, 'always')
   return dir
 }
 
 function setSkillsConfig (root, cfg) {
-  fs.writeFileSync(path.join(root, '.henhouse', 'skills.json'), JSON.stringify(cfg))
+  // keep whatever writeSkill() approved unless the test sets `approved` itself
+  const p = path.join(root, '.henhouse', 'skills.json')
+  let prev = {}
+  try { prev = JSON.parse(fs.readFileSync(p, 'utf8')) } catch { /* none yet */ }
+  fs.writeFileSync(p, JSON.stringify({ ...(prev.approved ? { approved: prev.approved } : {}), ...cfg }))
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +59,50 @@ test('discoverSkills: includes the built-ins, then user skills; user wins on nam
   const overridden = skills.find((s) => s.name === 'xlsx-csv')
   assert.equal(overridden.source, 'user')
   assert.equal(overridden.description, 'my override')
+})
+
+test('approval gate: a user skill is not runnable until approved; the choice sticks', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  writeSkill(root, 'custom', { frontmatter: { network: true, permissions: ['read files', 'network'] }, run: 'console.log("ran")', approve: false })
+
+  // not offered to Peck
+  assert.ok(!discoverSkills(root).some((s) => s.name === 'custom'))
+
+  // but visible in Settings, marked pending, with its declared permissions
+  const listed = describeSkills(root).find((s) => s.name === 'custom')
+  assert.equal(listed.approval, 'pending')
+  assert.deepEqual(listed.permissions, ['read files', 'network'])
+
+  // and it refuses to run
+  const skill = discoverSkills(root, { includeDisabled: true }).find((s) => s.name === 'custom')
+  const blocked = await runSkill(skill, {}, root)
+  assert.equal(blocked.ok, false)
+  assert.match(blocked.error, /approved/i)
+
+  // approve -> runnable + offered, and persisted to skills.json
+  assert.equal(setSkillApproval(root, 'custom', 'always').approval, 'always')
+  assert.equal(loadSkillsConfig(root).approved.custom, 'always')
+  assert.ok(discoverSkills(root).some((s) => s.name === 'custom'))
+  assert.equal((await runSkill(skill, {}, root)).ok, true)
+
+  // block -> not runnable again
+  setSkillApproval(root, 'custom', 'never')
+  assert.equal(describeSkills(root).find((s) => s.name === 'custom').approval, 'never')
+  assert.equal((await runSkill(skill, {}, root)).ok, false)
+
+  // forget -> back to pending
+  setSkillApproval(root, 'custom', null)
+  assert.equal(describeSkills(root).find((s) => s.name === 'custom').approval, 'pending')
+})
+
+test('approval gate: built-ins are always allowed and ignore approval', (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const bi = describeSkills(root).find((s) => s.name === 'xlsx-csv')
+  assert.equal(bi.source, 'builtin')
+  assert.equal(bi.approval, '')
+  assert.ok(discoverSkills(root).some((s) => s.name === 'xlsx-csv'))
 })
 
 test('discoverSkills: skills.json "disabled" hides a skill unless includeDisabled', (t) => {
@@ -188,9 +239,9 @@ test('scrubInput redacts secret-ish keys', () => {
 test('loadSkillsConfig: safe default on a missing/broken file', (t) => {
   const root = makeTempCoop()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  assert.deepEqual(loadSkillsConfig(root), { disabled: [], secrets: {}, config: {} })
+  assert.deepEqual(loadSkillsConfig(root), { disabled: [], secrets: {}, config: {}, approved: {} })
   fs.writeFileSync(path.join(root, '.henhouse', 'skills.json'), '{ not json')
-  assert.deepEqual(loadSkillsConfig(root), { disabled: [], secrets: {}, config: {} })
+  assert.deepEqual(loadSkillsConfig(root), { disabled: [], secrets: {}, config: {}, approved: {} })
 })
 
 // ---------------------------------------------------------------------------
