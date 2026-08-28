@@ -17,9 +17,10 @@ cache is the **roost**, and the config folder is the **henhouse**. The verbs:
 This repo is the **retrieval layer** (`scripts/`, Node). The desktop app that
 bundles it — the Logseq fork — is at
 **[JWE24-code/kip-app](https://github.com/JWE24-code/kip-app)**; grab a build
-from its [Releases](https://github.com/JWE24-code/kip-app/releases).
+from its [Releases](https://github.com/JWE24-code/kip-app/releases). More at the
+**[kip website](https://jwe24-code.github.io/kip-site/)**.
 
-> **v0.1** — early and rough. Built to gather feedback.
+> Early and rough. Built to gather feedback.
 
 ## Try it
 
