@@ -26,7 +26,7 @@ const OPERATIONS = [
   'groom-progress', 'groom-report', 'rebuild-roost', 'settings', 'set-provider',
   'test-connection', 'set-skill'
 ]
-const PROVIDERS = ['kip', 'anthropic', 'openai', 'deepseek', 'local', 'other']
+const PROVIDERS = ['anthropic', 'openai', 'deepseek', 'local', 'other']
 
 function out (s) { console.log(typeof s === 'string' ? s : JSON.stringify(s, null, 2)) }
 function fail (msg) { console.error(`kip-control: ${msg}`); process.exit(1) }
@@ -240,8 +240,7 @@ async function setProvider () {
   cfg.providers = cfg.providers || {}
   const pc = { ...(cfg.providers[target] || {}) }
   const changed = [`provider = ${target}`]
-  if (input.model !== undefined && target !== 'kip') { pc.model = String(input.model); changed.push(`model = ${pc.model}`) }
-  if (input.model !== undefined && target === 'kip') changed.push('model = (ignored — kip routes the model itself)')
+  if (input.model !== undefined) { pc.model = String(input.model); changed.push(`model = ${pc.model}`) }
   if (input.baseUrl !== undefined) { pc.baseUrl = String(input.baseUrl); changed.push(`baseUrl = ${pc.baseUrl}`) }
   if (input.apiKey !== undefined) { pc.apiKey = String(input.apiKey); changed.push('apiKey = (updated)') }
   cfg.providers[target] = pc

@@ -35,8 +35,7 @@ The design constraints that shaped everything:
 2. **One bounded write zone.** The LLM writes only under `nest/`. Your
    journals, your pages, your dropped sources — read-only to it, forever.
 3. **Provider-agnostic.** Anthropic, OpenAI, DeepSeek, a local Ollama model,
-   any OpenAI-compatible endpoint, or Kip's managed model-routing backend —
-   one config file, one code path.
+   or any OpenAI-compatible endpoint — one config file, one code path.
 4. **Observable and reversible.** Every LLM call is timed and (optionally)
    traced. Every workflow logs what it did. Groom *reports*, it never
    auto-fixes.
@@ -155,14 +154,6 @@ vars), and always returns `{ text, raw }`:
 - **openai / deepseek / local / other** — one generic OpenAI-compatible
   chat-completions client; only base URL / key / model differ. `json:true`
   tries native `response_format`, falls back to prompt-and-strip.
-- **kip** — same OpenAI-compatible client, pointed at Kip's managed routing
-  backend. Model selection is **fully delegated**: the client always sends
-  `model: "auto"` (any configured model is ignored — `fixedModel` in
-  `PROVIDER_CONFIGS`), and the call's `label` rides along as `X-Kip-Workload`
-  (exact) and `X-Kip-Phase` (bucket, same derivation as telemetry) headers so
-  the backend can pick a model. Telemetry records the resolved model from the
-  response's `model` field. Headers are added only on this path — direct
-  providers are called exactly as before.
 
 `llm.json` shape: `{"provider": "...", "providers": {"<name>": {"apiKey":
 "...", "model": "...", "baseUrl": "..."}}}` — a field the file omits falls

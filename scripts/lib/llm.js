@@ -44,21 +44,6 @@ const PROVIDER_CONFIGS = {
     modelEnvVar: 'LOCAL_MODEL',
     modelHint: 'e.g. llama3.1 — the Ollama model tag you have pulled'
   }),
-  // Kip's managed model-routing backend. OpenAI-compatible on the wire.
-  // Model selection is *fully delegated*: the client always sends
-  // model: "auto" and the backend picks the real model per call, using the
-  // workload label forwarded as X-Kip-Workload / X-Kip-Phase headers (see
-  // callOpenAICompatible). There is no client-side model/profile knob — the
-  // model recorded in telemetry is whatever the backend reports back (see
-  // extractResolvedModel).
-  kip: () => ({
-    baseUrl: process.env.KIP_BASE_URL || 'https://api.kip-ai.be/v1',
-    baseUrlEnvVar: 'KIP_BASE_URL',
-    apiKey: process.env.KIP_API_KEY,
-    apiKeyEnvVar: 'KIP_API_KEY',
-    model: 'auto', // fixed — ignores any configured model, the backend routes
-    fixedModel: true
-  }),
   // Any other OpenAI-compatible endpoint (Kimi/Moonshot, Qwen via DashScope,
   // a custom proxy, ...) — unlike "local" this has no Ollama-flavored
   // default base URL and does support an API key, since a remote
@@ -124,8 +109,7 @@ function getProviderConfig (vaultRoot = DEFAULT_VAULT_ROOT) {
     baseUrlEnvVar: envDefaults.baseUrlEnvVar,
     apiKey: fileProviderConfig.apiKey || envDefaults.apiKey,
     apiKeyEnvVar: envDefaults.apiKeyEnvVar,
-    // fixedModel providers (kip) ignore any configured model — the backend routes.
-    model: envDefaults.fixedModel ? envDefaults.model : (fileProviderConfig.model || envDefaults.model),
+    model: fileProviderConfig.model || envDefaults.model,
     modelEnvVar: envDefaults.modelEnvVar,
     modelHint: envDefaults.modelHint
   }
@@ -141,19 +125,6 @@ function stripCodeFences (text) {
   const trimmed = text.trim()
   const fenced = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/)
   return fenced ? fenced[1].trim() : trimmed
-}
-
-/**
- * The phase bucket for a call label — same rules scripts/lib/telemetry.js
- * uses (kept in sync deliberately; telemetry doesn't export it). Sent as the
- * X-Kip-Phase header so the routing backend can bucket work coarsely.
- * hatch:generate:<type> -> hatch:generate; skill:<name> -> skill; foo:retry -> foo; else the label as-is.
- */
-function phaseFromLabel (label) {
-  const base = String(label).replace(/:retry$/, '')
-  if (base.startsWith('skill:')) return 'skill'
-  const m = base.match(/^(hatch:generate):/)
-  return m ? m[1] : base
 }
 
 /** Token counts from a raw provider response — Anthropic or OpenAI-compatible shapes; 0 when absent. */
@@ -180,19 +151,6 @@ function extractReasoning (raw) {
     if (thinking) return thinking
   }
   return ''
-}
-
-/**
- * The actual upstream model a response was produced by. For the `kip`
- * backend this is the real model the router chose (e.g. claude-sonnet-4-6),
- * not the routing profile ("auto") we sent — that's what telemetry should
- * record. OpenAI and Anthropic responses also carry `model`; falling back to
- * it there is harmless (it matches what we requested). null when absent.
- */
-function extractResolvedModel (raw) {
-  if (!raw) return null
-  if (typeof raw.model === 'string' && raw.model.trim()) return raw.model.trim()
-  return null
 }
 
 const JSON_MODE_INSTRUCTION = 'Respond with ONLY valid JSON and no other text — no markdown code fences, no explanation.'
@@ -226,8 +184,8 @@ async function callAnthropic ({ system, prompt, json, maxTokens, apiKey }, Anthr
   return { text: json ? stripCodeFences(rawText) : rawText, raw: response }
 }
 
-async function postChatCompletion (baseUrl, apiKey, body, doFetch, extraHeaders = {}) {
-  const headers = { 'Content-Type': 'application/json', ...extraHeaders }
+async function postChatCompletion (baseUrl, apiKey, body, doFetch) {
+  const headers = { 'Content-Type': 'application/json' }
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`
 
   const response = await doFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
@@ -254,16 +212,8 @@ async function postChatCompletion (baseUrl, apiKey, body, doFetch, extraHeaders 
  * if the provider/model errors on that parameter, retries once without it,
  * using the same prompt-and-strip approach as the Anthropic path.
  */
-async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, json, maxTokens, workloadLabel }, fetchImpl) {
+async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, json, maxTokens }, fetchImpl) {
   const doFetch = fetchImpl || fetch
-
-  // Workload routing headers — only when a label is supplied (the `kip`
-  // provider path; direct providers get no extra headers, unchanged).
-  const extraHeaders = {}
-  if (workloadLabel) {
-    extraHeaders['X-Kip-Workload'] = workloadLabel
-    extraHeaders['X-Kip-Phase'] = phaseFromLabel(workloadLabel)
-  }
 
   const buildMessages = (sys) => {
     const messages = []
@@ -280,21 +230,21 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
         max_tokens: maxTokens,
         messages: buildMessages(system),
         response_format: { type: 'json_object' }
-      }, doFetch, extraHeaders)
+      }, doFetch)
     } catch {
       const jsonSystem = system ? `${system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION
       data = await postChatCompletion(baseUrl, apiKey, {
         model,
         max_tokens: maxTokens,
         messages: buildMessages(jsonSystem)
-      }, doFetch, extraHeaders)
+      }, doFetch)
     }
   } else {
     data = await postChatCompletion(baseUrl, apiKey, {
       model,
       max_tokens: maxTokens,
       messages: buildMessages(system)
-    }, doFetch, extraHeaders)
+    }, doFetch)
   }
 
   const rawText = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
@@ -332,7 +282,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
   }
 
   const started = Date.now()
-  const common = { label: label || null, provider: config.provider }
+  const common = { label: label || null, provider: config.provider, model: config.model || null }
   try {
     const result = config.provider === 'anthropic'
       ? await callAnthropic({ system, prompt, json, maxTokens, apiKey: config.apiKey }, overrides.AnthropicClient)
@@ -343,21 +293,13 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
         system,
         prompt,
         json,
-        maxTokens,
-        // Only the managed `kip` backend needs the workload routing headers;
-        // direct providers are called exactly as before.
-        workloadLabel: config.provider === 'kip' ? (label || null) : null
+        maxTokens
       }, overrides.fetchImpl)
 
     const usage = extractUsage(result.raw)
     const reasoning = extractReasoning(result.raw)
-    // For `kip`, config.model is just the routing profile ("auto"); record
-    // the model the backend actually used. For everyone else this resolves
-    // to the same value as config.model.
-    const resolvedModel = extractResolvedModel(result.raw) || config.model || null
     telemetry.record({
       ...common,
-      model: resolvedModel,
       ms: Date.now() - started,
       ok: true,
       systemChars: (system || '').length,
@@ -375,7 +317,6 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
   } catch (err) {
     telemetry.record({
       ...common,
-      model: config.model || null, // no response to resolve a real model from
       ms: Date.now() - started,
       ok: false,
       error: (err && err.message) || String(err),
@@ -407,8 +348,7 @@ async function testConnection ({ provider, apiKey, model, baseUrl } = {}, overri
   const envDefaults = configFn()
   const resolved = {
     apiKey: apiKey || envDefaults.apiKey,
-    // fixedModel providers (kip) ignore any candidate model — the backend routes.
-    model: envDefaults.fixedModel ? envDefaults.model : (model || envDefaults.model),
+    model: model || envDefaults.model,
     baseUrl: baseUrl || envDefaults.baseUrl
   }
 

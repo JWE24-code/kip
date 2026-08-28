@@ -27,9 +27,9 @@ First public release. Early and rough — built to gather feedback.
 - **Reminders** — natural-language ("Friday at 15h, remind me a day before")
   parsed via chrono; a minute-resolution scheduler fires an OS notification
   ahead of time with a prep brief; per-reminder mute.
-- Provider-swappable LLM: Anthropic / OpenAI / DeepSeek / local (Ollama) / a
-  managed routing backend (`kip`). Content-free telemetry; opt-in trace mode.
-- 172 automated tests (no live API).
+- Provider-swappable LLM: Anthropic / OpenAI / DeepSeek / local (Ollama) / any
+  OpenAI-compatible endpoint. Content-free telemetry; opt-in trace mode.
+- 161 automated tests (no live API).
 
 ### The app
 
@@ -47,5 +47,4 @@ First public release. Early and rough — built to gather feedback.
 ### Known limitations
 
 Unsigned binaries; no auto-updater; no installer (folder-zip); no macOS or
-mobile; skills run unsandboxed; the `kip` managed provider's backend may not
-be live.
+mobile; skills run unsandboxed.

@@ -148,7 +148,6 @@ cp .env.example .env   # CLI-only path — fill in the section for your PROVIDER
 {
   "provider": "anthropic",
   "providers": {
-    "kip": { "apiKey": "...", "baseUrl": "https://api.kip-ai.be/v1" },
     "anthropic": { "apiKey": "...", "model": "claude-sonnet-4-6" },
     "openai": { "apiKey": "...", "model": "...", "baseUrl": "..." },
     "deepseek": { "apiKey": "...", "model": "..." },
@@ -159,7 +158,6 @@ cp .env.example .env   # CLI-only path — fill in the section for your PROVIDER
 
 | `PROVIDER` | Needs | Notes |
 |---|---|---|
-| `kip` | `KIP_API_KEY` | Managed model routing — **fully delegated**: the client always sends `model: "auto"` and the backend picks the real model per call. No model/profile setting. `KIP_BASE_URL` defaults to `https://api.kip-ai.be/v1`. Each call's `label` is forwarded as `X-Kip-Workload` (exact, e.g. `hatch:draft`) and `X-Kip-Phase` (bucket, e.g. `hatch`) so the backend can route; telemetry records the model it actually used. |
 | `anthropic` (default) | `ANTHROPIC_API_KEY` | Model defaults to `claude-sonnet-4-6` — override via the config file's `providers.anthropic.model`, no env var for it. Leaving both the file and `ANTHROPIC_API_KEY` unset falls through to the Anthropic SDK's own credential chain (`ant auth login`, etc.) — unlike the other providers, there's no hard failure for missing credentials at this layer. |
 | `openai` | `OPENAI_API_KEY`, `OPENAI_MODEL` | `OPENAI_BASE_URL` defaults to `https://api.openai.com/v1` — point it at any OpenAI-compatible endpoint. |
 | `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` defaults to `deepseek-chat`. Fixed base URL. |
@@ -174,10 +172,8 @@ provider/model is active at the start of its run (to stderr, so `groom.js
 
 **Privacy note:** switching `PROVIDER` to a hosted third-party backend sends
 coop content (which may include health/personal data) to that provider,
-same as it already does for Anthropic — see `coop/schema.md`'s health-data
-section. This includes `kip`, whose managed backend also sees the coarse
-workload label of each call (`X-Kip-Workload` / `X-Kip-Phase`) — never prompt
-or response content. `local` (Ollama) keeps everything on this machine.
+same as it already does for Anthropic. `local` (Ollama) keeps everything on
+this machine.
 
 #### `peck.js` — ask the nest, or tell it something
 

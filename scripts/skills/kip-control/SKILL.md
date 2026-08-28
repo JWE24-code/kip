@@ -12,8 +12,8 @@ timeout: 120
 parameters:
   - { name: operation, type: string, required: true, enum: [status, hatch-preview, hatch, hatch-progress, groom, groom-deep, groom-progress, groom-report, rebuild-roost, settings, set-provider, test-connection, set-skill], description: "What to do." }
   - { name: limit, type: number, required: false, description: "operation=hatch: how many pending source files to process (default 10)." }
-  - { name: provider, type: string, required: false, enum: [kip, anthropic, openai, deepseek, local, other], description: "operation=set-provider: which LLM provider to make active." }
-  - { name: model, type: string, required: false, description: "operation=set-provider: model name for that provider (ignored for kip — its backend routes the model)." }
+  - { name: provider, type: string, required: false, enum: [anthropic, openai, deepseek, local, other], description: "operation=set-provider: which LLM provider to make active." }
+  - { name: model, type: string, required: false, description: "operation=set-provider: model name for that provider." }
   - { name: baseUrl, type: string, required: false, description: "operation=set-provider: base URL for an OpenAI-compatible endpoint." }
   - { name: apiKey, type: string, required: false, description: "operation=set-provider: API key for that provider (stored in .henhouse/llm.json)." }
   - { name: skill, type: string, required: false, description: "operation=set-skill: the skill name to toggle." }

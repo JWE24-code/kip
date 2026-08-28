@@ -117,12 +117,9 @@ they're not listed here.)
 - Never auto-fixes — every finding is a suggestion.
 
 ### Infrastructure
-- **Provider-swappable LLM** — Anthropic, OpenAI, DeepSeek, local/Ollama, any
-  OpenAI-compatible endpoint, or **`kip`** (managed model routing, fully
-  delegated: the backend picks the real model for every call, told what kind
-  of work each call is via forwarded `X-Kip-Workload` / `X-Kip-Phase` headers;
-  no model to configure, and telemetry records the model it actually used).
-  One config file (`<graph>/.henhouse/llm.json`) or env vars.
+- **Provider-swappable LLM** — Anthropic, OpenAI, DeepSeek, local/Ollama, or
+  any OpenAI-compatible endpoint. One config file
+  (`<graph>/.henhouse/llm.json`) or env vars.
 - **`rebuild-roost`** — rebuild the whole SQLite index + generated catalog
   from the Markdown files; safe to run any time.
 - **`recent-clucks`** — tail the activity log.
@@ -130,7 +127,7 @@ they're not listed here.)
   phase. Content-free `*-metrics.json` per run.
 - **Trace mode** (`--trace` / `KIP_HATCH_TRACE=1`) — full prompts, responses,
   and model reasoning to `<coop>/.roost/*-trace.jsonl`.
-- **172 automated tests** — the deterministic logic and the create-vs-update
+- **161 automated tests** — the deterministic logic and the create-vs-update
   writer are covered without any live API; the LLM calls take injectable
   stubs.
 
