@@ -1,0 +1,8 @@
+# Normalize line endings to LF in the repo. The scripts have `#!/usr/bin/env
+# node` shebangs and are run on Linux (the Omarchy build) — CRLF would break
+# them.
+* text=auto eol=lf
+*.png binary
+*.gif binary
+*.ico binary
+*.icns binary

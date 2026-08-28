@@ -1,0 +1,20 @@
+{
+  "name": "kip-coop-scripts",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Runtime deps for Kip's coop-maintenance scripts when bundled into the app (electron.wiki spawns them via ELECTRON_RUN_AS_NODE). better-sqlite3 is NOT here on purpose — the bundled app supplies its own (Electron ABI) copy; the repo-root package.json has it for plain-node tests/CLI. gulp's syncScripts copies scripts/*.js + lib/ into static/scripts and runs `npm install --omit=dev` here.",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0",
+    "chrono-node": "^2.7.7",
+    "docx": "^9.5.1",
+    "docxtemplater": "^3.50.0",
+    "dotenv": "^16.4.5",
+    "edn-data": "^1.2.2",
+    "gray-matter": "^4.0.3",
+    "pizzip": "^3.1.7",
+    "pptx-automizer": "^0.7.2",
+    "pptxgenjs": "^3.12.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}

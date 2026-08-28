@@ -1,0 +1,31 @@
+{
+  "name": "kip",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Retrieval-layer scripts for maintaining the nest in ./coop",
+  "scripts": {
+    "rebuild-roost": "node scripts/rebuild-roost.js",
+    "peck": "node scripts/peck.js",
+    "groom": "node scripts/groom.js",
+    "hatch": "node scripts/hatch.js",
+    "test": "node --test scripts/test/roost.test.js scripts/test/pages.test.js scripts/test/groom.test.js scripts/test/llm.test.js scripts/test/hatch.test.js scripts/test/peck.test.js scripts/test/telemetry.test.js scripts/test/whiteboard.test.js scripts/test/skills.test.js scripts/test/web-search.test.js scripts/test/reminders.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0",
+    "better-sqlite3": "^12.11.1",
+    "chrono-node": "^2.7.7",
+    "docx": "^9.5.1",
+    "docxtemplater": "^3.50.0",
+    "dotenv": "^16.4.5",
+    "edn-data": "^1.2.2",
+    "gray-matter": "^4.0.3",
+    "pizzip": "^3.1.7",
+    "pptx-automizer": "^0.7.2",
+    "pptxgenjs": "^3.12.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
+  }
+}
