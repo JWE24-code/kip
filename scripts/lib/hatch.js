@@ -425,9 +425,98 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
   }
 }
 
+/**
+ * "Review before writing" mode, one file at a time. Proposes pages for the
+ * first pending source (skipping the first `skip`, so the caller can step
+ * past files it has already handled this session) but writes nothing. The
+ * full plan — bodies and all — is stashed at <coop>/.roost/hatch-plan.json
+ * for commitReviewedPlan() to pick up; the return value is slim (no bodies,
+ * no source text) for the UI.
+ *
+ * @returns {{done: true} | {source, relPath, kind, remaining,
+ *            plan: Array<{slug, title, type, action, summary}>,
+ *            whiteboard?: true}}
+ */
+async function proposeNextPending (vaultRoot = DEFAULT_VAULT_ROOT,
+  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, skip = 0, combined = true } = {}) {
+  const { pending } = collectPendingSources(vaultRoot, { roots })
+  const capped = pending.slice(0, limit)
+  const file = capped[skip]
+  if (!file) return { done: true }
+
+  const source = humanizeFilename(file.absPath)
+  const remaining = capped.length - skip - 1
+  const hash = hashContent(fs.readFileSync(file.absPath, 'utf8'))
+  const planFile = path.join(vaultRoot, '.roost', 'hatch-plan.json')
+  fs.mkdirSync(path.dirname(planFile), { recursive: true })
+
+  if (file.kind === 'whiteboard') {
+    // A board becomes one deterministic outline page — nothing to pick from.
+    fs.writeFileSync(planFile, JSON.stringify({ relPath: file.relPath, kind: 'whiteboard', hash, at: Date.now() }))
+    return { source, relPath: file.relPath, kind: 'whiteboard', whiteboard: true, remaining }
+  }
+
+  const p = await proposeHatchPlan(file.absPath, vaultRoot, { copyToEggs: file.kind === 'eggs', combined })
+  fs.writeFileSync(planFile, JSON.stringify({
+    relPath: file.relPath, kind: file.kind, hash,
+    sourceTitle: p.sourceTitle, sourceContent: p.sourceContent, plan: p.plan, at: Date.now()
+  }))
+  return {
+    source, relPath: file.relPath, kind: file.kind, remaining,
+    plan: p.plan.map((c) => ({ slug: c.slug, title: c.title, type: c.type, action: c.action, summary: c.summary || '' }))
+  }
+}
+
+/**
+ * Commits the plan stashed by proposeNextPending(), keeping only the pages
+ * whose slug is in `keepSlugs` (null / undefined = keep all). Records the
+ * source's content hash so it isn't re-proposed — including when the user
+ * kept nothing (a deliberate "skip this file"). Regenerates index.md.
+ *
+ * @returns {{source, results?, skipped?, error?, keptNone?: true}}
+ */
+async function commitReviewedPlan (vaultRoot = DEFAULT_VAULT_ROOT, { keepSlugs = null } = {}) {
+  const planFile = path.join(vaultRoot, '.roost', 'hatch-plan.json')
+  const stash = JSON.parse(fs.readFileSync(planFile, 'utf8'))
+  const source = humanizeFilename(path.join(vaultRoot, stash.relPath))
+  const startedAt = Date.now()
+
+  try {
+    if (stash.kind === 'whiteboard') {
+      const result = await hatchWhiteboard(path.join(vaultRoot, stash.relPath), vaultRoot)
+      recordHatchedSource(stash.relPath, stash.hash, vaultRoot)
+      regenerateIndexMd(vaultRoot)
+      return { source, kind: 'whiteboard', results: [result], skipped: [], ms: Date.now() - startedAt }
+    }
+
+    const keep = Array.isArray(keepSlugs) ? new Set(keepSlugs) : null
+    const kept = keep ? stash.plan.filter((c) => keep.has(c.slug)) : stash.plan
+
+    if (kept.length === 0) {
+      recordHatchedSource(stash.relPath, stash.hash, vaultRoot)
+      return { source, keptNone: true, ms: Date.now() - startedAt }
+    }
+
+    const { results, skipped } = await commitHatchPlan(
+      { plan: kept, sourceTitle: stash.sourceTitle, sourceContent: stash.sourceContent },
+      vaultRoot, { regenIndex: true })
+    if (results.length === 0) {
+      return { source, error: 'every kept page came back empty — try again', ms: Date.now() - startedAt }
+    }
+    recordHatchedSource(stash.relPath, stash.hash, vaultRoot)
+    return { source, kind: stash.kind, results, skipped, ms: Date.now() - startedAt }
+  } catch (err) {
+    return { source, error: (err && err.message) || String(err), ms: Date.now() - startedAt }
+  } finally {
+    try { fs.rmSync(planFile, { force: true }) } catch { /* best-effort */ }
+  }
+}
+
 module.exports = {
   proposeHatchPlan,
   commitHatchPlan,
+  proposeNextPending,
+  commitReviewedPlan,
   ensureInEggs,
   planCandidates,
   humanizeFilename,

@@ -26,7 +26,7 @@ require('dotenv').config()
 const fs = require('node:fs')
 const path = require('node:path')
 const { describeProvider } = require('./lib/llm')
-const { pendingSourcesSummary, hatchAllSources } = require('./lib/hatch')
+const { pendingSourcesSummary, hatchAllSources, proposeNextPending, commitReviewedPlan } = require('./lib/hatch')
 const { DEFAULT_VAULT_ROOT } = require('./lib/paths')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
@@ -70,6 +70,17 @@ function parseLimit () {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined
 }
 
+function parseKeep () {
+  const i = process.argv.indexOf('--keep')
+  if (i === -1) return null
+  try { const v = JSON.parse(process.argv[i + 1]); return Array.isArray(v) ? v : null } catch { return null }
+}
+function parseSkip () {
+  const i = process.argv.indexOf('--skip')
+  const n = i === -1 ? 0 : Number(process.argv[i + 1])
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0
+}
+
 async function main () {
   if (process.argv.includes('--preview')) {
     console.log(JSON.stringify(pendingSourcesSummary(DEFAULT_VAULT_ROOT)))
@@ -79,6 +90,28 @@ async function main () {
   if (!acquireLock()) {
     console.error('Another hatch run is already in progress for this coop.')
     process.exitCode = 1
+    return
+  }
+
+  // "Review before writing" — one file at a time. Each call does a single
+  // step (propose OR commit) and exits; the app drives the loop.
+  if (process.argv.includes('--propose-next')) {
+    try {
+      console.error(describeProvider())
+      const out = await proposeNextPending(DEFAULT_VAULT_ROOT, {
+        ...(parseLimit() ? { limit: parseLimit() } : {}),
+        skip: parseSkip(),
+        combined
+      })
+      console.log(JSON.stringify(out))
+    } finally { releaseLock() }
+    return
+  }
+  if (process.argv.includes('--commit-next')) {
+    try {
+      const out = await commitReviewedPlan(DEFAULT_VAULT_ROOT, { keepSlugs: parseKeep() })
+      console.log(JSON.stringify(out))
+    } finally { releaseLock() }
     return
   }
 

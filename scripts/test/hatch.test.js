@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { planCandidates, ensureInEggs, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard } = require('../lib/hatch')
+const { planCandidates, ensureInEggs, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan } = require('../lib/hatch')
 const { recordHatchedSource, getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
 const { proposeAndDraftPages } = require('../lib/prompts')
@@ -282,6 +282,68 @@ test('hatchAllSources — classic mode makes one propose call plus one generate 
     assert.equal(summary.hatched.length, 1)
     assert.equal(kinds.filter((k) => k === 'propose').length, 1)
     assert.equal(kinds.filter((k) => k === 'generate').length, 2, 'one generate call per proposed page')
+  } finally {
+    restore()
+  }
+})
+
+test('review mode: proposeNextPending stashes a plan and writes nothing; commitReviewedPlan honours keepSlugs', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  fs.writeFileSync(path.join(root, 'eggs', 'clinic-visit.md'),
+    'Saw Dr. Alvarez on 2026-08-20 about sleep. Resting heart rate is trending down.')
+
+  const { calls, restore } = stubFetch(() => JSON.stringify({
+    pages: [
+      { title: 'Clinic Visit', type: 'source', tags: ['health'], summary: 's', body: 'Visit notes. See [[dr-alvarez]].' },
+      { title: 'Dr. Alvarez', type: 'entity', tags: ['doctor'], summary: 's', body: 'A physician the user sees.' }
+    ]
+  }))
+
+  try {
+    const proposal = await proposeNextPending(root, {})
+    assert.equal(proposal.source, 'Clinic Visit')
+    assert.equal(proposal.remaining, 0)
+    assert.deepEqual(proposal.plan.map((p) => p.slug).sort(), ['clinic-visit', 'dr-alvarez'])
+    assert.equal(calls.length, 1, 'one propose+draft call')
+    // nothing written yet
+    assert.ok(!fs.existsSync(path.join(root, 'nest', 'entities', 'dr-alvarez.md')))
+    assert.ok(fs.existsSync(path.join(root, '.roost', 'hatch-plan.json')), 'plan stashed')
+
+    // keep only the entity page
+    const result = await commitReviewedPlan(root, { keepSlugs: ['dr-alvarez'] })
+    assert.deepEqual(result.results.map((r) => r.slug), ['dr-alvarez'])
+    assert.ok(fs.existsSync(path.join(root, 'nest', 'entities', 'dr-alvarez.md')))
+    assert.ok(!fs.existsSync(path.join(root, 'nest', 'sources', 'clinic-visit.md')), 'unchecked page not written')
+    assert.ok(!fs.existsSync(path.join(root, '.roost', 'hatch-plan.json')), 'stash cleaned up')
+
+    // the source is recorded as hatched -> not proposed again
+    const next = await proposeNextPending(root, {})
+    assert.equal(next.done, true)
+  } finally {
+    restore()
+  }
+})
+
+test('review mode: commitReviewedPlan with an empty keep list still records the source as handled', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  fs.writeFileSync(path.join(root, 'eggs', 'skip-me.md'), 'A short note that the user decides not to hatch after all.')
+
+  const { restore } = stubFetch(() => JSON.stringify({
+    pages: [{ title: 'Skip Me', type: 'source', tags: [], summary: 's', body: 'Body.' }]
+  }))
+  try {
+    await proposeNextPending(root, {})
+    const result = await commitReviewedPlan(root, { keepSlugs: [] })
+    assert.equal(result.keptNone, true)
+    assert.ok(!fs.existsSync(path.join(root, 'nest', 'sources', 'skip-me.md')))
+    assert.equal((await proposeNextPending(root, {})).done, true, 'not re-proposed')
   } finally {
     restore()
   }
