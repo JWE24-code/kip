@@ -2,7 +2,9 @@
 
 Kip is a personal knowledge base that reads your documents and turns them into a cross-linked wiki. You drop raw files into your **coop**; Kip **hatches** them into wiki pages under **The Nest**, where you can then **peck** around with questions and **groom** the result.
 
-This guide assumes you have Kip running (dev build or packaged app) and want to use it for the first time. For build instructions, see [`BUILD.md`](BUILD.md).
+This guide assumes you have Kip running (from a [release](https://github.com/JWE24-code/kip-app/releases) or a dev build) and want to use it for the first time. For build instructions, see [`BUILD.md`](BUILD.md).
+
+Kip is **pecking-first**: it opens straight into the Peck prompt. The Logseq editor (journals, pages, whiteboards) is a mode you switch to with **`Ctrl/⌘+1`** or the **`[ Peck | Documents ]`** toggle at the top of the window.
 
 ---
 
@@ -97,27 +99,48 @@ Every page is a plain Markdown file with YAML frontmatter. You can open and edit
 
 ---
 
-## 5. Ask a question (Peck)
+## 5. Peck — ask, tell, or remind
 
-Once you have a few nest pages, you can ask questions about what you know.
+Kip opens straight into Peck — the prompt in the middle of the window. (You can
+also pop it into the right sidebar alongside a document via the **"..." menu →
+Peck**; it's the same conversation.)
 
-1. Click the **"..." menu** → **Peck** to open the right-sidebar panel.
-2. Type a question, for example:
-   - `what did we decide about the migration timeline?`
-   - `who is working on the onboarding flow?`
-3. Press Enter.
+### Ask a question
 
-Kip searches The Nest, reads the matching pages, and returns an answer. Each claim is cited with a `[[slug]]` link — click it to see the source page.
+Type a question and press Enter, for example:
+
+- `what did we decide about the migration timeline?`
+- `who is working on the onboarding flow?`
+
+Kip searches The Nest, reads the matching pages, and returns an answer. Each
+claim is cited with a `[[slug]]` link — click it to open the source page (which
+switches you to Documents mode).
 
 ### Tell Kip a fact
 
-You can also feed Kip a short fact instead of a question:
+Feed it a short statement instead of a question:
 
 ```
-the CDO of CompanyX is John Doe
+the CDO of Acme is Jane Doe
 ```
 
-Kip detects this as a statement, finds the right page (or creates one), and appends the fact under a dated `_Update_` section. A **"✓ Learned"** note appears in the Peck panel.
+Kip detects this as a statement, finds the right page (or creates one), and
+appends the fact under a dated `_Update_` section. A **"✓ Learned"** note
+appears.
+
+### Set a reminder
+
+Mention something coming up:
+
+```
+I have a meeting with Acme on Friday at 15h, remind me a day before
+```
+
+Kip stores it (in `<coop>/reminders.json`) and, while it's running, fires an OS
+notification ahead of the event — with a short prep brief pulled from your
+nest. The **Reminders** panel ("..." menu) lists upcoming ones; each has a
+🔔 toggle if you want it silent. It also works from the CLI:
+`node scripts/reminders.js list`.
 
 ---
 
@@ -189,5 +212,5 @@ This is safe to run at any time.
 
 - Read [`DESIGN.md`](DESIGN.md) to understand how Hatch, Peck, and Groom fit together.
 - Read [`FEATURES.md`](FEATURES.md) for the complete feature list.
-- Read [`coop/schema.md`](../coop/schema.md) if you plan to hand-edit nest pages.
 - Try drawing a mindmap on a whiteboard and hatching it — it becomes a searchable outline page under The Nest.
+- Found a bug or have an idea? [Open an issue](https://github.com/JWE24-code/kip-app/issues) or start a [discussion](https://github.com/JWE24-code/kip-app/discussions).
