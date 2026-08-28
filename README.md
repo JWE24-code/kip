@@ -704,7 +704,10 @@ toolchain here to verify against).
 Copyright © 2026 Joeri Weitmann.
 
 This retrieval layer (`scripts/`) is licensed under the **GNU Affero General
-Public License v3.0** — see [`LICENSE`](LICENSE). The Kip Electron app (a fork
-of [`logseq/og`](https://github.com/logseq/og)) is AGPL-3.0 as well, versioned
-in a separate repository. The wiki content under `coop/` is personal data and
-not part of either repo.
+Public License v3.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). The Kip
+desktop app is a fork of Logseq ([`logseq/og`](https://github.com/logseq/og) —
+the file-based, markdown-first line, not the newer `logseq/logseq` rewrite),
+AGPL-3.0, versioned separately at
+[JWE24-code/kip-app](https://github.com/JWE24-code/kip-app). **Kip is not
+affiliated with or endorsed by Logseq.** The wiki content under `coop/` is
+personal data and not part of either repo.
