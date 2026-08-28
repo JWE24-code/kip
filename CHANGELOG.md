@@ -7,6 +7,28 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.2.1] — 2026-08-28
+
+More onboarding polish, plus an in-app update check. App only — no
+retrieval-layer changes.
+
+### The app
+
+- **In-app update check** — on launch and every 24h, checks GitHub Releases
+  for a newer version and shows a dismissible header banner. No download or
+  auto-install; failures are silent. Manual "Check now" in Settings → About.
+- **"Ask Kip about them" after a hatch** — a run that creates nest pages
+  offers a button into Peck with a question about the first one pre-filled.
+- **"Add source…" file picker in Hatch** — pick Markdown/text files from a
+  dialog; byte-identical duplicates skipped, unsupported types rejected.
+- **Local/Ollama reachability check** in Settings → LLM — a live status line
+  under Base URL showing whether the endpoint answers and its model list.
+- **"Your coop" overview** in Coop status — `eggs/` and nest page counts,
+  last hatch/groom times, a shortcut to hatch pending sources.
+- **Kip-native help panel** — replaces the leftover Logseq help links.
+- **Friendlier LLM errors** — a plain-language cause and hint in Peck, Hatch
+  and Settings, with the raw error behind a toggle.
+
 ## [0.2.0] — 2026-08-28
 
 Onboarding polish release.
