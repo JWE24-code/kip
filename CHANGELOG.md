@@ -7,7 +7,28 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
-## [0.1.0] — unreleased
+## [0.2.0] — 2026-08-28
+
+Onboarding polish release.
+
+### The retrieval layer (`scripts/`)
+
+- Removed managed-routing provider integration; the backend will return as a
+  separate project later.
+
+### The app
+
+- **LLM-provider banner** — Peck and Hatch now show a non-blocking banner when
+  no usable provider is configured, with a shortcut to Settings → LLM.
+- **Drag-and-drop sources** — drop a Markdown or text file onto Peck or Hatch
+  to copy it into `eggs/` and optionally hatch it immediately.
+- **First-run checklist** — Peck's empty state shows a 3-step checklist (set
+  provider, add source, hatch it) until Kip is ready, then the example prompts
+  return.
+- **i18n fix** — "About Logseq" updated to "About Kip" across all locales and
+  matching test assertions.
+
+## [0.1.0] — 2026-08-28
 
 First public release. Early and rough — built to gather feedback.
 
