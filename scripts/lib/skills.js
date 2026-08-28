@@ -15,7 +15,9 @@
 // user skill under .henhouse/skills/ is like adding a shell script. The
 // runner limits blast radius (timeout, output cap, cwd scoped to the skill
 // dir, entry is a .js file — never an arbitrary shell string) but does not
-// contain it.
+// contain it. As a first gate, a *user* skill is not offered to Peck and
+// will not run until it's been approved once (skills.json `approved`) — see
+// setSkillApproval / isUserSkillApproved.
 const fs = require('node:fs')
 const path = require('node:path')
 const { execFile } = require('node:child_process')
@@ -64,7 +66,10 @@ function loadSkillsConfig (vaultRoot = DEFAULT_VAULT_ROOT) {
   return {
     disabled: Array.isArray(parsed.disabled) ? parsed.disabled : [],
     secrets: obj(parsed.secrets),
-    config: obj(parsed.config)
+    config: obj(parsed.config),
+    // { "<skill-name>": "always" | "never" } — a user skill with no entry
+    // here has never been reviewed and is treated as blocked.
+    approved: obj(parsed.approved)
   }
 }
 
@@ -77,6 +82,34 @@ function setSkillEnabled (vaultRoot, name, enabled) {
   cfg.disabled = [...disabled]
   saveSkillsConfig(cfg, vaultRoot)
   return { name, enabled: !disabled.has(name) }
+}
+
+/**
+ * Records a review decision for a *user* skill. `decision` is 'always',
+ * 'never', or null (forget — back to unreviewed). Built-ins are always
+ * allowed and ignore this. Returns { name, approval }.
+ */
+function setSkillApproval (vaultRoot, name, decision) {
+  const cfg = readSkillsConfigRaw(vaultRoot)
+  const approved = (cfg.approved && typeof cfg.approved === 'object') ? cfg.approved : {}
+  if (decision === 'always' || decision === 'never') approved[name] = decision
+  else delete approved[name]
+  cfg.approved = approved
+  saveSkillsConfig(cfg, vaultRoot)
+  return { name, approval: approved[name] || 'pending' }
+}
+
+/** '' for built-ins; 'always' | 'never' | 'pending' for a user skill. */
+function approvalState (skill, approved) {
+  if (skill.source !== 'user') return ''
+  return approved[skill.name] === 'always' ? 'always'
+    : approved[skill.name] === 'never' ? 'never'
+      : 'pending'
+}
+
+/** May this skill be offered to Peck / run? Built-ins yes; user skills only when approved. */
+function isSkillAllowed (skill, approved) {
+  return skill.source !== 'user' || approved[skill.name] === 'always'
 }
 
 function normalizeParameters (params) {
@@ -133,6 +166,11 @@ function readManifest (dir, source) {
     parameters: normalizeParameters(data.parameters),
     instructions: String(content || '').trim().slice(0, INSTRUCTIONS_CAP),
     network: !!data.network,
+    // Free-text capability claims from the manifest, shown at approval time.
+    // Advisory only — nothing enforces them yet.
+    permissions: Array.isArray(data.permissions)
+      ? data.permissions.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().slice(0, 80)).slice(0, 8)
+      : [],
     source,
     dir,
     entryPath,
@@ -174,11 +212,14 @@ function discoverSkills (vaultRoot = DEFAULT_VAULT_ROOT, { includeDisabled = fal
     if (s) byName.set(s.name, s)
   }
 
-  const { disabled } = loadSkillsConfig(vaultRoot)
+  const { disabled, approved } = loadSkillsConfig(vaultRoot)
   const out = []
   for (const s of byName.values()) {
     const enabled = !disabled.includes(s.name)
-    if (enabled || includeDisabled) out.push({ ...s, enabled })
+    // A user skill that hasn't been approved is not runnable — keep it out of
+    // the list Peck sees (Settings still shows it via describeSkills).
+    if (!includeDisabled && !isSkillAllowed(s, approved)) continue
+    if (enabled || includeDisabled) out.push({ ...s, enabled, approval: approvalState(s, approved) })
   }
   return out
 }
@@ -189,12 +230,15 @@ function discoverSkills (vaultRoot = DEFAULT_VAULT_ROOT, { includeDisabled = fal
  * no filesystem paths.
  */
 function describeSkills (vaultRoot = DEFAULT_VAULT_ROOT) {
+  const { approved } = loadSkillsConfig(vaultRoot)
   return discoverSkills(vaultRoot, { includeDisabled: true }).map((s) => ({
     name: s.name,
     description: s.description,
     whenToUse: s.whenToUse,
     source: s.source,
     network: s.network,
+    permissions: s.permissions || [],
+    approval: approvalState(s, approved),   // '' for built-ins
     enabled: s.enabled,
     parameters: s.parameters
   }))
@@ -285,7 +329,13 @@ function cap (s, n) {
  */
 function runSkill (skill, input, vaultRoot = DEFAULT_VAULT_ROOT, { timeoutMs, outputCapBytes, execFileFn = execFile, env: envOverride } = {}) {
   const started = Date.now()
-  const { secrets, config } = loadSkillsConfig(vaultRoot)
+  const { secrets, config, approved } = loadSkillsConfig(vaultRoot)
+
+  if (!isSkillAllowed(skill, approved)) {
+    const r = { ok: false, output: '', error: `skill "${skill.name}" hasn't been approved — approve it in Settings → Skills`, ms: 0, timedOut: false }
+    record(skill, input, r)
+    return Promise.resolve(r)
+  }
   const env = {
     ...process.env,
     NODE_NO_WARNINGS: '1', // skill deps (docx, pptx-automizer) trip Node's localStorage ExperimentalWarning on v26
@@ -383,6 +433,7 @@ module.exports = {
   loadSkillsConfig,
   saveSkillsConfig,
   setSkillEnabled,
+  setSkillApproval,
   loadSearchSettings,
   saveSearchSettings,
   SEARCH_BACKENDS,
