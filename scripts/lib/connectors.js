@@ -7,8 +7,9 @@
 // telemetry. No provider-specific code (the Anthropic SDK, OpenAI-shaped
 // fetch calls) lives outside this file.
 //
-// The five built-ins (anthropic / openai / deepseek / local / other) are
-// ProviderSpecs defined below. External connectors register through
+// The built-ins (anthropic / openai / deepseek / local / other, plus the
+// managed "kip" backend connector from ./kip-connector.js) are ProviderSpecs
+// defined below. External connectors register through
 // loadConnectors() too, from two sources:
 //
 //   * bundled  — an allowlisted package that ships as a dependency of the
@@ -247,7 +248,11 @@ function builtinSpecs ({ anthropicClient, fetchImpl } = {}) {
       envDefaults: { baseUrl: 'OTHER_BASE_URL', model: 'OTHER_MODEL', apiKey: 'OTHER_API_KEY' },
       isReady: (cfg) => !!cfg.baseUrl && !!cfg.model,
       complete: openAICompatibleComplete
-    }
+    },
+    // The managed Kip backend — a first-party connector that ships with the
+    // app (AGPL-3.0, ./kip-connector.js). The settings UI keeps it out of
+    // the provider dropdown until the user opts in (kip-app#58).
+    require('./kip-connector')
   ]
 }
 

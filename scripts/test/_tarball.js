@@ -39,11 +39,11 @@ function makeTgz (files) {
 }
 
 /** A minimal, valid connector package as a .tgz. */
-function connectorTgz ({ name = '@kip-ai/connector', version = '1.0.0', id = 'kip', extra = {} } = {}) {
+function connectorTgz ({ name = '@kip-ai/experimental', version = '1.0.0', id = 'kip-exp', extra = {} } = {}) {
   const spec = `module.exports = {
     kipConnectorApi: 1,
     id: ${JSON.stringify(id)},
-    label: 'Kip (managed)',
+    label: 'Kip experimental',
     fields: [{ key: 'apiKey', label: 'API key', type: 'password', required: true }],
     envDefaults: { apiKey: 'KIP_API_KEY' },
     isReady: (cfg) => !!cfg.apiKey,
