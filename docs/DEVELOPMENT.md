@@ -73,7 +73,9 @@ scripts/
 │   │                # plus loadLLMConfig/saveLLMConfig, see "LLM provider
 │   │                # config" below. Hosts lib/connectors.js.
 │   ├── connectors.js # the connector registry: each provider is a ProviderSpec
-│   │                # (fields + complete()); the 5 built-ins live here
+│   │                # (fields + complete()); 5 built-ins + bundled/graph-local
+│   │                # connectors (install from a .tgz, @kip-ai/* allowlist)
+│   ├── untar.js    # zero-dep npm-tarball (.tgz) extractor for connector install
 │   ├── telemetry.js # per-run LLM-call timing/token recorder every callLLM()
 │   │                # feeds; content-free summary() + opt-in full-text trace
 │   ├── prompts.js  # prompt content built on callLLM(): extractKeyTerms,
@@ -289,6 +291,33 @@ skill call, full I/O, to `<coop>/.roost/peck-trace.jsonl`; the content-free
 `peck-metrics.json` is always written. Trust model: a skill is arbitrary
 Node code, unsandboxed — built-ins are reviewed here, a user skill is like
 adding a shell script. Tested in `scripts/test/skills.test.js`.
+
+#### LLM connectors
+
+`lib/connectors.js` is the provider registry `llm.js` hosts. A connector is
+a `ProviderSpec` v1 (`{ kipConnectorApi:1, id, label, fields[], envDefaults,
+isReady, complete(resolved, call, ctx) }`; `ctx` = `{ fetch, signal, logger }`
+only). Three sources:
+
+- **built-in** — `anthropic` / `openai` / `deepseek` / `local` / `other`, in
+  `connectors.js`. Their ids can never be shadowed.
+- **bundled** — an allowlisted package shipped as an app dependency
+  (`BUNDLED_CONNECTORS`). Rides the normal app auto-update.
+- **graph-local** — installed from an npm `.tgz` into
+  `<graph>/.henhouse/connectors/<dir>/`, listed in
+  `<graph>/.henhouse/connectors.json` (`[{ id, name, version, dir }]`).
+  Overrides a *bundled* connector of the same id.
+
+`installConnectorFromTarball(tgz, vaultRoot)` extracts with `lib/untar.js`
+(zero-dep, path-traversal/size guarded — **no `npm` shell-out**), checks the
+package name against `ALLOWLIST` (`@kip-ai/*` — a host constant, not
+user-editable), validates the `ProviderSpec`, and refuses an id that
+collides with a built-in or an already-installed connector.
+`removeConnector(id, vaultRoot)` deletes the dir + the config entry. A
+connector that fails to load is skipped with a warning — it never throws
+into `callLLM()`. Trust boundary: a graph-local connector is `require`d
+into the process with `fetch`, so the allowlist is the gate. Tested in
+`scripts/test/connectors.test.js` + `untar.test.js`.
 
 #### `groom.js` — coop health checks
 

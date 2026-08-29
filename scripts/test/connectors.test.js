@@ -1,5 +1,8 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 
 const {
   CONNECTOR_API,
@@ -7,8 +10,26 @@ const {
   createRegistry,
   validateSpec,
   resolveConfig,
-  missingRequiredField
+  missingRequiredField,
+  isAllowlisted,
+  readConnectorsConfig,
+  installConnectorFromTarball,
+  removeConnector
 } = require('../lib/connectors')
+const { makeTgz, connectorTgz } = require('./_tarball')
+
+function tmpVault () {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'connectors-test-'))
+  test.after(() => fs.rmSync(d, { recursive: true, force: true }))
+  return d
+}
+
+/** Write a .tgz buffer to a file inside the vault and return its path. */
+function tgzFile (vault, buf, name = 'pkg.tgz') {
+  const p = path.join(vault, name)
+  fs.writeFileSync(p, buf)
+  return p
+}
 
 const okSpec = (over = {}) => ({
   kipConnectorApi: CONNECTOR_API,
@@ -91,4 +112,88 @@ test('loadConnectors: built-in readiness matches its resolved config', () => {
   assert.equal(reg.get('openai').isReady({ apiKey: 'k', model: 'm' }), true)
   assert.equal(reg.get('other').isReady({ model: 'm' }), false, 'other needs a base URL')
   assert.equal(reg.get('other').isReady({ baseUrl: 'u', model: 'm' }), true)
+})
+
+// ---------------------------------------------------------------------------
+// Graph-local connector install / discovery / remove (kip-app#56)
+// ---------------------------------------------------------------------------
+
+const quiet = { logger: { warn () {} } }
+
+test('isAllowlisted: only @kip-ai/* passes', () => {
+  assert.equal(isAllowlisted('@kip-ai/connector'), true)
+  assert.equal(isAllowlisted('@kip-ai/experimental'), true)
+  assert.equal(isAllowlisted('@evil/kip-ai'), false)
+  assert.equal(isAllowlisted('kip-connector'), false)
+  assert.equal(isAllowlisted(''), false)
+  assert.equal(isAllowlisted(undefined), false)
+})
+
+test('installConnectorFromTarball: refuses a non-allowlisted package', async () => {
+  const v = tmpVault()
+  const tgz = tgzFile(v, connectorTgz({ name: 'totally-legit-connector' }))
+  await assert.rejects(() => installConnectorFromTarball(tgz, v, quiet), /not an allowed connector/)
+  assert.deepEqual(readConnectorsConfig(v), [], 'nothing recorded')
+})
+
+test('installConnectorFromTarball: refuses a tarball that is not a valid ProviderSpec', async () => {
+  const v = tmpVault()
+  const bad = makeTgz({
+    'package/package.json': JSON.stringify({ name: '@kip-ai/broken', version: '1.0.0', main: 'index.js' }),
+    'package/index.js': 'module.exports = { id: "x" }' // no kipConnectorApi, no complete
+  })
+  await assert.rejects(() => installConnectorFromTarball(tgzFile(v, bad), v, quiet), /isn't a valid connector/)
+})
+
+test('installConnectorFromTarball: refuses an id that collides with a built-in', async () => {
+  const v = tmpVault()
+  const tgz = tgzFile(v, connectorTgz({ id: 'openai' }))
+  await assert.rejects(() => installConnectorFromTarball(tgz, v, quiet), /built-in provider/)
+})
+
+test('connector lifecycle: install -> load -> remove', async () => {
+  const v = tmpVault()
+  const res = await installConnectorFromTarball(tgzFile(v, connectorTgz()), v, quiet)
+  assert.deepEqual(res, { ok: true, id: 'kip', name: '@kip-ai/connector', version: '1.0.0' })
+
+  // recorded in connectors.json + on disk
+  assert.deepEqual(readConnectorsConfig(v), [
+    { id: 'kip', name: '@kip-ai/connector', version: '1.0.0', dir: 'kip-ai__connector' }
+  ])
+  assert.ok(fs.existsSync(path.join(v, '.henhouse', 'connectors', 'kip-ai__connector', 'index.js')))
+
+  // shows up in the registry, usable
+  const reg = loadConnectors(v, quiet)
+  assert.ok(reg.has('kip'))
+  assert.equal(reg.get('kip').label, 'Kip (managed)')
+  assert.equal(reg.get('kip').isReady({ apiKey: 'kip_x' }), true)
+  assert.equal(reg.get('kip').isReady({}), false)
+
+  // second install of the same id is refused
+  await assert.rejects(() => installConnectorFromTarball(tgzFile(v, connectorTgz()), v, quiet), /already installed/)
+
+  // remove: gone from disk, config, and the registry
+  assert.deepEqual(removeConnector('kip', v), { ok: true, id: 'kip' })
+  assert.deepEqual(readConnectorsConfig(v), [])
+  assert.equal(fs.existsSync(path.join(v, '.henhouse', 'connectors', 'kip-ai__connector')), false)
+  assert.equal(loadConnectors(v, quiet).has('kip'), false)
+
+  assert.deepEqual(removeConnector('kip', v), { ok: false, error: 'No installed connector "kip".' })
+})
+
+test('loadConnectors: a graph-local connector listed but missing from disk is skipped, not fatal', () => {
+  const v = tmpVault()
+  fs.mkdirSync(path.join(v, '.henhouse'), { recursive: true })
+  fs.writeFileSync(
+    path.join(v, '.henhouse', 'connectors.json'),
+    JSON.stringify([{ id: 'ghost', name: '@kip-ai/ghost', version: '1.0.0', dir: 'kip-ai__ghost' }])
+  )
+  const warnings = []
+  const reg = loadConnectors(v, { logger: { warn: (m) => warnings.push(m) } })
+  assert.deepEqual(reg.ids().sort(), ['anthropic', 'deepseek', 'local', 'openai', 'other'])
+  assert.match(warnings.join('\n'), /ghost/)
+})
+
+test('installConnectorFromTarball: needs an open graph', async () => {
+  await assert.rejects(() => installConnectorFromTarball('/tmp/x.tgz', undefined, quiet), /Open a folder first/)
 })
