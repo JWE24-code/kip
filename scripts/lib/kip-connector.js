@@ -164,6 +164,10 @@ module.exports = {
   kipConnectorApi: CONNECTOR_API,
   id: 'kip',
   label: 'Kip (managed)',
+  // the backend picks the upstream model per workload — the client always
+  // sends model:"auto". Surfaced so describeProvider() doesn't print
+  // "(no model configured)" the way it does for a genuinely unset provider.
+  staticModel: 'auto',
   fields: [
     { key: 'apiKey', label: 'API key', type: 'password', required: true, placeholder: 'kip_…', help: 'From your Kip backend admin → Accounts → Keys.' },
     { key: 'baseUrl', label: 'Base URL', type: 'text', required: false, default: DEFAULT_BASE_URL, help: 'Leave as-is for the hosted service, or point it at a self-hosted Kip backend.' }
