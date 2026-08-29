@@ -123,6 +123,44 @@ test('complete: non-2xx throws an Error with .status and the backend message', a
   )
 })
 
+test('complete: a transport failure becomes a specific message, not "fetch failed"', async () => {
+  const cases = [
+    ['ECONNREFUSED', /nothing is listening/i],
+    ['ETIMEDOUT', /no response|reach it/i],
+    ['ENOTFOUND', /can't resolve/i]
+  ]
+  for (const [code, re] of cases) {
+    const impl = async () => { const e = new TypeError('fetch failed'); e.cause = { code }; throw e }
+    await assert.rejects(
+      () => kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl }),
+      (err) => err.code === code && re.test(err.message) && !/^fetch failed$/.test(err.message)
+    )
+  }
+})
+
+test('testConnection: surfaces the transport reason too', async () => {
+  const impl = async () => { const e = new TypeError('fetch failed'); e.cause = { code: 'ECONNREFUSED' }; throw e }
+  const r = await kip.testConnection(RESOLVED, { fetch: impl })
+  assert.equal(r.success, false)
+  assert.match(r.error, /nothing is listening/i)
+  assert.doesNotMatch(r.error, /^fetch failed$/)
+})
+
+test('testConnection: hits GET /v1/usage (auth only), reports the plan', async () => {
+  let calledUrl, authHeader
+  const impl = async (url, init) => {
+    calledUrl = url
+    authHeader = init && init.headers && init.headers.Authorization
+    return { ok: true, status: 200, json: async () => ({ plan: 'pro', limits: { monthly_token_cap: 5000000 } }) }
+  }
+  const r = await kip.testConnection(RESOLVED, { fetch: impl })
+  assert.equal(calledUrl, 'http://lan.test:8080/v1/usage')
+  assert.equal(authHeader, 'Bearer kip_testkey')
+  assert.equal(r.success, true)
+  assert.match(r.reply, /pro plan/)
+  assert.match(r.reply, /5000k tokens/)
+})
+
 test('complete: raw carries the resolved model + usage for telemetry', async () => {
   const { impl } = fakeFetch(reply('x', { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 }))
   const { raw } = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
@@ -130,20 +168,20 @@ test('complete: raw carries the resolved model + usage for telemetry', async () 
   assert.equal(raw.usage.total_tokens, 15)
 })
 
-test('testConnection: { success:true, reply } on a good call, never throws on a bad one', async () => {
-  const ok = fakeFetch(reply('OK'))
-  assert.deepEqual(await kip.testConnection(RESOLVED, { fetch: ok.impl }), { success: true, reply: 'OK' })
-
-  const bad = fakeFetch({ error: { message: 'nope' } }, { ok: false, status: 401 })
-  const r = await kip.testConnection(RESOLVED, { fetch: bad.impl })
+test('testConnection: a bad key -> { success:false, error }, never throws', async () => {
+  const impl = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid api key' } }) })
+  const r = await kip.testConnection(RESOLVED, { fetch: impl })
   assert.equal(r.success, false)
-  assert.match(r.error, /401/)
+  assert.match(r.error, /\(401\)/)
+  assert.match(r.error, /invalid api key/)
 })
 
 test('humanizeError: maps the documented backend errors', () => {
   assert.match(kip.humanizeError('Kip backend request failed (401): bad key').title, /rejected your key/)
   assert.match(kip.humanizeError('Kip backend request failed (402): plan limit reached').title, /plan limit/)
   assert.match(kip.humanizeError('request failed (429): rate limit').title, /rate-limiting/)
-  assert.match(kip.humanizeError('(503): no_route for (hatch, hatch:whiteboard)').title, /no route/i)
+  assert.match(kip.humanizeError('(503): no_route for (hatch, hatch:whiteboard)').title, /route this call/i)
+  assert.match(kip.humanizeError('Kip backend request failed (503): provider_not_configured').title, /route this call/i)
+  assert.match(kip.humanizeError("Nothing is listening at http://x/v1/chat/completions").title, /reach the Kip backend/i)
   assert.equal(kip.humanizeError('something unrelated'), null)
 })

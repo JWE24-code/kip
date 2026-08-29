@@ -19,6 +19,7 @@
 //      `usage` carries the token counts.
 //   errors: 401 bad key · 402 plan/budget · 429 rate limit · 5xx upstream,
 //           OpenAI-shaped { error: { message, type, code } }.
+//   testConnection() uses GET {baseUrl}/v1/usage — auth-only, not routed.
 
 const CONNECTOR_API = 1
 const DEFAULT_BASE_URL = 'https://api.kip-ai.be'
@@ -45,17 +46,42 @@ function buildMessages (system, prompt) {
   return messages
 }
 
+/** node/undici `fetch` reports every transport failure as a bare "fetch failed"
+ *  and buries the real reason in err.cause — surface it. */
+function networkError (url, err) {
+  const code = err && err.cause && err.cause.code
+  const hint = {
+    ECONNREFUSED: `Nothing is listening at ${url} — check the backend is running and the host/port are right.`,
+    ETIMEDOUT: `No response from ${url} — check the address, and that this machine can reach it (firewall / VPN / wrong network / a system proxy).`,
+    ENOTFOUND: `Can't resolve the host in ${url}.`,
+    EAI_AGAIN: `Can't resolve the host in ${url} (DNS).`,
+    ECONNRESET: `The connection to ${url} was reset.`,
+    CERT_HAS_EXPIRED: 'The backend\'s TLS certificate has expired.',
+    DEPTH_ZERO_SELF_SIGNED_CERT: 'The backend\'s TLS certificate isn\'t trusted — use http:// for a LAN backend, or install its certificate.'
+  }[code]
+  const e = new Error(hint || `Couldn't reach the Kip backend at ${url}${code ? ` (${code})` : ''}.`)
+  if (code) e.code = code
+  e.cause = err
+  return e
+}
+
 async function post (baseUrl, apiKey, body, headers, doFetch, signal) {
-  const res = await doFetch(`${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      ...headers
-    },
-    body: JSON.stringify(body),
-    signal
-  })
+  const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`
+  let res
+  try {
+    res = await doFetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...headers
+      },
+      body: JSON.stringify(body),
+      signal
+    })
+  } catch (err) {
+    throw networkError(url, err)
+  }
   if (!res.ok) {
     let detail
     try {
@@ -108,6 +134,31 @@ async function callBackend (resolved, call, ctx) {
   return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data }
 }
 
+/** GET {baseUrl}/v1/usage — auth-only, not routed, not plan-checked. The
+ *  cheapest way to prove "key + connectivity work" for testConnection. */
+async function getUsage (resolved, ctx) {
+  const doFetch = (ctx && ctx.fetch) || fetch
+  const baseUrl = (resolved.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '')
+  const url = `${baseUrl}/v1/usage`
+  let res
+  try {
+    res = await doFetch(url, {
+      headers: { Authorization: `Bearer ${resolved.apiKey}` },
+      signal: ctx && ctx.signal
+    })
+  } catch (err) {
+    throw networkError(url, err)
+  }
+  if (!res.ok) {
+    let detail
+    try { const j = await res.json(); detail = j && j.error && j.error.message } catch { /* non-JSON */ }
+    const err = new Error(`Kip backend request failed (${res.status})${detail ? `: ${detail}` : ''}`)
+    err.status = res.status
+    throw err
+  }
+  return res.json()
+}
+
 /** @type {import('./connectors').ProviderSpec} */
 module.exports = {
   kipConnectorApi: CONNECTOR_API,
@@ -125,13 +176,13 @@ module.exports = {
   },
 
   async testConnection (resolved, ctx) {
+    // GET /v1/usage, not a completion: it needs only a valid key + a
+    // reachable backend — no routing rule, no configured upstream, no tokens.
     try {
-      const { text } = await callBackend(
-        resolved,
-        { system: '', prompt: 'Reply with exactly: OK', json: false, maxTokens: 10, label: 'test:connection' },
-        ctx
-      )
-      return { success: true, reply: text }
+      const u = await getUsage(resolved, ctx)
+      const plan = u && u.plan ? `${u.plan} plan` : 'connected'
+      const cap = u && u.limits && u.limits.monthly_token_cap
+      return { success: true, reply: cap ? `${plan} · ${Math.round(cap / 1000)}k tokens/mo` : plan }
     } catch (err) {
       return { success: false, error: err.message || String(err) }
     }
@@ -148,12 +199,15 @@ module.exports = {
     if (/\(429\)|rate.?limit|too many requests/i.test(s)) {
       return { title: 'The Kip backend is rate-limiting you.', hint: 'Wait a moment and try again — or ask for a higher rate limit.' }
     }
-    if (/\(503\)|no_route|no route/i.test(s)) {
-      return { title: 'The Kip backend has no route for this call.', hint: 'The backend admin needs a routing rule for this workload — send them the error details.' }
+    if (/\(503\)|no_route|no route|provider_not_configured/i.test(s)) {
+      return { title: 'The Kip backend can\'t route this call yet.', hint: 'Its admin needs a routing rule pointing at a configured provider — send them the error details.' }
+    }
+    if (/nothing is listening|couldn't reach|no response from|ECONNREFUSED|ETIMEDOUT|can't resolve/i.test(s)) {
+      return { title: 'Can\'t reach the Kip backend.', hint: 'Check the Base URL in Settings → LLM, that the backend is running, and that this machine can reach it.' }
     }
     return null
   },
 
   // exported for tests
-  _internals: { phaseOf, DEFAULT_BASE_URL }
+  _internals: { phaseOf, networkError, DEFAULT_BASE_URL }
 }
