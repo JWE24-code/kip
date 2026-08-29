@@ -123,6 +123,29 @@ test('complete: non-2xx throws an Error with .status and the backend message', a
   )
 })
 
+test('complete: a transport failure becomes a specific message, not "fetch failed"', async () => {
+  const cases = [
+    ['ECONNREFUSED', /nothing is listening/i],
+    ['ETIMEDOUT', /no response|reach it/i],
+    ['ENOTFOUND', /can't resolve/i]
+  ]
+  for (const [code, re] of cases) {
+    const impl = async () => { const e = new TypeError('fetch failed'); e.cause = { code }; throw e }
+    await assert.rejects(
+      () => kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl }),
+      (err) => err.code === code && re.test(err.message) && !/^fetch failed$/.test(err.message)
+    )
+  }
+})
+
+test('testConnection: surfaces the transport reason too', async () => {
+  const impl = async () => { const e = new TypeError('fetch failed'); e.cause = { code: 'ECONNREFUSED' }; throw e }
+  const r = await kip.testConnection(RESOLVED, { fetch: impl })
+  assert.equal(r.success, false)
+  assert.match(r.error, /nothing is listening/i)
+  assert.doesNotMatch(r.error, /^fetch failed$/)
+})
+
 test('complete: raw carries the resolved model + usage for telemetry', async () => {
   const { impl } = fakeFetch(reply('x', { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 }))
   const { raw } = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
@@ -144,6 +167,8 @@ test('humanizeError: maps the documented backend errors', () => {
   assert.match(kip.humanizeError('Kip backend request failed (401): bad key').title, /rejected your key/)
   assert.match(kip.humanizeError('Kip backend request failed (402): plan limit reached').title, /plan limit/)
   assert.match(kip.humanizeError('request failed (429): rate limit').title, /rate-limiting/)
-  assert.match(kip.humanizeError('(503): no_route for (hatch, hatch:whiteboard)').title, /no route/i)
+  assert.match(kip.humanizeError('(503): no_route for (hatch, hatch:whiteboard)').title, /route this call/i)
+  assert.match(kip.humanizeError('Kip backend request failed (503): provider_not_configured').title, /route this call/i)
+  assert.match(kip.humanizeError("Nothing is listening at http://x/v1/chat/completions").title, /reach the Kip backend/i)
   assert.equal(kip.humanizeError('something unrelated'), null)
 })

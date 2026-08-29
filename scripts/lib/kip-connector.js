@@ -45,17 +45,42 @@ function buildMessages (system, prompt) {
   return messages
 }
 
+/** node/undici `fetch` reports every transport failure as a bare "fetch failed"
+ *  and buries the real reason in err.cause — surface it. */
+function networkError (url, err) {
+  const code = err && err.cause && err.cause.code
+  const hint = {
+    ECONNREFUSED: `Nothing is listening at ${url} — check the backend is running and the host/port are right.`,
+    ETIMEDOUT: `No response from ${url} — check the address, and that this machine can reach it (firewall / VPN / wrong network / a system proxy).`,
+    ENOTFOUND: `Can't resolve the host in ${url}.`,
+    EAI_AGAIN: `Can't resolve the host in ${url} (DNS).`,
+    ECONNRESET: `The connection to ${url} was reset.`,
+    CERT_HAS_EXPIRED: 'The backend\'s TLS certificate has expired.',
+    DEPTH_ZERO_SELF_SIGNED_CERT: 'The backend\'s TLS certificate isn\'t trusted — use http:// for a LAN backend, or install its certificate.'
+  }[code]
+  const e = new Error(hint || `Couldn't reach the Kip backend at ${url}${code ? ` (${code})` : ''}.`)
+  if (code) e.code = code
+  e.cause = err
+  return e
+}
+
 async function post (baseUrl, apiKey, body, headers, doFetch, signal) {
-  const res = await doFetch(`${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      ...headers
-    },
-    body: JSON.stringify(body),
-    signal
-  })
+  const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`
+  let res
+  try {
+    res = await doFetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...headers
+      },
+      body: JSON.stringify(body),
+      signal
+    })
+  } catch (err) {
+    throw networkError(url, err)
+  }
   if (!res.ok) {
     let detail
     try {
@@ -148,12 +173,15 @@ module.exports = {
     if (/\(429\)|rate.?limit|too many requests/i.test(s)) {
       return { title: 'The Kip backend is rate-limiting you.', hint: 'Wait a moment and try again — or ask for a higher rate limit.' }
     }
-    if (/\(503\)|no_route|no route/i.test(s)) {
-      return { title: 'The Kip backend has no route for this call.', hint: 'The backend admin needs a routing rule for this workload — send them the error details.' }
+    if (/\(503\)|no_route|no route|provider_not_configured/i.test(s)) {
+      return { title: 'The Kip backend can\'t route this call yet.', hint: 'Its admin needs a routing rule pointing at a configured provider — send them the error details.' }
+    }
+    if (/nothing is listening|couldn't reach|no response from|ECONNREFUSED|ETIMEDOUT|can't resolve/i.test(s)) {
+      return { title: 'Can\'t reach the Kip backend.', hint: 'Check the Base URL in Settings → LLM, that the backend is running, and that this machine can reach it.' }
     }
     return null
   },
 
   // exported for tests
-  _internals: { phaseOf, DEFAULT_BASE_URL }
+  _internals: { phaseOf, networkError, DEFAULT_BASE_URL }
 }
