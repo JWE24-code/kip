@@ -19,6 +19,7 @@
 //      `usage` carries the token counts.
 //   errors: 401 bad key · 402 plan/budget · 429 rate limit · 5xx upstream,
 //           OpenAI-shaped { error: { message, type, code } }.
+//   testConnection() uses GET {baseUrl}/v1/usage — auth-only, not routed.
 
 const CONNECTOR_API = 1
 const DEFAULT_BASE_URL = 'https://api.kip-ai.be'
@@ -133,6 +134,31 @@ async function callBackend (resolved, call, ctx) {
   return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data }
 }
 
+/** GET {baseUrl}/v1/usage — auth-only, not routed, not plan-checked. The
+ *  cheapest way to prove "key + connectivity work" for testConnection. */
+async function getUsage (resolved, ctx) {
+  const doFetch = (ctx && ctx.fetch) || fetch
+  const baseUrl = (resolved.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '')
+  const url = `${baseUrl}/v1/usage`
+  let res
+  try {
+    res = await doFetch(url, {
+      headers: { Authorization: `Bearer ${resolved.apiKey}` },
+      signal: ctx && ctx.signal
+    })
+  } catch (err) {
+    throw networkError(url, err)
+  }
+  if (!res.ok) {
+    let detail
+    try { const j = await res.json(); detail = j && j.error && j.error.message } catch { /* non-JSON */ }
+    const err = new Error(`Kip backend request failed (${res.status})${detail ? `: ${detail}` : ''}`)
+    err.status = res.status
+    throw err
+  }
+  return res.json()
+}
+
 /** @type {import('./connectors').ProviderSpec} */
 module.exports = {
   kipConnectorApi: CONNECTOR_API,
@@ -150,13 +176,13 @@ module.exports = {
   },
 
   async testConnection (resolved, ctx) {
+    // GET /v1/usage, not a completion: it needs only a valid key + a
+    // reachable backend — no routing rule, no configured upstream, no tokens.
     try {
-      const { text } = await callBackend(
-        resolved,
-        { system: '', prompt: 'Reply with exactly: OK', json: false, maxTokens: 10, label: 'test:connection' },
-        ctx
-      )
-      return { success: true, reply: text }
+      const u = await getUsage(resolved, ctx)
+      const plan = u && u.plan ? `${u.plan} plan` : 'connected'
+      const cap = u && u.limits && u.limits.monthly_token_cap
+      return { success: true, reply: cap ? `${plan} · ${Math.round(cap / 1000)}k tokens/mo` : plan }
     } catch (err) {
       return { success: false, error: err.message || String(err) }
     }

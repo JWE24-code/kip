@@ -146,6 +146,21 @@ test('testConnection: surfaces the transport reason too', async () => {
   assert.doesNotMatch(r.error, /^fetch failed$/)
 })
 
+test('testConnection: hits GET /v1/usage (auth only), reports the plan', async () => {
+  let calledUrl, authHeader
+  const impl = async (url, init) => {
+    calledUrl = url
+    authHeader = init && init.headers && init.headers.Authorization
+    return { ok: true, status: 200, json: async () => ({ plan: 'pro', limits: { monthly_token_cap: 5000000 } }) }
+  }
+  const r = await kip.testConnection(RESOLVED, { fetch: impl })
+  assert.equal(calledUrl, 'http://lan.test:8080/v1/usage')
+  assert.equal(authHeader, 'Bearer kip_testkey')
+  assert.equal(r.success, true)
+  assert.match(r.reply, /pro plan/)
+  assert.match(r.reply, /5000k tokens/)
+})
+
 test('complete: raw carries the resolved model + usage for telemetry', async () => {
   const { impl } = fakeFetch(reply('x', { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 }))
   const { raw } = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
@@ -153,14 +168,12 @@ test('complete: raw carries the resolved model + usage for telemetry', async () 
   assert.equal(raw.usage.total_tokens, 15)
 })
 
-test('testConnection: { success:true, reply } on a good call, never throws on a bad one', async () => {
-  const ok = fakeFetch(reply('OK'))
-  assert.deepEqual(await kip.testConnection(RESOLVED, { fetch: ok.impl }), { success: true, reply: 'OK' })
-
-  const bad = fakeFetch({ error: { message: 'nope' } }, { ok: false, status: 401 })
-  const r = await kip.testConnection(RESOLVED, { fetch: bad.impl })
+test('testConnection: a bad key -> { success:false, error }, never throws', async () => {
+  const impl = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid api key' } }) })
+  const r = await kip.testConnection(RESOLVED, { fetch: impl })
   assert.equal(r.success, false)
-  assert.match(r.error, /401/)
+  assert.match(r.error, /\(401\)/)
+  assert.match(r.error, /invalid api key/)
 })
 
 test('humanizeError: maps the documented backend errors', () => {
