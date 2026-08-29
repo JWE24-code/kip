@@ -1,62 +1,17 @@
 // Provider-swappable LLM abstraction. Every caller in scripts/lib/ and the
 // CLI scripts goes through callLLM() — no provider-specific code (Anthropic
-// SDK, OpenAI-shaped fetch calls) belongs anywhere else. Which backend runs,
-// and its credentials/model, come from coop/.henhouse/llm.json if present
-// (loadLLMConfig/saveLLMConfig below — read/written by a GUI app without
-// touching shell env vars), falling back per-field to the PROVIDER/
-// *_API_KEY/*_MODEL env vars. See .env.example.
+// SDK, OpenAI-shaped fetch calls) belongs anywhere else; that lives in
+// lib/connectors.js, which this module hosts.
+//
+// Which backend runs, and its credentials/model, come from
+// coop/.henhouse/llm.json if present (loadLLMConfig/saveLLMConfig below —
+// read/written by a GUI app without touching shell env vars), falling back
+// per-field to the PROVIDER / *_API_KEY / *_MODEL env vars. See .env.example.
 const fs = require('node:fs')
 const path = require('node:path')
 const { DEFAULT_VAULT_ROOT, configPath } = require('./paths')
 const telemetry = require('./telemetry')
-
-const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6'
-
-// Env-var defaults for each supported PROVIDER value — the fallback when
-// coop/.henhouse/llm.json doesn't exist or doesn't set a given field.
-// openai/deepseek/local all speak the same OpenAI-compatible chat
-// completions format and share callOpenAICompatible — only their base URL,
-// API key, and model differ. Anthropic's own request/response shape is
-// handled separately, in callAnthropic.
-const PROVIDER_CONFIGS = {
-  anthropic: () => ({
-    apiKey: process.env.ANTHROPIC_API_KEY, // undefined is fine — the SDK
-    model: DEFAULT_ANTHROPIC_MODEL         // falls back to its own credential
-  }),                                      // chain (ant CLI profile, etc.)
-  openai: () => ({
-    baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-    apiKey: process.env.OPENAI_API_KEY,
-    apiKeyEnvVar: 'OPENAI_API_KEY',
-    model: process.env.OPENAI_MODEL,
-    modelEnvVar: 'OPENAI_MODEL',
-    modelHint: 'e.g. gpt-4o-mini'
-  }),
-  deepseek: () => ({
-    baseUrl: 'https://api.deepseek.com',
-    apiKey: process.env.DEEPSEEK_API_KEY,
-    apiKeyEnvVar: 'DEEPSEEK_API_KEY',
-    model: process.env.DEEPSEEK_MODEL || 'deepseek-chat'
-  }),
-  local: () => ({
-    baseUrl: process.env.LOCAL_BASE_URL || 'http://localhost:11434/v1',
-    apiKey: undefined, // no API key required
-    model: process.env.LOCAL_MODEL,
-    modelEnvVar: 'LOCAL_MODEL',
-    modelHint: 'e.g. llama3.1 — the Ollama model tag you have pulled'
-  }),
-  // Any other OpenAI-compatible endpoint (Kimi/Moonshot, Qwen via DashScope,
-  // a custom proxy, ...) — unlike "local" this has no Ollama-flavored
-  // default base URL and does support an API key, since a remote
-  // "other" endpoint usually needs one.
-  other: () => ({
-    baseUrl: process.env.OTHER_BASE_URL,
-    baseUrlEnvVar: 'OTHER_BASE_URL',
-    apiKey: process.env.OTHER_API_KEY,
-    model: process.env.OTHER_MODEL,
-    modelEnvVar: 'OTHER_MODEL',
-    modelHint: 'the model name for your OpenAI-compatible endpoint'
-  })
-}
+const { loadConnectors, resolveConfig, missingRequiredField } = require('./connectors')
 
 /**
  * Reads coop/.henhouse/llm.json. Returns null if it doesn't exist (callers
@@ -85,33 +40,42 @@ function getProviderName () {
   return (process.env.PROVIDER || 'anthropic').toLowerCase()
 }
 
+function requireSpec (registry, providerId) {
+  const spec = registry.get(providerId)
+  if (!spec) {
+    throw new Error(`Unknown PROVIDER "${providerId}". Supported: ${registry.ids().join(', ')}.`)
+  }
+  return spec
+}
+
 /**
- * Resolves the active provider's config, merging coop/.henhouse/llm.json
- * (if present) over the PROVIDER_CONFIGS env-var defaults, field by field —
- * a field missing from the file (or the file itself missing) falls back to
- * its env var.
+ * Reads coop/.henhouse/llm.json once and works out the active provider: its
+ * id (file's `provider`, else $PROVIDER, else "anthropic"), its spec from
+ * the connector registry, and its config resolved file-over-env-over-default.
  */
-function getProviderConfig (vaultRoot = DEFAULT_VAULT_ROOT) {
+function resolveActive (vaultRoot, registryOpts = {}) {
   const fileConfig = loadLLMConfig(vaultRoot)
   const provider = (fileConfig && fileConfig.provider) || getProviderName()
+  const registry = loadConnectors(vaultRoot, registryOpts)
+  const spec = requireSpec(registry, provider)
+  const block = (fileConfig && fileConfig.providers && fileConfig.providers[provider]) || {}
+  return { provider, spec, resolved: resolveConfig(spec, block), registry }
+}
 
-  const configFn = PROVIDER_CONFIGS[provider]
-  if (!configFn) {
-    throw new Error(`Unknown PROVIDER "${provider}". Supported: ${Object.keys(PROVIDER_CONFIGS).join(', ')}.`)
-  }
-
-  const envDefaults = configFn()
-  const fileProviderConfig = (fileConfig && fileConfig.providers && fileConfig.providers[provider]) || {}
-
+/**
+ * Resolves the active provider's config, merging coop/.henhouse/llm.json
+ * (if present) over the connector's env-var / default fallbacks, field by
+ * field. Kept for the CLI scripts' startup line (describeProvider); the
+ * settings UI goes through the electron IPC layer instead.
+ */
+function getProviderConfig (vaultRoot = DEFAULT_VAULT_ROOT) {
+  const { provider, spec, resolved } = resolveActive(vaultRoot)
   return {
     provider,
-    baseUrl: fileProviderConfig.baseUrl || envDefaults.baseUrl,
-    baseUrlEnvVar: envDefaults.baseUrlEnvVar,
-    apiKey: fileProviderConfig.apiKey || envDefaults.apiKey,
-    apiKeyEnvVar: envDefaults.apiKeyEnvVar,
-    model: fileProviderConfig.model || envDefaults.model,
-    modelEnvVar: envDefaults.modelEnvVar,
-    modelHint: envDefaults.modelHint
+    label: spec.label,
+    baseUrl: resolved.baseUrl,
+    apiKey: resolved.apiKey,
+    model: resolved.model || spec.staticModel
   }
 }
 
@@ -119,12 +83,6 @@ function getProviderConfig (vaultRoot = DEFAULT_VAULT_ROOT) {
 function describeProvider (vaultRoot = DEFAULT_VAULT_ROOT) {
   const { provider, model } = getProviderConfig(vaultRoot)
   return `Using provider: ${provider}${model ? ` (${model})` : ' (no model configured)'}`
-}
-
-function stripCodeFences (text) {
-  const trimmed = text.trim()
-  const fenced = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/)
-  return fenced ? fenced[1].trim() : trimmed
 }
 
 /** Token counts from a raw provider response — Anthropic or OpenAI-compatible shapes; 0 when absent. */
@@ -153,106 +111,20 @@ function extractReasoning (raw) {
   return ''
 }
 
-const JSON_MODE_INSTRUCTION = 'Respond with ONLY valid JSON and no other text — no markdown code fences, no explanation.'
-
-/** Anthropic has no forced-JSON mode: for json:true, ask for it in the system prompt and strip fences after. */
-async function callAnthropic ({ system, prompt, json, maxTokens, apiKey }, AnthropicClient) {
-  const Anthropic = AnthropicClient || require('@anthropic-ai/sdk')
-  // Only pass an explicit apiKey when we have one (from the config file or
-  // ANTHROPIC_API_KEY) — an explicit undefined can short-circuit the SDK's
-  // own fallback chain (ant CLI profile, WIF, ...), which must keep working
-  // for anyone who hasn't set either.
-  const client = apiKey ? new Anthropic({ apiKey }) : new Anthropic()
-
-  const finalSystem = json
-    ? (system ? `${system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION)
-    : system
-
-  const response = await client.messages.create({
-    model: DEFAULT_ANTHROPIC_MODEL,
-    max_tokens: maxTokens,
-    system: finalSystem,
-    messages: [{ role: 'user', content: prompt }]
-  })
-
-  const rawText = response.content
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim()
-
-  return { text: json ? stripCodeFences(rawText) : rawText, raw: response }
-}
-
-async function postChatCompletion (baseUrl, apiKey, body, doFetch) {
-  const headers = { 'Content-Type': 'application/json' }
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`
-
-  const response = await doFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body)
-  })
-
-  if (!response.ok) {
-    const errText = await response.text().catch(() => response.status)
-    const err = new Error(`${baseUrl} request failed (${response.status}): ${errText}`)
-    err.status = response.status
-    throw err
-  }
-  return response.json()
+/** Throws the same "<ENV_VAR> is required when PROVIDER=..." error the old code did. */
+function assertConfigured (spec, resolved) {
+  const missing = missingRequiredField(spec, resolved)
+  if (!missing) return
+  const envVar = (spec.envDefaults && spec.envDefaults[missing.key]) || missing.label
+  const hint = missing.help ? ` (${missing.help})` : ''
+  throw new Error(
+    `${envVar} is required when PROVIDER=${spec.id}${hint} ` +
+    '(set it in coop/.henhouse/llm.json or the environment).'
+  )
 }
 
 /**
- * One generic client for every OpenAI-compatible chat completions API
- * (openai, deepseek, local/Ollama, and future providers like kimi/qwen) —
- * only baseUrl/apiKey/model differ between them.
- *
- * For json:true, tries native response_format: {type: "json_object"} first;
- * if the provider/model errors on that parameter, retries once without it,
- * using the same prompt-and-strip approach as the Anthropic path.
- */
-async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, json, maxTokens }, fetchImpl) {
-  const doFetch = fetchImpl || fetch
-
-  const buildMessages = (sys) => {
-    const messages = []
-    if (sys) messages.push({ role: 'system', content: sys })
-    messages.push({ role: 'user', content: prompt })
-    return messages
-  }
-
-  let data
-  if (json) {
-    try {
-      data = await postChatCompletion(baseUrl, apiKey, {
-        model,
-        max_tokens: maxTokens,
-        messages: buildMessages(system),
-        response_format: { type: 'json_object' }
-      }, doFetch)
-    } catch {
-      const jsonSystem = system ? `${system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION
-      data = await postChatCompletion(baseUrl, apiKey, {
-        model,
-        max_tokens: maxTokens,
-        messages: buildMessages(jsonSystem)
-      }, doFetch)
-    }
-  } else {
-    data = await postChatCompletion(baseUrl, apiKey, {
-      model,
-      max_tokens: maxTokens,
-      messages: buildMessages(system)
-    }, doFetch)
-  }
-
-  const rawText = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
-  return { text: json ? stripCodeFences(rawText) : rawText.trim(), raw: data }
-}
-
-/**
- * The one entry point every caller uses. Routes to the provider named by
+ * The one entry point every caller uses. Routes to the connector named by
  * coop/.henhouse/llm.json / the PROVIDER env var (default "anthropic");
  * always resolves to the same shape: { text, raw }.
  *
@@ -266,35 +138,27 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
  */
 async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label }, overrides = {}) {
   const vaultRoot = overrides.vaultRoot || DEFAULT_VAULT_ROOT
-  const config = getProviderConfig(vaultRoot)
+  const { spec, resolved } = resolveActive(vaultRoot, {
+    anthropicClient: overrides.AnthropicClient,
+    fetchImpl: overrides.fetchImpl
+  })
+  assertConfigured(spec, resolved)
 
-  if (config.apiKeyEnvVar && !config.apiKey) {
-    throw new Error(`${config.apiKeyEnvVar} is required when PROVIDER=${config.provider} ` +
-      '(set it in coop/.henhouse/llm.json or the environment).')
-  }
-  if (config.modelEnvVar && !config.model) {
-    throw new Error(`${config.modelEnvVar} is required when PROVIDER=${config.provider}` +
-      `${config.modelHint ? ` (${config.modelHint})` : ''} (set it in coop/.henhouse/llm.json or the environment).`)
-  }
-  if (config.baseUrlEnvVar && !config.baseUrl) {
-    throw new Error(`${config.baseUrlEnvVar} is required when PROVIDER=${config.provider} ` +
-      '(set it in coop/.henhouse/llm.json or the environment).')
+  const call = { system, prompt, json, maxTokens, label: label || null }
+  const ctx = {
+    fetch: overrides.fetchImpl || fetch,
+    signal: overrides.signal,
+    logger: overrides.logger || console
   }
 
   const started = Date.now()
-  const common = { label: label || null, provider: config.provider, model: config.model || null }
+  const common = {
+    label: label || null,
+    provider: spec.id,
+    model: resolved.model || spec.staticModel || null
+  }
   try {
-    const result = config.provider === 'anthropic'
-      ? await callAnthropic({ system, prompt, json, maxTokens, apiKey: config.apiKey }, overrides.AnthropicClient)
-      : await callOpenAICompatible({
-        baseUrl: config.baseUrl,
-        apiKey: config.apiKey,
-        model: config.model,
-        system,
-        prompt,
-        json,
-        maxTokens
-      }, overrides.fetchImpl)
+    const result = await spec.complete(resolved, call, ctx)
 
     const usage = extractUsage(result.raw)
     const reasoning = extractReasoning(result.raw)
@@ -331,46 +195,49 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
  * Fires a trivial LLM call against an explicit provider config — for the
  * settings UI's "test connection" button, which needs to test the form's
  * *current, possibly unsaved* values, not whatever's in
- * coop/.henhouse/llm.json. Bypasses getProviderConfig()'s file/env
- * resolution for provider/apiKey/model/baseUrl, but still falls back to the
- * env-var defaults for any of those the candidate leaves blank (so testing
- * with an empty API key field still picks up an env var if one is set,
- * matching what a real call would actually do).
+ * coop/.henhouse/llm.json. Bypasses the file/env resolution for the
+ * candidate's own fields, but still falls back to the env-var / default for
+ * any the candidate leaves blank (so testing with an empty API-key field
+ * still picks up an env var if one is set, matching a real call).
  *
  * Never throws — returns { success: true, reply } or { success: false, error }.
  *
  * `overrides` (optional, second arg) is for tests only, same as callLLM's.
  */
 async function testConnection ({ provider, apiKey, model, baseUrl } = {}, overrides = {}) {
-  const configFn = PROVIDER_CONFIGS[provider]
-  if (!configFn) return { success: false, error: `Unknown provider "${provider}".` }
+  const registry = loadConnectors(overrides.vaultRoot, {
+    anthropicClient: overrides.AnthropicClient,
+    fetchImpl: overrides.fetchImpl
+  })
+  const spec = registry.get(provider)
+  if (!spec) return { success: false, error: `Unknown provider "${provider}".` }
 
-  const envDefaults = configFn()
-  const resolved = {
-    apiKey: apiKey || envDefaults.apiKey,
-    model: model || envDefaults.model,
-    baseUrl: baseUrl || envDefaults.baseUrl
+  // Only the fields the connector actually declares; undefined candidate
+  // values fall through resolveConfig to the env var / default.
+  const candidate = {}
+  for (const [k, v] of Object.entries({ apiKey, model, baseUrl })) {
+    if (v !== undefined) candidate[k] = v
+  }
+  const resolved = resolveConfig(spec, candidate)
+
+  const missing = missingRequiredField(spec, resolved)
+  if (missing) return { success: false, error: `${missing.label} is required.` }
+
+  const ctx = {
+    fetch: overrides.fetchImpl || fetch,
+    signal: overrides.signal,
+    logger: overrides.logger || console
   }
 
   try {
-    let result
-    if (provider === 'anthropic') {
-      result = await callAnthropic(
-        { system: '', prompt: 'Reply with exactly: OK', maxTokens: 10, apiKey: resolved.apiKey },
-        overrides.AnthropicClient
-      )
-    } else {
-      if (!resolved.model) throw new Error('Model is required.')
-      if (!resolved.baseUrl) throw new Error('Base URL is required.')
-      result = await callOpenAICompatible({
-        baseUrl: resolved.baseUrl,
-        apiKey: resolved.apiKey,
-        model: resolved.model,
-        system: '',
-        prompt: 'Reply with exactly: OK',
-        maxTokens: 10
-      }, overrides.fetchImpl)
+    if (typeof spec.testConnection === 'function') {
+      return await spec.testConnection(resolved, ctx)
     }
+    const result = await spec.complete(
+      resolved,
+      { system: '', prompt: 'Reply with exactly: OK', json: false, maxTokens: 10, label: 'test:connection' },
+      ctx
+    )
     return { success: true, reply: result.text }
   } catch (err) {
     return { success: false, error: err.message || String(err) }

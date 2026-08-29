@@ -71,7 +71,9 @@ scripts/
 │   │                # prevention logic, used by peck.js and hatch.js
 │   ├── llm.js      # callLLM() — the ONE provider-swappable LLM entry point —
 │   │                # plus loadLLMConfig/saveLLMConfig, see "LLM provider
-│   │                # config" below
+│   │                # config" below. Hosts lib/connectors.js.
+│   ├── connectors.js # the connector registry: each provider is a ProviderSpec
+│   │                # (fields + complete()); the 5 built-ins live here
 │   ├── telemetry.js # per-run LLM-call timing/token recorder every callLLM()
 │   │                # feeds; content-free summary() + opt-in full-text trace
 │   ├── prompts.js  # prompt content built on callLLM(): extractKeyTerms,
@@ -163,12 +165,15 @@ cp .env.example .env   # CLI-only path — fill in the section for your PROVIDER
 | `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` defaults to `deepseek-chat`. Fixed base URL. |
 | `local` | `LOCAL_MODEL` | No API key. `LOCAL_BASE_URL` defaults to `http://localhost:11434/v1` (Ollama). |
 
-`openai`/`deepseek`/`local` all share one generic OpenAI-compatible chat
-completions client — adding another provider that speaks that format (Kimi,
-Qwen via DashScope, most LocalAI setups) is a few lines in `PROVIDER_CONFIGS`
-in `llm.js`, not a new HTTP client. Every CLI script prints which
-provider/model is active at the start of its run (to stderr, so `groom.js
---json`'s stdout stays pure JSON).
+`openai`/`deepseek`/`local`/`other` all share one generic OpenAI-compatible
+chat completions client — adding another provider that speaks that format
+(Kimi, Qwen via DashScope, most LocalAI setups) is one more `ProviderSpec`
+in `lib/connectors.js`, not a new HTTP client. `llm.js` is the *host*: it
+picks the spec from the registry, resolves its `fields` (file over env over
+default), calls `spec.complete()`, and records telemetry. External
+connectors (the managed Kip backend) register through the same registry.
+Every CLI script prints which provider/model is active at the start of its
+run (to stderr, so `groom.js --json`'s stdout stays pure JSON).
 
 **Privacy note:** switching `PROVIDER` to a hosted third-party backend sends
 coop content (which may include health/personal data) to that provider,
