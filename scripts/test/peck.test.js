@@ -230,6 +230,27 @@ test('peckTurn — a statement is filed onto a matching page and logged as `told
   } finally { s.restore() }
 })
 
+test('peckTurn — a stale index row (file deleted) is skipped, not fatal', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', tags: ['health'], body: 'Consistent bedtime.' })
+  writePage(root, 'sources', 'orphan-doc', { type: 'source', body: 'A source that will vanish.' })
+  rebuildRoost(root)
+  // meta.db now has orphan-doc; delete its file behind the index's back
+  fs.rmSync(path.join(root, 'nest', 'sources', 'orphan-doc.md'))
+
+  const s = stubPeckFetch({ keyTerms: '{"terms": ["sleep", "source"]}', answer: 'Keep a consistent bedtime. [[sleep-hygiene]]' })
+  try {
+    const r = await peckTurn('what helps my sleep?', { vaultRoot: root })
+    assert.equal(r.intent, 'question')
+    assert.match(r.answer, /consistent bedtime/i)
+    assert.ok(!r.candidateSlugs.includes('orphan-doc'), 'the missing page is dropped from candidates')
+    assert.ok(r.candidateSlugs.includes('sleep-hygiene'))
+  } finally { s.restore() }
+})
+
 test('peckTurn — a statement with nothing new writes nothing and still logs `told []`', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
