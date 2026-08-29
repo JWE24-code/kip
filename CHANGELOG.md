@@ -7,6 +7,24 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.3.0] — 2026-08-29
+
+Kip ships as an installer with in-app updates. App only — no
+retrieval-layer changes.
+
+### The app
+
+- **Windows installer + self-updating Linux AppImage** — `Kip-Setup-*.exe`
+  (per-user, signed with a self-issued cert) and an AppImage that updates
+  itself; the portable `tar.gz` stays on the releases page. The "a newer
+  Kip is available" banner gains an **Update** button.
+- **Fixed: Hatch / Peck / Groom in the packaged app** — the bundled
+  retrieval layer couldn't load `better-sqlite3` → `bindings` from inside
+  `app.asar` (regressed in 0.2.2). `better-sqlite3` and its loader are now
+  vendored next to `scripts/` at build time.
+- **Schedule the deep groom** — Settings → Features toggle for a weekly
+  groom, run from the main process like reminders.
+
 ## [0.2.2] — 2026-08-29
 
 De-Logseq'd the first-run experience, plus Hatch review/recovery and a
