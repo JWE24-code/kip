@@ -7,6 +7,20 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.3.3] — 2026-08-29
+
+### The retrieval layer (`scripts/`)
+
+- **The managed `kip` connector reports what actually went wrong** — a
+  connection failure now says "nothing is listening" / "no response —
+  check the address, firewall or a proxy" / "can't resolve the host"
+  instead of a bare "fetch failed". **Test connection** now checks
+  `GET /v1/usage` (auth only, not routed) instead of a completion, so it
+  works against a fresh backend and shows your plan + token cap.
+
+(App-only 0.3.2 — the Windows updater signature-check fix — had no
+retrieval-layer change.)
+
 ## [0.3.1] — 2026-08-29
 
 The managed **Kip backend** connector, and a data-driven LLM settings tab.
