@@ -323,6 +323,14 @@ into `callLLM()`. Trust boundary: a graph-local connector is `require`d
 into the process with `fetch`, so the allowlist is the gate. Tested in
 `scripts/test/connectors.test.js` + `untar.test.js`.
 
+`callOpenAICompatible` for `json:true` tries native `response_format:
+{type:"json_object"}` and falls back to prompt-and-strip on any error —
+except for a **reasoning model** (`isReasoningModel(model)` — name match on
+`deepseek-reasoner`, `o1`/`o3`/`o4-mini`, …), which skips straight to
+prompt-and-strip since it always rejects that parameter. One round-trip, not
+two (kip-app#68). The managed backend does the equivalent server-side for
+`model:"auto"` picks.
+
 **The `kip` connector** (`lib/kip-connector.js`) POSTs to
 `{baseUrl}/v1/chat/completions` with `Authorization: Bearer kip_…` and
 `X-Kip-Workload` (the full call label) / `X-Kip-Phase` (its first

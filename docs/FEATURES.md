@@ -117,9 +117,17 @@ they're not listed here.)
 - Never auto-fixes — every finding is a suggestion.
 
 ### Infrastructure
-- **Provider-swappable LLM** — Anthropic, OpenAI, DeepSeek, local/Ollama, or
-  any OpenAI-compatible endpoint. One config file
-  (`<graph>/.henhouse/llm.json`) or env vars.
+- **Provider-swappable LLM** — Anthropic, OpenAI, DeepSeek, local/Ollama,
+  any OpenAI-compatible endpoint, or a managed [Kip
+  backend](https://github.com/JWE24-code/kip-backend) (one `kip_` key, the
+  backend picks the model per task). One config file
+  (`<graph>/.henhouse/llm.json`) or env vars. Reasoning models
+  (`deepseek-reasoner`, `o1`/`o3`) are used without the JSON-mode retry
+  round-trip.
+- **Installable connectors** — an `@kip-ai/*` provider package can be added
+  from a `.tgz` or URL (Settings → LLM → Add a connector), extracted into
+  `<graph>/.henhouse/connectors/`; the name allowlist is the trust gate
+  since a connector runs in-process.
 - **`rebuild-roost`** — rebuild the whole SQLite index + generated catalog
   from the Markdown files; safe to run any time.
 - **`recent-clucks`** — tail the activity log.

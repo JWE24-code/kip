@@ -11,6 +11,7 @@ const {
   validateSpec,
   resolveConfig,
   missingRequiredField,
+  isReasoningModel,
   isAllowlisted,
   readConnectorsConfig,
   installConnectorFromTarball,
@@ -116,6 +117,15 @@ test('loadConnectors: built-in readiness matches its resolved config', () => {
   assert.equal(reg.get('other').isReady({ baseUrl: 'u', model: 'm' }), true)
   assert.equal(reg.get('kip').isReady({}), false, 'the managed connector needs a kip_ key')
   assert.equal(reg.get('kip').isReady({ apiKey: 'kip_x' }), true)
+})
+
+test('isReasoningModel: matches reasoning models, not lookalikes', () => {
+  for (const m of ['deepseek-reasoner', 'o1', 'o1-mini', 'o1-preview', 'o3', 'o3-mini', 'o4-mini', 'openai/o3-mini', 'some-reasoning-model']) {
+    assert.equal(isReasoningModel(m), true, `${m} is a reasoning model`)
+  }
+  for (const m of ['deepseek-chat', 'gpt-4o', 'gpt-4o-mini', 'claude-sonnet-4-6', 'llama3.1', '', undefined, null]) {
+    assert.equal(isReasoningModel(m), false, `${m} is not a reasoning model`)
+  }
 })
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,25 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.3.5] — 2026-08-29
+
+### The retrieval layer (`scripts/`)
+
+- **Reasoning models without the JSON-mode retry tax** — `deepseek-reasoner`
+  and OpenAI `o1` / `o3` / `o4-mini` reject the `response_format` parameter
+  most Kip calls use. The OpenAI-compatible client now recognises them by
+  name and asks for JSON in the prompt from the start, instead of sending
+  `response_format`, taking a 400, and retrying — one upstream call per
+  step, not two. `gpt-4o` and similar names are not affected.
+
+### Docs
+
+- **Connectors + the managed backend are documented for users** —
+  `GETTING-STARTED.md` covers the "Kip (managed)" provider, the
+  **Add a connector** flow (`@kip-ai/*` `.tgz`, why the allowlist exists,
+  where installed connectors live), and a note on reasoning-model
+  trade-offs. `.env.example` already carried `KIP_API_KEY` / `KIP_BASE_URL`.
+
 ## [0.3.4] — 2026-08-29
 
 ### The retrieval layer (`scripts/`)

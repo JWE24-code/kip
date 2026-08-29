@@ -46,6 +46,17 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6'
 const JSON_MODE_INSTRUCTION =
   'Respond with ONLY valid JSON and no other text — no markdown code fences, no explanation.'
 
+// Reasoning models (DeepSeek `deepseek-reasoner`, OpenAI `o1`/`o3`/`o4-mini`,
+// …) reject `response_format` and `temperature`. For a json:true call we'd
+// otherwise send `response_format`, eat a 400, and retry prompt-and-strip —
+// two round-trips every call. Detect them by name and go straight to
+// prompt-and-strip. `gpt-4o` and friends don't match (the `o` isn't on a
+// separator). See kip-app#68.
+const REASONING_MODEL_RE = /(?:^|[-/:_])(?:o[1-9](?:-mini|-preview|-pro)?|[a-z]*reasoner|[a-z]*reasoning|[a-z]*thinking)(?:$|[-/:_])/i
+function isReasoningModel (model) {
+  return typeof model === 'string' && REASONING_MODEL_RE.test(model)
+}
+
 // ---------------------------------------------------------------------------
 // Low-level provider calls — each built-in spec's complete() is a thin
 // wrapper over one of these. Moved verbatim from llm.js.
@@ -112,7 +123,10 @@ async function postChatCompletion (baseUrl, apiKey, body, doFetch) {
  *
  * For json:true, tries native response_format: {type: "json_object"} first;
  * if the provider/model errors on that parameter, retries once without it,
- * using the same prompt-and-strip approach as the Anthropic path.
+ * using the same prompt-and-strip approach as the Anthropic path. A known
+ * reasoning model (deepseek-reasoner, o1/o3, …) skips the native attempt
+ * entirely — it always rejects response_format — so json:true costs one
+ * round-trip, not two.
  */
 async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, json, maxTokens }, fetchImpl) {
   const doFetch = fetchImpl || fetch
@@ -124,8 +138,25 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
     return messages
   }
 
+  const promptStrip = () => {
+    const jsonSystem = system ? `${system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION
+    return postChatCompletion(baseUrl, apiKey, {
+      model,
+      max_tokens: maxTokens,
+      messages: buildMessages(jsonSystem)
+    }, doFetch)
+  }
+
   let data
-  if (json) {
+  if (!json) {
+    data = await postChatCompletion(baseUrl, apiKey, {
+      model,
+      max_tokens: maxTokens,
+      messages: buildMessages(system)
+    }, doFetch)
+  } else if (isReasoningModel(model)) {
+    data = await promptStrip()
+  } else {
     try {
       data = await postChatCompletion(baseUrl, apiKey, {
         model,
@@ -134,19 +165,8 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
         response_format: { type: 'json_object' }
       }, doFetch)
     } catch {
-      const jsonSystem = system ? `${system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION
-      data = await postChatCompletion(baseUrl, apiKey, {
-        model,
-        max_tokens: maxTokens,
-        messages: buildMessages(jsonSystem)
-      }, doFetch)
+      data = await promptStrip()
     }
-  } else {
-    data = await postChatCompletion(baseUrl, apiKey, {
-      model,
-      max_tokens: maxTokens,
-      messages: buildMessages(system)
-    }, doFetch)
   }
 
   const rawText = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
@@ -560,6 +580,7 @@ module.exports = {
   validateSpec,
   resolveConfig,
   missingRequiredField,
+  isReasoningModel,
   isAllowlisted,
   readConnectorsConfig,
   installConnectorFromTarball,

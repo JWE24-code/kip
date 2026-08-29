@@ -42,13 +42,43 @@ Kip needs an LLM to hatch sources and answer questions.
    - **OpenAI** — any OpenAI-compatible endpoint.
    - **DeepSeek** — DeepSeek's chat API.
    - **Local** — a model running on your machine via Ollama.
+   - **Other (OpenAI-compatible)** — any other endpoint that speaks the
+     OpenAI chat-completions format (Kimi/Moonshot, Qwen via DashScope, a
+     custom proxy).
+   - **Kip (managed)** — one `kip_` key routes every call through a managed
+     [Kip backend](https://github.com/JWE24-code/kip-backend), which picks
+     the model per task, enforces your plan, and meters usage. Hidden until
+     you pick **"Have a Kip backend key?"**; enter the key (and a **Base
+     URL** if you run your own backend). Invite-only for now.
 3. Enter your API key, model name, and base URL if needed.
 4. Click **Test connection** to verify.
 5. Click **Save**.
 
-The settings are written to `<coop>/.henhouse/llm.json`. That file is **plain text** and contains your key, so keep your coop folder private.
+The settings are written to `<coop>/.henhouse/llm.json`. That file is **plain text** and contains your key, so keep your coop folder private. Without a GUI you can set the same values as environment variables — see [`.env.example`](../.env.example).
 
-> **Privacy note:** Hosted providers (Anthropic, OpenAI, DeepSeek) receive the contents of your sources and questions. Choose **Local** if you want everything to stay on your machine.
+> **Privacy note:** Hosted providers (Anthropic, OpenAI, DeepSeek, a managed Kip backend) receive the contents of your sources and questions. Choose **Local** if you want everything to stay on your machine.
+
+### Reasoning models
+
+`deepseek-reasoner` and OpenAI's `o1` / `o3` / `o4-mini` are supported. Kip
+detects them by name and asks for JSON in the prompt instead of the
+`response_format` parameter they reject — so there's no wasted round-trip.
+They think before answering, so they're slower; if you set one as your only
+model, *every* Hatch and Peck step pays that cost. A managed Kip backend
+avoids this by routing only the workloads that benefit (the deep-groom
+coherence and contradiction passes) to a reasoning model.
+
+### Add a connector
+
+**Settings → LLM → Add a connector** installs an extra provider from an npm
+package (`.tgz` file or URL). Only packages named `@kip-ai/*` are accepted:
+a connector is JavaScript that runs **in Kip's own process**, with your
+privileges, so the name allowlist is the trust gate. Installed connectors
+live in `<coop>/.henhouse/connectors/<name>/`, are listed in
+`<coop>/.henhouse/connectors.json`, and can be removed from the same screen.
+A connector you install can override one of the same name that ships with
+Kip, but never a built-in provider (`anthropic`, `openai`, `deepseek`,
+`local`, `other`, `kip`).
 
 ---
 

@@ -160,6 +160,22 @@ test('callLLM: openai-compatible falls back to prompt-and-strip when response_fo
   })
 })
 
+test('callLLM: json:true on a reasoning model skips response_format (one round-trip)', async () => {
+  await withEnv({ PROVIDER: 'deepseek', DEEPSEEK_API_KEY: 'k', DEEPSEEK_MODEL: 'deepseek-reasoner' }, async () => {
+    let callCount = 0
+    const impl = async (_url, init) => {
+      callCount++
+      const body = JSON.parse(init.body)
+      assert.equal(body.response_format, undefined, 'must not send response_format to a reasoning model')
+      assert.ok(body.messages[0].content.includes('ONLY valid JSON'), 'asks for JSON via the prompt instead')
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true}' } }] }) }
+    }
+    const result = await callLLM({ system: 'sys', prompt: 'hi', json: true }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+    assert.equal(callCount, 1, 'no 400-and-retry')
+    assert.equal(result.text, '{"ok":true}')
+  })
+})
+
 test('callLLM: missing a required env var throws a clear error', async () => {
   await withEnv({ PROVIDER: 'openai', OPENAI_API_KEY: undefined, OPENAI_MODEL: undefined }, async () => {
     await assert.rejects(() => callLLM({ system: 's', prompt: 'p' }, { vaultRoot: EMPTY_VAULT }), /OPENAI_API_KEY/)
