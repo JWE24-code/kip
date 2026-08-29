@@ -46,6 +46,17 @@ function skillsConfigPath (vaultRoot = DEFAULT_VAULT_ROOT) {
   return path.join(henhousePath(vaultRoot), 'skills.json')
 }
 
+// Graph-local LLM connectors: an installed connector package lives in its
+// own dir under connectors/, and connectors.json lists which ones are
+// active ([{ id, name, version, dir }]). Mirrors skills/ + skills.json.
+function connectorsPath (vaultRoot = DEFAULT_VAULT_ROOT) {
+  return path.join(henhousePath(vaultRoot), 'connectors')
+}
+
+function connectorsConfigPath (vaultRoot = DEFAULT_VAULT_ROOT) {
+  return path.join(henhousePath(vaultRoot), 'connectors.json')
+}
+
 // Where skills drop generated files (a deck, a doc, a chart). Visible, not
 // hidden — "where did my export go" should be answerable by looking.
 function exportsPath (vaultRoot = DEFAULT_VAULT_ROOT) {
@@ -76,6 +87,8 @@ module.exports = {
   configPath,
   skillsPath,
   skillsConfigPath,
+  connectorsPath,
+  connectorsConfigPath,
   exportsPath,
   remindersPath,
   TYPE_DIRS,

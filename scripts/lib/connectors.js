@@ -8,13 +8,38 @@
 // fetch calls) lives outside this file.
 //
 // The five built-ins (anthropic / openai / deepseek / local / other) are
-// ProviderSpecs defined below. External connectors — starting with the
-// managed Kip backend (@kip-ai/connector) — register through
-// loadConnectors() too; graph-local discovery and the install/allowlist
-// flow land in a follow-up (see kip-app#56). For now loadConnectors()
-// returns the built-ins only, and `vaultRoot` is accepted but unused.
+// ProviderSpecs defined below. External connectors register through
+// loadConnectors() too, from two sources:
+//
+//   * bundled  — an allowlisted package that ships as a dependency of the
+//                app (BUNDLED_CONNECTORS). It rides the normal app auto-
+//                update, so everyone who has it stays current for free.
+//   * graph-local — a package installed into
+//                <graph>/.henhouse/connectors/<dir>/ from a .tgz, listed in
+//                <graph>/.henhouse/connectors.json. Mirrors .henhouse/skills/.
+//                A graph-local connector overrides a bundled one with the
+//                same id (the "ship a fix ahead of an app release" path).
+//
+// Trust: an installable connector is arbitrary JS `require`d into this
+// process with `fetch`. The only gate is ALLOWLIST — a constant here, not
+// user-editable. Built-in ids can never be shadowed.
+
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { connectorsPath, connectorsConfigPath } = require('./paths')
+const { extractNpmTarball } = require('./untar')
 
 const CONNECTOR_API = 1
+
+// Package-name patterns an installable connector must match. `@scope/*`
+// matches anything under that scope; a bare name matches exactly.
+const ALLOWLIST = ['@kip-ai/connector', '@kip-ai/*']
+
+// Allowlisted packages the app ships as its own dependency. Absent until
+// @kip-ai/connector is published + added to scripts/package.json — until
+// then loadBundledConnectors() just finds nothing.
+const BUNDLED_CONNECTORS = ['@kip-ai/connector']
 
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6'
 const JSON_MODE_INSTRUCTION =
@@ -274,14 +299,224 @@ function createRegistry (specs, { logger = console } = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// External connector discovery + install
+// ---------------------------------------------------------------------------
+
+/** `@kip-ai/connector` -> true; `@kip-ai/anything` -> true; anything else -> false. */
+function isAllowlisted (name) {
+  if (typeof name !== 'string' || !name) return false
+  return ALLOWLIST.some((pat) =>
+    pat.endsWith('/*') ? name.startsWith(pat.slice(0, -1)) : name === pat
+  )
+}
+
+/** A module may export the spec directly or as `default` (esm interop). */
+function normalizeExport (mod) {
+  return mod && typeof mod === 'object' && mod.default ? mod.default : mod
+}
+
+/** Drop a dir (and everything under it) from the require cache. */
+function evictFromRequireCache (dir) {
+  const resolved = path.resolve(dir)
+  for (const key of Object.keys(require.cache)) {
+    if (key === resolved || key.startsWith(resolved + path.sep)) delete require.cache[key]
+  }
+}
+
+/** require() a connector's entry point (package.json main / index.js). */
+function requireDir (dir) {
+  try {
+    return require(require.resolve(dir))
+  } catch (err) {
+    err.message = `cannot load connector (${err.message})`
+    throw err
+  }
+}
+
+/** `@kip-ai/connector` -> `kip-ai__connector` — a filesystem-safe dir name. */
+function connectorDirName (pkgName) {
+  return pkgName.replace(/^@/, '').replace(/\//g, '__').replace(/[^\w.-]/g, '_')
+}
+
+/** Specs from BUNDLED_CONNECTORS that are actually installed as app deps. */
+function loadBundledConnectors ({ logger = console } = {}) {
+  const specs = []
+  for (const name of BUNDLED_CONNECTORS) {
+    try {
+      require.resolve(name)
+    } catch {
+      continue // not shipped in this build — expected
+    }
+    try {
+      specs.push(normalizeExport(require(name)))
+    } catch (err) {
+      logger.warn(`[connectors] bundled "${name}" failed to load: ${err.message}`)
+    }
+  }
+  return specs
+}
+
+/** The raw connectors.json array ([{ id, name, version, dir }]), or []. */
+function readConnectorsConfig (vaultRoot) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(connectorsConfigPath(vaultRoot), 'utf8'))
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writeConnectorsConfig (vaultRoot, entries) {
+  const file = connectorsConfigPath(vaultRoot)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(entries, null, 2) + '\n')
+}
+
+/** Specs for the graph-local connectors listed in connectors.json. */
+function loadGraphConnectors (vaultRoot, { logger = console } = {}) {
+  if (!vaultRoot) return []
+  const base = connectorsPath(vaultRoot)
+  const specs = []
+  for (const entry of readConnectorsConfig(vaultRoot)) {
+    if (!entry || !entry.dir) continue
+    const dir = path.join(base, entry.dir)
+    if (!fs.existsSync(path.join(dir, 'package.json'))) {
+      logger.warn(`[connectors] "${entry.id || entry.dir}" is in connectors.json but ${entry.dir}/ is missing`)
+      continue
+    }
+    try {
+      specs.push(normalizeExport(requireDir(dir)))
+    } catch (err) {
+      logger.warn(`[connectors] "${entry.id || entry.dir}" failed to load: ${err.message}`)
+    }
+  }
+  return specs
+}
+
+/**
+ * Installs a connector from an npm tarball (a local .tgz path or an
+ * https URL) into <graph>/.henhouse/connectors/. Pure-JS extraction, no
+ * `npm`. Resolves { ok: true, id, name, version } or rejects with a
+ * user-facing Error.
+ *
+ * Refuses: a package whose name isn't on ALLOWLIST; a tarball that isn't a
+ * valid ProviderSpec; an id that collides with a built-in or an
+ * already-installed connector. (An id that matches a *bundled* connector is
+ * allowed — that's how a graph-local build overrides it.)
+ */
+async function installConnectorFromTarball (tgzPathOrUrl, vaultRoot, opts = {}) {
+  const doFetch = opts.fetch || fetch
+  if (!vaultRoot) throw new Error('Open a folder first — a connector installs into the current graph.')
+
+  let bytes
+  if (/^https?:\/\//i.test(tgzPathOrUrl)) {
+    const res = await doFetch(tgzPathOrUrl)
+    if (!res.ok) throw new Error(`Couldn't download the connector (${res.status}).`)
+    bytes = Buffer.from(await res.arrayBuffer())
+  } else {
+    try {
+      bytes = fs.readFileSync(tgzPathOrUrl)
+    } catch {
+      throw new Error(`Can't read ${tgzPathOrUrl}.`)
+    }
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kip-connector-'))
+  try {
+    try {
+      extractNpmTarball(bytes, tmp)
+    } catch (err) {
+      throw new Error(`That doesn't look like a connector package: ${err.message}.`)
+    }
+
+    let pkg
+    try {
+      pkg = JSON.parse(fs.readFileSync(path.join(tmp, 'package.json'), 'utf8'))
+    } catch {
+      throw new Error('The tarball has no readable package.json.')
+    }
+    if (!isAllowlisted(pkg.name)) {
+      throw new Error(`"${pkg.name || 'this package'}" is not an allowed connector — Kip only installs @kip-ai/* connectors.`)
+    }
+
+    const spec = normalizeExport(requireDir(tmp))
+    const problem = validateSpec(spec)
+    if (problem) throw new Error(`"${pkg.name}" isn't a valid connector: ${problem}.`)
+
+    if (builtinSpecs().some((s) => s.id === spec.id)) {
+      throw new Error(`"${spec.id}" is a built-in provider — this connector can't use that id.`)
+    }
+    const installed = readConnectorsConfig(vaultRoot)
+    if (installed.some((e) => e.id === spec.id)) {
+      throw new Error(`A "${spec.id}" connector is already installed — remove it first.`)
+    }
+
+    const dir = connectorDirName(pkg.name)
+    const dest = path.join(connectorsPath(vaultRoot), dir)
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    fs.rmSync(dest, { recursive: true, force: true })
+    evictFromRequireCache(dest) // a prior version of this dir may be cached
+    fs.cpSync(tmp, dest, { recursive: true })
+
+    const version = typeof pkg.version === 'string' ? pkg.version : null
+    writeConnectorsConfig(vaultRoot, [...installed, { id: spec.id, name: pkg.name, version, dir }])
+    return { ok: true, id: spec.id, name: pkg.name, version }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+/** Removes a graph-local connector: its dir + its connectors.json entry. */
+function removeConnector (id, vaultRoot) {
+  if (!vaultRoot) throw new Error('No graph open.')
+  const installed = readConnectorsConfig(vaultRoot)
+  const entry = installed.find((e) => e.id === id)
+  if (!entry) return { ok: false, error: `No installed connector "${id}".` }
+  const dir = path.join(connectorsPath(vaultRoot), entry.dir)
+  fs.rmSync(dir, { recursive: true, force: true })
+  evictFromRequireCache(dir)
+  writeConnectorsConfig(vaultRoot, installed.filter((e) => e.id !== id))
+  return { ok: true, id }
+}
+
+// ---------------------------------------------------------------------------
+// The registry
+// ---------------------------------------------------------------------------
+
 /**
  * The registry of every connector available to this graph: the five
- * built-ins today. `opts.anthropicClient` / `opts.fetchImpl` are test seams
- * for the built-ins — real callers never pass them. `vaultRoot` is reserved
- * for graph-local connector discovery (kip-app#56).
+ * built-ins, plus any bundled and graph-local connectors. Precedence for a
+ * shared id: built-in (locked) > graph-local > bundled.
+ *
+ * `opts.anthropicClient` / `opts.fetchImpl` are test seams for the
+ * built-ins — real callers never pass them.
  */
 function loadConnectors (vaultRoot, opts = {}) {
-  return createRegistry(builtinSpecs(opts), { logger: opts.logger })
+  const logger = opts.logger || console
+  const builtins = builtinSpecs(opts)
+  const locked = new Set(builtins.map((s) => s.id))
+
+  // bundled first, graph-local second: a later valid spec with the same id
+  // wins, so graph-local overrides bundled.
+  const externalById = new Map()
+  for (const spec of [
+    ...loadBundledConnectors({ logger }),
+    ...loadGraphConnectors(vaultRoot, { logger })
+  ]) {
+    const problem = validateSpec(spec)
+    if (problem) {
+      logger.warn(`[connectors] ignoring a connector: ${problem}`)
+      continue
+    }
+    if (locked.has(spec.id)) {
+      logger.warn(`[connectors] ignoring connector "${spec.id}": a built-in owns that id`)
+      continue
+    }
+    externalById.set(spec.id, spec)
+  }
+
+  return createRegistry([...builtins, ...externalById.values()], { logger })
 }
 
 /**
@@ -314,9 +549,14 @@ function missingRequiredField (spec, resolved) {
 
 module.exports = {
   CONNECTOR_API,
+  ALLOWLIST,
   loadConnectors,
   createRegistry,
   validateSpec,
   resolveConfig,
-  missingRequiredField
+  missingRequiredField,
+  isAllowlisted,
+  readConnectorsConfig,
+  installConnectorFromTarball,
+  removeConnector
 }
