@@ -7,6 +7,17 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.3.4] — 2026-08-29
+
+### The retrieval layer (`scripts/`)
+
+- **A stale search-index row no longer crashes Peck** — if `meta.db`
+  points at a nest page whose `.md` is gone (deleted, moved, or a
+  OneDrive/iCloud file not yet materialized), retrieval now warns and
+  skips it instead of throwing out of the whole turn. `rebuild-roost`
+  still cleans the index. (A graph under OneDrive with a
+  `nest/sources/<uuid>.md` in the index but not on disk hit this.)
+
 ## [0.3.3] — 2026-08-29
 
 ### The retrieval layer (`scripts/`)
