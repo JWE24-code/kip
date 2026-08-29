@@ -95,9 +95,11 @@ test('missingRequiredField: first blank required field, else null', () => {
   assert.equal(missingRequiredField(spec, {}).key, 'a')
 })
 
-test('loadConnectors: returns the five built-ins, all valid v1 specs', () => {
+const BUILTIN_IDS = ['anthropic', 'deepseek', 'kip', 'local', 'openai', 'other']
+
+test('loadConnectors: returns the built-ins (incl. the managed kip connector), all valid v1 specs', () => {
   const reg = loadConnectors()
-  assert.deepEqual(reg.ids().sort(), ['anthropic', 'deepseek', 'local', 'openai', 'other'])
+  assert.deepEqual(reg.ids().sort(), BUILTIN_IDS)
   for (const spec of reg.list()) {
     assert.equal(validateSpec(spec), null, `${spec.id} is a valid spec`)
     assert.equal(typeof spec.isReady, 'function')
@@ -112,6 +114,8 @@ test('loadConnectors: built-in readiness matches its resolved config', () => {
   assert.equal(reg.get('openai').isReady({ apiKey: 'k', model: 'm' }), true)
   assert.equal(reg.get('other').isReady({ model: 'm' }), false, 'other needs a base URL')
   assert.equal(reg.get('other').isReady({ baseUrl: 'u', model: 'm' }), true)
+  assert.equal(reg.get('kip').isReady({}), false, 'the managed connector needs a kip_ key')
+  assert.equal(reg.get('kip').isReady({ apiKey: 'kip_x' }), true)
 })
 
 // ---------------------------------------------------------------------------
@@ -154,31 +158,39 @@ test('installConnectorFromTarball: refuses an id that collides with a built-in',
 test('connector lifecycle: install -> load -> remove', async () => {
   const v = tmpVault()
   const res = await installConnectorFromTarball(tgzFile(v, connectorTgz()), v, quiet)
-  assert.deepEqual(res, { ok: true, id: 'kip', name: '@kip-ai/connector', version: '1.0.0' })
+  assert.deepEqual(res, { ok: true, id: 'kip-exp', name: '@kip-ai/experimental', version: '1.0.0' })
 
   // recorded in connectors.json + on disk
   assert.deepEqual(readConnectorsConfig(v), [
-    { id: 'kip', name: '@kip-ai/connector', version: '1.0.0', dir: 'kip-ai__connector' }
+    { id: 'kip-exp', name: '@kip-ai/experimental', version: '1.0.0', dir: 'kip-ai__experimental' }
   ])
-  assert.ok(fs.existsSync(path.join(v, '.henhouse', 'connectors', 'kip-ai__connector', 'index.js')))
+  assert.ok(fs.existsSync(path.join(v, '.henhouse', 'connectors', 'kip-ai__experimental', 'index.js')))
 
   // shows up in the registry, usable
   const reg = loadConnectors(v, quiet)
-  assert.ok(reg.has('kip'))
-  assert.equal(reg.get('kip').label, 'Kip (managed)')
-  assert.equal(reg.get('kip').isReady({ apiKey: 'kip_x' }), true)
-  assert.equal(reg.get('kip').isReady({}), false)
+  assert.ok(reg.has('kip-exp'))
+  assert.equal(reg.get('kip-exp').label, 'Kip experimental')
+  assert.equal(reg.get('kip-exp').isReady({ apiKey: 'kip_x' }), true)
+  assert.equal(reg.get('kip-exp').isReady({}), false)
 
   // second install of the same id is refused
   await assert.rejects(() => installConnectorFromTarball(tgzFile(v, connectorTgz()), v, quiet), /already installed/)
 
   // remove: gone from disk, config, and the registry
-  assert.deepEqual(removeConnector('kip', v), { ok: true, id: 'kip' })
+  assert.deepEqual(removeConnector('kip-exp', v), { ok: true, id: 'kip-exp' })
   assert.deepEqual(readConnectorsConfig(v), [])
-  assert.equal(fs.existsSync(path.join(v, '.henhouse', 'connectors', 'kip-ai__connector')), false)
-  assert.equal(loadConnectors(v, quiet).has('kip'), false)
+  assert.equal(fs.existsSync(path.join(v, '.henhouse', 'connectors', 'kip-ai__experimental')), false)
+  assert.equal(loadConnectors(v, quiet).has('kip-exp'), false)
 
-  assert.deepEqual(removeConnector('kip', v), { ok: false, error: 'No installed connector "kip".' })
+  assert.deepEqual(removeConnector('kip-exp', v), { ok: false, error: 'No installed connector "kip-exp".' })
+})
+
+test('installConnectorFromTarball: refuses an id that collides with the built-in kip connector', async () => {
+  const v = tmpVault()
+  await assert.rejects(
+    () => installConnectorFromTarball(tgzFile(v, connectorTgz({ id: 'kip' })), v, quiet),
+    /built-in provider/
+  )
 })
 
 test('loadConnectors: a graph-local connector listed but missing from disk is skipped, not fatal', () => {
@@ -190,7 +202,7 @@ test('loadConnectors: a graph-local connector listed but missing from disk is sk
   )
   const warnings = []
   const reg = loadConnectors(v, { logger: { warn: (m) => warnings.push(m) } })
-  assert.deepEqual(reg.ids().sort(), ['anthropic', 'deepseek', 'local', 'openai', 'other'])
+  assert.deepEqual(reg.ids().sort(), BUILTIN_IDS)
   assert.match(warnings.join('\n'), /ghost/)
 })
 

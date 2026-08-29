@@ -73,8 +73,9 @@ scripts/
 │   │                # plus loadLLMConfig/saveLLMConfig, see "LLM provider
 │   │                # config" below. Hosts lib/connectors.js.
 │   ├── connectors.js # the connector registry: each provider is a ProviderSpec
-│   │                # (fields + complete()); 5 built-ins + bundled/graph-local
+│   │                # (fields + complete()); built-ins + bundled/graph-local
 │   │                # connectors (install from a .tgz, @kip-ai/* allowlist)
+│   ├── kip-connector.js # the managed-backend "kip" connector (AGPL, built-in)
 │   ├── untar.js    # zero-dep npm-tarball (.tgz) extractor for connector install
 │   ├── telemetry.js # per-run LLM-call timing/token recorder every callLLM()
 │   │                # feeds; content-free summary() + opt-in full-text trace
@@ -300,7 +301,10 @@ isReady, complete(resolved, call, ctx) }`; `ctx` = `{ fetch, signal, logger }`
 only). Three sources:
 
 - **built-in** — `anthropic` / `openai` / `deepseek` / `local` / `other`, in
-  `connectors.js`. Their ids can never be shadowed.
+  `connectors.js`, plus **`kip`** — the managed-backend connector
+  (`lib/kip-connector.js`; AGPL-3.0, first-party). Their ids can never be
+  shadowed. The settings UI hides `kip` from the dropdown until the user
+  opts in (kip-app#58).
 - **bundled** — an allowlisted package shipped as an app dependency
   (`BUNDLED_CONNECTORS`). Rides the normal app auto-update.
 - **graph-local** — installed from an npm `.tgz` into
@@ -318,6 +322,14 @@ connector that fails to load is skipped with a warning — it never throws
 into `callLLM()`. Trust boundary: a graph-local connector is `require`d
 into the process with `fetch`, so the allowlist is the gate. Tested in
 `scripts/test/connectors.test.js` + `untar.test.js`.
+
+**The `kip` connector** (`lib/kip-connector.js`) POSTs to
+`{baseUrl}/v1/chat/completions` with `Authorization: Bearer kip_…` and
+`X-Kip-Workload` (the full call label) / `X-Kip-Phase` (its first
+`:`-segment) routing headers; body is `{ model: "auto", max_tokens,
+messages }`. `baseUrl` defaults to `https://api.kip-ai.be`, overridable to
+a self-hosted backend. Contract: `JWE24-code/kip-backend` → `KIP-BACKEND.md`.
+Tested against a mocked `fetch` in `scripts/test/kip-connector.test.js`.
 
 #### `groom.js` — coop health checks
 

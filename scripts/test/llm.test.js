@@ -294,6 +294,25 @@ test('callLLM: "other" provider works like any OpenAI-compatible endpoint once c
   })
 })
 
+test('callLLM: "kip" provider routes through the managed backend with routing headers', async () => {
+  await withEnv({ PROVIDER: 'kip', KIP_API_KEY: 'kip_env', KIP_BASE_URL: 'http://lan.test:8080' }, async () => {
+    const { impl, getLastCall } = fakeFetch({ model: 'claude-sonnet-4-6', choices: [{ message: { content: 'from kip' } }] })
+    const result = await callLLM({ system: 's', prompt: 'p', label: 'peck:answer' }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+    assert.equal(result.text, 'from kip')
+    assert.equal(getLastCall().url, 'http://lan.test:8080/v1/chat/completions')
+    assert.equal(getLastCall().init.headers.Authorization, 'Bearer kip_env')
+    assert.equal(getLastCall().init.headers['X-Kip-Workload'], 'peck:answer')
+    assert.equal(getLastCall().init.headers['X-Kip-Phase'], 'peck')
+    assert.equal(JSON.parse(getLastCall().init.body).model, 'auto')
+  })
+})
+
+test('callLLM: "kip" provider needs a key', async () => {
+  await withEnv({ PROVIDER: 'kip', KIP_API_KEY: undefined }, async () => {
+    await assert.rejects(() => callLLM({ system: 's', prompt: 'p' }, { vaultRoot: EMPTY_VAULT }), /KIP_API_KEY/)
+  })
+})
+
 test('testConnection', async (t) => {
   await t.test('reports success with the reply text on a good call', async () => {
     const { FakeAnthropic } = fakeAnthropicClient('OK')
