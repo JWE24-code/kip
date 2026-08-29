@@ -7,6 +7,34 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.3.1] — 2026-08-29
+
+The managed **Kip backend** connector, and a data-driven LLM settings tab.
+
+### The retrieval layer (`scripts/`)
+
+- **Connector host** — `lib/llm.js` is now a host over `lib/connectors.js`,
+  a `ProviderSpec` registry. The five built-ins are converted specs; a
+  connector declares its own `fields[]` and `isReady`, and does its own
+  `complete()`.
+- **Installable connectors** — a `@kip-ai/*` connector package can be
+  installed from a `.tgz` into `<graph>/.henhouse/connectors/` (pure-JS
+  extraction, allowlist-gated) and removed again. Graph-local overrides a
+  bundled connector of the same id.
+- **The managed Kip connector** (`PROVIDER=kip`) — one `kip_` key instead of
+  per-provider keys; the backend picks the model per workload, enforces the
+  plan, and meters usage. `KIP_BASE_URL` defaults to the hosted endpoint,
+  overridable for a self-hosted backend. AGPL-3.0, ships built-in.
+
+### The app
+
+- **Data-driven LLM settings** — the provider dropdown and each provider's
+  form fields come from the connector registry. An **Add a connector** row
+  installs a `.tgz` or a URL; installed connectors can be removed. The
+  managed "Kip (managed)" connector stays hidden until you opt in.
+- **Friendlier "out of quota / budget" errors** — a plan/billing limit
+  (including the managed backend's) now reads as one, not as rate-limiting.
+
 ## [0.3.0] — 2026-08-29
 
 Kip ships as an installer with in-app updates. App only — no
