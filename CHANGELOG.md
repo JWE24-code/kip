@@ -7,6 +7,40 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.2.2] — 2026-08-29
+
+De-Logseq'd the first-run experience, plus Hatch review/recovery and a
+skill-approval gate.
+
+### The retrieval layer (`scripts/`)
+
+- **Hatch: review before writing** — `hatch-all.js --propose-next` /
+  `--commit-next` split (`lib/hatch.js` `proposeNextPending` /
+  `commitReviewedPlan`, plan stashed in `.roost/hatch-plan.json`), so the
+  app can walk one source at a time and let you keep or skip its proposed
+  pages before anything is written.
+- **Custom skills must be approved once** — a skill under
+  `.henhouse/skills/` runs with your privileges, so `runSkill` now refuses
+  it until it's approved (`skills.json` `approved`, `setSkillApproval`,
+  `isSkillAllowed`); `SKILL.md` gains a `permissions:` frontmatter list
+  that the app shows before you approve.
+- **Recover from a stopped hatch** — per-file hash recording so a batch
+  that dies partway can be resumed instead of re-run.
+
+### The app
+
+- **The demo graph is Kip's now** — the pre-folder graph is a Kip welcome
+  journal (slogan, the farm metaphor, hatch / peck / groom, the coop
+  folders, a first-five-minutes checklist) instead of Logseq's tutorial.
+- **Faster unzip and launch** — packed into a single `app.asar` instead of
+  ~15k loose files; `scripts/` and the native SQLite addon stay unpacked.
+- **Windows builds are code-signed** (self-signed for now — SmartScreen
+  still warns until there's a real certificate).
+- Settings cleanup (no more inherited Logseq account / Sync / local-git
+  UI), a one-time welcome card, paste text as a source, metaphor tooltips,
+  citation side-peek, a trimmed "…" menu, and Hatch / Peck / Groom now
+  refuse to run against the in-memory demo graph instead of erroring.
+
 ## [0.2.1] — 2026-08-28
 
 More onboarding polish, plus an in-app update check. App only — no
