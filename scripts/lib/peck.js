@@ -43,11 +43,29 @@ function classifyPeckInput (input) {
   return (t.endsWith('?') || QUESTION_START_RE.test(t)) ? 'question' : 'statement'
 }
 
+/**
+ * Reads a candidate nest page. Returns null when its file is gone or
+ * unreadable — meta.db can point at a page whose .md was deleted, moved, or
+ * (on OneDrive/iCloud) not yet materialized. A stale index row must not
+ * crash the whole turn; callers filter the nulls. `rebuild-roost` cleans
+ * meta.db back up.
+ */
 function readPageBody (vaultRoot, candidate) {
   const filePath = path.join(vaultRoot, candidate.path)
-  const raw = fs.readFileSync(filePath, 'utf8')
+  let raw
+  try {
+    raw = fs.readFileSync(filePath, 'utf8')
+  } catch (err) {
+    console.error(`Warning: nest page ${candidate.path} is in the index but not on disk (${err.code || err.message}); skipping. Run rebuild-roost.`)
+    return null
+  }
   const { data, content } = matter(raw)
   return { slug: candidate.slug, path: candidate.path, type: data.type, content: content.trim() }
+}
+
+/** map candidates -> page bodies, dropping any whose file is missing. */
+function readPageBodies (vaultRoot, candidates) {
+  return candidates.map((c) => readPageBody(vaultRoot, c)).filter(Boolean)
 }
 
 /** True when the coop has at least one enabled skill — a question with no
@@ -193,7 +211,7 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
   if (candidates.length === 0 && !anySkills(vaultRoot)) {
     return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
-  const pages = candidates.map((c) => readPageBody(vaultRoot, c))
+  const pages = readPageBodies(vaultRoot, candidates)
   return answerFromPages(question, pages, { fileToNest, vaultRoot })
 }
 
@@ -218,7 +236,7 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
   }
 
   const candidates = await retrieveCandidates(input, vaultRoot)
-  const pages = candidates.map((c) => readPageBody(vaultRoot, c))
+  const pages = readPageBodies(vaultRoot, candidates)
   const candidateSlugs = pages.map((p) => p.slug)
 
   if (classifyPeckInput(input) === 'statement') {
