@@ -7,16 +7,19 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
-## [0.3.5] — 2026-08-29
+## [0.3.5] — 2026-08-30
 
 ### The retrieval layer (`scripts/`)
 
-- **Reasoning models without the JSON-mode retry tax** — `deepseek-reasoner`
-  and OpenAI `o1` / `o3` / `o4-mini` reject the `response_format` parameter
-  most Kip calls use. The OpenAI-compatible client now recognises them by
-  name and asks for JSON in the prompt from the start, instead of sending
-  `response_format`, taking a 400, and retrying — one upstream call per
-  step, not two. `gpt-4o` and similar names are not affected.
+- **Reasoning models without the JSON-mode retry tax** — `deepseek-reasoner`,
+  `deepseek-r1`, OpenAI `o1` / `o3` / `o4-mini`, `qwq`, `magistral` and the
+  like reject the `response_format` parameter most Kip calls use, so a
+  `json:true` call used to send it, take a 400, and retry — two upstream
+  round-trips every time. The OpenAI-compatible client now recognises the
+  common ones by name and asks for JSON in the prompt from the start; **and
+  any other model that 400s on `response_format` is remembered for the rest
+  of the run**, so a model the name list misses pays the retry once, never
+  again. `gpt-4o` and similar names are unaffected.
 
 ### Docs
 

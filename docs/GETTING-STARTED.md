@@ -60,13 +60,15 @@ The settings are written to `<coop>/.henhouse/llm.json`. That file is **plain te
 
 ### Reasoning models
 
-`deepseek-reasoner` and OpenAI's `o1` / `o3` / `o4-mini` are supported. Kip
-detects them by name and asks for JSON in the prompt instead of the
-`response_format` parameter they reject — so there's no wasted round-trip.
-They think before answering, so they're slower; if you set one as your only
-model, *every* Hatch and Peck step pays that cost. A managed Kip backend
-avoids this by routing only the workloads that benefit (the deep-groom
-coherence and contradiction passes) to a reasoning model.
+`deepseek-reasoner`, `deepseek-r1`, OpenAI's `o1` / `o3` / `o4-mini` and
+similar reasoning models are supported. They reject the forced-JSON
+parameter Kip normally uses; Kip recognises the common ones by name and asks
+for JSON in the prompt instead, and it also learns any other model that
+rejects the parameter after trying it once — so there's no repeated wasted
+round-trip. They think before answering, so they're slower; if you set one
+as your only model, *every* Hatch and Peck step pays that cost. A managed
+Kip backend avoids this by routing only the workloads that benefit (the
+deep-groom coherence and contradiction passes) to a reasoning model.
 
 ### Add a connector
 

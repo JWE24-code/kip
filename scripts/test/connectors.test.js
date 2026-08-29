@@ -120,10 +120,14 @@ test('loadConnectors: built-in readiness matches its resolved config', () => {
 })
 
 test('isReasoningModel: matches reasoning models, not lookalikes', () => {
-  for (const m of ['deepseek-reasoner', 'o1', 'o1-mini', 'o1-preview', 'o3', 'o3-mini', 'o4-mini', 'openai/o3-mini', 'some-reasoning-model']) {
+  for (const m of [
+    'deepseek-reasoner', 'deepseek-r1', 'deepseek-r1-distill-qwen-7b',
+    'o1', 'o1-mini', 'o1-preview', 'o3', 'o3-mini', 'o4-mini', 'openai/o3-mini',
+    'qwq-32b', 'magistral-small-2506', 'some-reasoning-model', 'gemini-2.5-flash-thinking'
+  ]) {
     assert.equal(isReasoningModel(m), true, `${m} is a reasoning model`)
   }
-  for (const m of ['deepseek-chat', 'gpt-4o', 'gpt-4o-mini', 'claude-sonnet-4-6', 'llama3.1', '', undefined, null]) {
+  for (const m of ['deepseek-chat', 'gpt-4o', 'gpt-4o-mini', 'claude-sonnet-4-6', 'llama3.1', 'mistral-7b', '', undefined, null]) {
     assert.equal(isReasoningModel(m), false, `${m} is not a reasoning model`)
   }
 })

@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { callLLM, loadLLMConfig, saveLLMConfig, testConnection } = require('../lib/llm')
+const { _clearLearnedJsonMode } = require('../lib/connectors')
 const telemetry = require('../lib/telemetry')
 
 function makeTempVault () {
@@ -158,6 +159,51 @@ test('callLLM: openai-compatible falls back to prompt-and-strip when response_fo
     assert.equal(callCount, 2)
     assert.equal(result.text, '{"ok":true}')
   })
+})
+
+test('callLLM: after one 400 on response_format, later calls to that model skip it', async () => {
+  _clearLearnedJsonMode()
+  await withEnv({ PROVIDER: 'other', OTHER_BASE_URL: 'https://example.test/v1', OTHER_API_KEY: 'k', OTHER_MODEL: 'mystery-thinker-9000' }, async () => {
+    let withRF = 0
+    let withoutRF = 0
+    const impl = async (_url, init) => {
+      const body = JSON.parse(init.body)
+      if (body.response_format) {
+        withRF++
+        return { ok: false, status: 400, text: async () => 'response_format not supported', json: async () => ({}) }
+      }
+      withoutRF++
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true}' } }] }) }
+    }
+    const opts = { fetchImpl: impl, vaultRoot: EMPTY_VAULT }
+    await callLLM({ system: 's', prompt: 'p', json: true }, opts) // learns: 400 then retry
+    await callLLM({ system: 's', prompt: 'p', json: true }, opts) // straight to prompt-strip
+    await callLLM({ system: 's', prompt: 'p', json: true }, opts)
+    assert.equal(withRF, 1, 'response_format attempted exactly once, ever')
+    assert.equal(withoutRF, 3, 'every call still returns via prompt-and-strip')
+  })
+  _clearLearnedJsonMode()
+})
+
+test('callLLM: a non-400 error does not poison the skip cache', async () => {
+  _clearLearnedJsonMode()
+  await withEnv({ PROVIDER: 'other', OTHER_BASE_URL: 'https://example.test/v1', OTHER_API_KEY: 'k', OTHER_MODEL: 'gpt-4o-ish' }, async () => {
+    let withRF = 0
+    const impl = async (_url, init) => {
+      const body = JSON.parse(init.body)
+      if (body.response_format) {
+        withRF++
+        if (withRF === 1) return { ok: false, status: 503, text: async () => 'upstream busy', json: async () => ({}) }
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true}' } }] }) }
+      }
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"fallback":true}' } }] }) }
+    }
+    const opts = { fetchImpl: impl, vaultRoot: EMPTY_VAULT }
+    await callLLM({ system: 's', prompt: 'p', json: true }, opts) // 503 -> one prompt-strip retry, learns nothing
+    await callLLM({ system: 's', prompt: 'p', json: true }, opts) // tries response_format again
+    assert.equal(withRF, 2, 'still tries the native path on the next call after a 503')
+  })
+  _clearLearnedJsonMode()
 })
 
 test('callLLM: json:true on a reasoning model skips response_format (one round-trip)', async () => {

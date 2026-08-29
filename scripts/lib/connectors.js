@@ -46,16 +46,28 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6'
 const JSON_MODE_INSTRUCTION =
   'Respond with ONLY valid JSON and no other text — no markdown code fences, no explanation.'
 
-// Reasoning models (DeepSeek `deepseek-reasoner`, OpenAI `o1`/`o3`/`o4-mini`,
-// …) reject `response_format` and `temperature`. For a json:true call we'd
-// otherwise send `response_format`, eat a 400, and retry prompt-and-strip —
-// two round-trips every call. Detect them by name and go straight to
+// Reasoning models (DeepSeek `deepseek-reasoner` / `r1`, OpenAI `o1`/`o3`/
+// `o4-mini`, Qwen `qwq`, Mistral `magistral`, …) reject `response_format`
+// and `temperature`. For a json:true call we'd otherwise send
+// `response_format`, eat a 400, and retry prompt-and-strip — two round-trips
+// every call. Recognise the common ones by name and go straight to
 // prompt-and-strip. `gpt-4o` and friends don't match (the `o` isn't on a
 // separator). See kip-app#68.
-const REASONING_MODEL_RE = /(?:^|[-/:_])(?:o[1-9](?:-mini|-preview|-pro)?|[a-z]*reasoner|[a-z]*reasoning|[a-z]*thinking)(?:$|[-/:_])/i
+//
+// The name list can't be exhaustive, so it's only a fast path: any model
+// that actually 400s on `response_format` is remembered for the rest of the
+// process (`learnedNoResponseFormat`) and skips the doomed attempt on every
+// later call — so a miss here costs one wasted round-trip once, never more.
+const REASONING_MODEL_RE = /(?:^|[-/:_])(?:o[1-9](?:-mini|-preview|-pro)?|r1|qwq|magistral|[a-z]*reasoner|[a-z]*reasoning|[a-z]*thinking)(?:$|[-/:_])/i
 function isReasoningModel (model) {
   return typeof model === 'string' && REASONING_MODEL_RE.test(model)
 }
+
+// `${baseUrl}::${model}` seen to reject response_format with a 400 in this
+// process. Module-level so it's shared across every call in a run (Hatch and
+// deep-Groom make many). Cleared only by process exit.
+const learnedNoResponseFormat = new Set()
+const jsonModeKey = (baseUrl, model) => `${baseUrl || ''}::${model || ''}`
 
 // ---------------------------------------------------------------------------
 // Low-level provider calls — each built-in spec's complete() is a thin
@@ -122,11 +134,12 @@ async function postChatCompletion (baseUrl, apiKey, body, doFetch) {
  * baseUrl/apiKey/model differ between them.
  *
  * For json:true, tries native response_format: {type: "json_object"} first;
- * if the provider/model errors on that parameter, retries once without it,
- * using the same prompt-and-strip approach as the Anthropic path. A known
- * reasoning model (deepseek-reasoner, o1/o3, …) skips the native attempt
- * entirely — it always rejects response_format — so json:true costs one
- * round-trip, not two.
+ * if the provider/model 400s on that parameter, retries once without it
+ * (prompt-and-strip, same as the Anthropic path) AND remembers the model so
+ * later calls skip straight there. A model recognised as a reasoning model
+ * by name (deepseek-reasoner, o1/o3, …) skips the native attempt from the
+ * first call. Either way json:true costs one round-trip, not two, on every
+ * call after (at most) one.
  */
 async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, json, maxTokens }, fetchImpl) {
   const doFetch = fetchImpl || fetch
@@ -147,6 +160,9 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
     }, doFetch)
   }
 
+  const skipNativeJson =
+    isReasoningModel(model) || learnedNoResponseFormat.has(jsonModeKey(baseUrl, model))
+
   let data
   if (!json) {
     data = await postChatCompletion(baseUrl, apiKey, {
@@ -154,7 +170,7 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
       max_tokens: maxTokens,
       messages: buildMessages(system)
     }, doFetch)
-  } else if (isReasoningModel(model)) {
+  } else if (skipNativeJson) {
     data = await promptStrip()
   } else {
     try {
@@ -164,7 +180,11 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
         messages: buildMessages(system),
         response_format: { type: 'json_object' }
       }, doFetch)
-    } catch {
+    } catch (err) {
+      // Only a 400 means "this model won't take response_format" — a 401 /
+      // 429 / 5xx / network blip shouldn't teach us anything (but still gets
+      // one prompt-and-strip retry, as before).
+      if (err && err.status === 400) learnedNoResponseFormat.add(jsonModeKey(baseUrl, model))
       data = await promptStrip()
     }
   }
@@ -581,6 +601,7 @@ module.exports = {
   resolveConfig,
   missingRequiredField,
   isReasoningModel,
+  _clearLearnedJsonMode: () => learnedNoResponseFormat.clear(),
   isAllowlisted,
   readConnectorsConfig,
   installConnectorFromTarball,
