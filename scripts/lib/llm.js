@@ -162,8 +162,12 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
 
     const usage = extractUsage(result.raw)
     const reasoning = extractReasoning(result.raw)
+    // the connector may resolve the real model itself (the Kip backend routes
+    // "auto" to an upstream and returns which one) — prefer that for telemetry.
+    const realModel = (result.raw && typeof result.raw.model === 'string' && result.raw.model) || common.model
     telemetry.record({
       ...common,
+      model: realModel,
       ms: Date.now() - started,
       ok: true,
       systemChars: (system || '').length,
