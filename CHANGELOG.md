@@ -7,6 +7,22 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Calendar subscriptions** (kip-app#70) — `scripts/calendar.js` subscribes
+  to a live ICS / `webcal://` feed (Google / Outlook / Fastmail "secret iCal
+  address"). `lib/calendar.js` fetches and parses it (RFC 5545 via `ical.js`,
+  a zero-dependency parser), expands recurrences to a rolling 14-day window,
+  and reconciles the upcoming events into `reminders.json` as
+  `source: "calendar"` rows — so each one gets the same nest-retrieval prep
+  brief and lead-time notification a hand-typed reminder does. `CANCELLED`,
+  past, and `EXDATE` occurrences are dropped; an event that moves is updated
+  in place; one that vanishes has its still-pending reminder pruned.
+  Subscriptions live in `<graph>/.henhouse/calendars.json` (ICS URLs are
+  bearer secrets). New dependency: `ical.js`.
+
 ## [0.3.7] — 2026-08-30
 
 ### The retrieval layer (`scripts/`)

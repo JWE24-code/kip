@@ -247,6 +247,31 @@ update-don't-duplicate routing are all tested in
 `scripts/test/peck.test.js` against a mocked LLM (`PROVIDER=local` + a
 mocked `fetch`).
 
+#### `calendar.js` — ICS subscriptions → reminders (kip-app#70)
+
+```powershell
+node scripts/calendar.js add https://calendar.google.com/…/basic.ics --label Work --lead 15
+node scripts/calendar.js list
+node scripts/calendar.js sync --json     # fetch every feed, reconcile into reminders.json
+node scripts/calendar.js remove 1        # / enable 1 / disable 1
+```
+
+The **ingestion** side of calendar integration — the scheduling / prep /
+notification half is `reminders.js`, untouched. `lib/calendar.js`:
+`fetchIcs` (accepts `webcal://`), `parseCalendar` (RFC 5545 via `ical.js`,
+a zero-dependency pure-JS parser — recurrences expanded to a rolling
+14-day window, `CANCELLED` / past / `EXDATE` occurrences dropped),
+`refreshCalendars` (fetch all enabled feeds, rewrite
+`.roost/calendar-events.json`, record `lastError` per feed), and
+`syncCalendarReminders` (reconcile the cache into `reminders.json` as
+`source: "calendar"` rows — one per upcoming event, updated in place on a
+time change, pruned when the event vanishes; hand-typed and already-fired
+reminders are never touched). Subscriptions live in
+`<graph>/.henhouse/calendars.json` (ICS URLs are bearer secrets, kept out
+of the graph). The app's `electron.calendar` runs `sync` every 20 min;
+`electron.reminders` then fires the calendar rows like any other. Tested
+in `scripts/test/calendar.test.js` (fixture ICS + a mocked `fetch`).
+
 ##### Skills — Peck's tool loop
 
 When answering a **question**, if the graph has any enabled **skill**, the

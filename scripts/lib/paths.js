@@ -71,6 +71,18 @@ function remindersPath (vaultRoot = DEFAULT_VAULT_ROOT) {
   return path.join(vaultRoot, 'reminders.json')
 }
 
+// Calendar subscriptions (kip-app#70) — ICS URLs are bearer secrets, so the
+// subscription list lives under .henhouse/ alongside llm.json, never in the
+// graph's Markdown. The expanded event cache is derived state and goes under
+// .roost/ (safe to delete; a refresh rebuilds it).
+function calendarsConfigPath (vaultRoot = DEFAULT_VAULT_ROOT) {
+  return path.join(henhousePath(vaultRoot), 'calendars.json')
+}
+
+function calendarCachePath (vaultRoot = DEFAULT_VAULT_ROOT) {
+  return path.join(vaultRoot, '.roost', 'calendar-events.json')
+}
+
 // Single source of truth for the page-type <-> nest subfolder mapping.
 // type -> dir (used when writing a page for a known type)
 const TYPE_DIRS = { entity: 'entities', concept: 'concepts', source: 'sources' }
@@ -91,6 +103,8 @@ module.exports = {
   connectorsConfigPath,
   exportsPath,
   remindersPath,
+  calendarsConfigPath,
+  calendarCachePath,
   TYPE_DIRS,
   DIR_TYPES
 }
