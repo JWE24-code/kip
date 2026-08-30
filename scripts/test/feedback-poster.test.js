@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { createFeedbackPoster, sanitizeSignal } = require('../lib/feedback-poster')
+const { createFeedbackPoster, postFeedback, sanitizeSignal } = require('../lib/feedback-poster')
 
 const EMPTY_VAULT = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-poster-test-'))
 test.after(() => fs.rmSync(EMPTY_VAULT, { recursive: true, force: true }))
@@ -112,6 +112,34 @@ test('poster: the auto-flush timer fires and is unref-safe', async () => {
     poster.enqueue({ call_id: 'c1', kind: 'rating', score: 1, scale: 2 })
     await new Promise((r) => setTimeout(r, 60))
     assert.equal(calls.length, 1, 'timer flushed without an explicit flush()')
+  })
+})
+
+test('postFeedback: one-shot POST for the kip provider, sanitized', async () => {
+  await withEnv(KIP_ENV, async () => {
+    const { impl, calls } = recordingFetch()
+    const r = await postFeedback(
+      { call_id: 'c9', kind: 'rating', score: 1, scale: 2, note: 'drop me' },
+      { vaultRoot: EMPTY_VAULT, fetchImpl: impl })
+    assert.deepEqual(r, { ok: true })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, 'http://lan.test:3000/v1/feedback')
+    assert.deepEqual(calls[0].body, { call_id: 'c9', kind: 'rating', score: 1, scale: 2 })
+  })
+})
+
+test('postFeedback: { ok: false } and no request when not kip / malformed / network down', async () => {
+  const { impl, calls } = recordingFetch()
+  await withEnv({ PROVIDER: 'anthropic' }, async () => {
+    assert.deepEqual(await postFeedback({ call_id: 'c', kind: 'rating', score: 1, scale: 2 }, { vaultRoot: EMPTY_VAULT, fetchImpl: impl }), { ok: false })
+  })
+  await withEnv(KIP_ENV, async () => {
+    assert.deepEqual(await postFeedback({ kind: 'rating' }, { vaultRoot: EMPTY_VAULT, fetchImpl: impl }), { ok: false })
+  })
+  assert.equal(calls.length, 0)
+  await withEnv(KIP_ENV, async () => {
+    const bad = recordingFetch({ reject: true })
+    assert.deepEqual(await postFeedback({ call_id: 'c', kind: 'behavior', behavior: 'accepted' }, { vaultRoot: EMPTY_VAULT, fetchImpl: bad.impl, logger: { debug () {} } }), { ok: false })
   })
 })
 

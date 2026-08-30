@@ -42,6 +42,45 @@ function sanitizeSignal (signal) {
   return out
 }
 
+const debugWith = (logger) => (msg) => {
+  if (logger && typeof logger.debug === 'function') logger.debug(`[feedback] ${msg}`)
+}
+
+/** POST one sanitized body to {baseUrl}/v1/feedback. Never throws; resolves
+ *  true on a 2xx, false otherwise. */
+async function postBody (target, body, doFetch, debug) {
+  try {
+    const res = await doFetch(`${target.baseUrl}/v1/feedback`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${target.apiKey}`
+      },
+      body: JSON.stringify(body)
+    })
+    if (res && !res.ok) debug(`${res.status} for ${body.kind}`)
+    return !!(res && res.ok)
+  } catch (err) {
+    debug((err && err.message) || String(err))
+    return false
+  }
+}
+
+/**
+ * One-shot: sanitize + POST a single signal. For the electron main process's
+ * kipFeedback IPC — a rating click or a debounced behaviour event doesn't
+ * need batching. Never throws; resolves { ok: boolean }. A malformed signal
+ * or a non-kip provider resolves { ok: false } without a request.
+ */
+async function postFeedback (signal, { vaultRoot, fetchImpl, logger = console } = {}) {
+  const clean = sanitizeSignal(signal)
+  if (!clean) return { ok: false }
+  const target = preferenceSignalsTarget(vaultRoot)
+  if (!target) return { ok: false }
+  const doFetch = fetchImpl || ((...a) => fetch(...a))
+  return { ok: await postBody(target, clean, doFetch, debugWith(logger)) }
+}
+
 function createFeedbackPoster ({
   vaultRoot,
   fetchImpl,
@@ -50,26 +89,9 @@ function createFeedbackPoster ({
   logger = console
 } = {}) {
   const doFetch = fetchImpl || ((...a) => fetch(...a))
+  const debug = debugWith(logger)
   let queue = []
   let timer = null
-
-  const debug = (msg) => { if (logger && typeof logger.debug === 'function') logger.debug(`[feedback] ${msg}`) }
-
-  async function postOne (target, body) {
-    try {
-      const res = await doFetch(`${target.baseUrl}/v1/feedback`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${target.apiKey}`
-        },
-        body: JSON.stringify(body)
-      })
-      if (res && !res.ok) debug(`${res.status} for ${body.kind}`)
-    } catch (err) {
-      debug((err && err.message) || String(err))
-    }
-  }
 
   async function drain () {
     if (timer) { clearTimeout(timer); timer = null }
@@ -78,7 +100,7 @@ function createFeedbackPoster ({
     queue = []
     const target = preferenceSignalsTarget(vaultRoot)
     if (!target) return // provider changed away from kip / no key — drop
-    await Promise.all(batch.map((body) => postOne(target, body)))
+    await Promise.all(batch.map((body) => postBody(target, body, doFetch, debug)))
   }
 
   return {
@@ -133,4 +155,4 @@ function installFeedbackPoster (opts = {}) {
   return poster
 }
 
-module.exports = { createFeedbackPoster, installFeedbackPoster, sanitizeSignal }
+module.exports = { createFeedbackPoster, installFeedbackPoster, postFeedback, sanitizeSignal }
