@@ -20,6 +20,7 @@ const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSl
 const { resolvePage } = require('./pages')
 const { extractKeyTerms, answerQuestion, answerQuestionWithSkills, captureFacts } = require('./prompts')
 const { discoverSkills } = require('./skills')
+const { buildWebSource } = require('./web-sources')
 const { looksLikeReminder } = require('./reminders')
 const { DEFAULT_VAULT_ROOT } = require('./paths')
 const telemetry = require('./telemetry')
@@ -147,6 +148,7 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
 
   let answer
   let steps = []
+  let webSearches = []
   if (arena) {
     // A regenerate free-rider (kip-app#73): plain answer only. Skills add
     // per-run variance that would muddy a model-vs-model comparison, and a
@@ -154,7 +156,7 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
     answer = await answerQuestion(question, pages, vaultRoot, { arena })
   } else if (skills.length) {
     try {
-      ({ answer, steps } = await answerQuestionWithSkills(question, pages, skills, vaultRoot))
+      ({ answer, steps, webSearches } = await answerQuestionWithSkills(question, pages, skills, vaultRoot))
     } catch (err) {
       console.error(`Warning: the skills tool loop failed (${err.message}); falling back to a plain answer.`)
       answer = await answerQuestion(question, pages, vaultRoot)
@@ -174,7 +176,10 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // arenaId per PR kip-app#73) rather than threaded through answerQuestion's
   // string return — bounded to the calls THIS invocation just made.
   const { callId, arenaId } = answerCallSince(telemetryStart)
-  return { answer, citedSlugs, candidateSlugs, steps, callId, arenaId }
+  // If this turn ran web-search, offer its results as a hatchable source
+  // (kip-app#81) — the app shows a "save these" affordance on the answer.
+  const webSource = buildWebSource(question, webSearches);
+  return { answer, citedSlugs, candidateSlugs, steps, callId, arenaId, webSource: webSource || null }
 }
 
 /** callId + arenaId of the newest peck:answer* call at or after `startIdx`. */

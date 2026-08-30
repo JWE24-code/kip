@@ -213,6 +213,15 @@ classifies the input (`classifyPeckInput`) and dispatches:
 `scripts/chat.js` (the app's Peck panel backend) calls `peckTurn` with
 `fileToNest: false`.
 
+**Web-search → source** (kip-app#81) — if the skills loop ran `web-search`
+(or any skill whose output is a `Results for "…" (via …)` list), the turn
+result carries a `webSource` `{ filename, content }`: a front-matter'd
+Markdown doc of the result list, ready to drop into `eggs/`. The app shows
+a "save these" affordance on the answer and writes it via the existing
+`:wikiAddEgg` IPC. `lib/web-sources.js` (`parseWebSearchOutput`,
+`buildWebSource`). v1 saves the list + snippets; full page-text fetch is a
+follow-up.
+
 - **Tell it about an upcoming event** ("I have a meeting with Acme on Friday
   at 15h", "remind me to email Bob tomorrow") → `peckTurn` detects the
   reminder intent and routes to the `reminders` skill instead of fact

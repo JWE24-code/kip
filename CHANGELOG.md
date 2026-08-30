@@ -7,6 +7,16 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Web-search results can be kept** (kip-app#81) — when Peck runs the
+  `web-search` skill to answer a question, the turn result now carries a
+  `webSource` (front-matter + the result list, ready for `eggs/`). The app
+  offers to save it, so a search you found useful becomes reference material
+  in the nest instead of vanishing with the turn. `lib/web-sources.js`.
+
 ## [0.3.7] — 2026-08-30
 
 ### The retrieval layer (`scripts/`)
