@@ -7,6 +7,19 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Peck remembers the last few turns** (kip-app#82) — `peckTurn` /
+  `chat.js` take a `--history` buffer of recent `{role, text}` turns.
+  A follow-up ("expand on that", "and their salary?", "the second one")
+  now resolves what it refers to: the recent turns are folded into
+  retrieval (so a question with no shared nouns still finds pages) and
+  passed to the answer as a *"Conversation so far"* block (marked
+  not-a-source). A bare continuation right after a Kip answer also
+  classifies as a question rather than a new fact. Session-only.
+
 ## [0.3.7] — 2026-08-30
 
 ### The retrieval layer (`scripts/`)

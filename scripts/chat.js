@@ -24,6 +24,9 @@
 // to <coop>/.roost/peck-trace.jsonl.
 //
 // Usage: node scripts/chat.js "your question — or a fact to remember" [--trace]
+//        [--arena-compare-to <callId>] [--history '<json>']
+//   --history: [{ "role": "user"|"assistant", "text": "…" }] oldest→newest, a
+//     short buffer of recent turns so a follow-up can resolve what it refers to.
 //   (set KIP_COOP_ROOT to point at a graph other than this repo's ./coop)
 require('dotenv').config()
 const path = require('node:path')
@@ -38,11 +41,13 @@ const { installFeedbackPoster } = require('./lib/feedback-poster')
 const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const traceOn = process.argv.includes('--trace') || process.env.KIP_PECK_TRACE === '1'
 
+const VALUE_FLAGS = new Set(['--arena-compare-to', '--history'])
+
 async function main () {
   const args = process.argv.slice(2)
-  const input = args.find((a) => !a.startsWith('--'))
+  const input = args.find((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(args[i - 1]))
   if (!input || !input.trim()) {
-    console.error('Usage: node scripts/chat.js "your question — or a fact to remember" [--trace] [--arena-compare-to <callId>]')
+    console.error('Usage: node scripts/chat.js "your question — or a fact to remember" [--trace] [--arena-compare-to <callId>] [--history <json>]')
     process.exitCode = 1
     return
   }
@@ -50,6 +55,17 @@ async function main () {
   // as arena candidate B against the first answer's callId.
   const acIdx = args.indexOf('--arena-compare-to')
   const arenaCompareToCallId = acIdx >= 0 ? args[acIdx + 1] : null
+
+  // A short buffer of recent Peck turns for follow-up context (kip-app#82) —
+  // [{ role: "user"|"assistant", text }], oldest→newest, clipped by the app.
+  const hIdx = args.indexOf('--history')
+  let history = []
+  if (hIdx >= 0 && args[hIdx + 1]) {
+    try {
+      const parsed = JSON.parse(args[hIdx + 1])
+      if (Array.isArray(parsed)) history = parsed
+    } catch { /* malformed history — answer without it */ }
+  }
 
   console.error(describeProvider())
 
@@ -69,7 +85,7 @@ async function main () {
   reporter.flush(true)
 
   try {
-    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId })
+    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId, history })
     reporter.flush(false)
     reporter.writeMetrics()
     reporter.close()

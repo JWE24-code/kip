@@ -37,11 +37,21 @@ const CAPTURE_TYPES = new Set(['entity', 'concept'])
 //   statement: anything else.
 const QUESTION_START_RE = /^\s*(who|what|whats|when|where|why|how|which|whose|whom|is|are|was|were|do|does|did|can|could|should|would|will|have|has|had|am|tell me|remind me|show me|list|give me|find|search|look up|any\b|make|create|build|generate|draft|write|compose|produce|prepare|compile|convert|summari[sz]e|turn)\b/i
 
-/** 'question' vs 'statement' for a Peck turn. */
-function classifyPeckInput (input) {
+// A short input right after a Kip answer that reads as "keep going" rather
+// than a new fact — treat these as a question even without a '?' or a
+// question word (kip-app#82).
+const CONTINUATION_RE = /^\s*(and\b|also\b|what about|how about|tell me more|say more|go on|elaborate|expand|more\b|why\b|the (first|second|third|fourth|last|next|other|previous) one|that one|those|it\?|really\?|source\??|says who\??)/i
+
+/** 'question' vs 'statement' for a Peck turn. `history` (optional) lets a
+ *  bare follow-up after a Kip answer classify as a question (kip-app#82). */
+function classifyPeckInput (input, history = []) {
   const t = String(input || '').trim()
   if (!t) return 'question'
-  return (t.endsWith('?') || QUESTION_START_RE.test(t)) ? 'question' : 'statement'
+  if (t.endsWith('?') || QUESTION_START_RE.test(t)) return 'question'
+  const lastWasAnswer = Array.isArray(history) && history.length &&
+    history[history.length - 1] && history[history.length - 1].role === 'assistant'
+  if (lastWasAnswer && CONTINUATION_RE.test(t)) return 'question'
+  return 'statement'
 }
 
 /**
@@ -79,12 +89,18 @@ function anySkills (vaultRoot) {
   }
 }
 
-async function retrieveCandidates (question, vaultRoot) {
-  const direct = searchPages(question, {}, vaultRoot)
+async function retrieveCandidates (question, vaultRoot, { history = [] } = {}) {
+  // A follow-up ("tell me more about the second one") often shares no nouns
+  // with the nest — fold in the recent user turns so the direct FTS pass has
+  // something to match (kip-app#82).
+  const recentUser = (Array.isArray(history) ? history : [])
+    .filter((t) => t && t.role === 'user' && typeof t.text === 'string')
+    .slice(-3).map((t) => t.text).join(' ')
+  const direct = searchPages(`${recentUser} ${question}`.trim(), {}, vaultRoot)
 
   let keyTerms = []
   try {
-    keyTerms = await extractKeyTerms(question, vaultRoot)
+    keyTerms = await extractKeyTerms(question, vaultRoot, { history })
   } catch (err) {
     console.error(`Warning: key-term extraction failed (${err.message}); continuing with the direct search only.`)
   }
@@ -134,7 +150,7 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
  * can call them mid-answer — `steps` records what it ran. Skill discovery and
  * the whole tool loop are best-effort: a failure downgrades to a plain answer.
  */
-async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null }) {
+async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [] }) {
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
 
@@ -151,17 +167,17 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
     // A regenerate free-rider (kip-app#73): plain answer only. Skills add
     // per-run variance that would muddy a model-vs-model comparison, and a
     // regen is "answer this again, differently" — not "re-run the tool loop".
-    answer = await answerQuestion(question, pages, vaultRoot, { arena })
+    answer = await answerQuestion(question, pages, vaultRoot, { arena, history })
   } else if (skills.length) {
     try {
-      ({ answer, steps } = await answerQuestionWithSkills(question, pages, skills, vaultRoot))
+      ({ answer, steps } = await answerQuestionWithSkills(question, pages, skills, vaultRoot, { history }))
     } catch (err) {
       console.error(`Warning: the skills tool loop failed (${err.message}); falling back to a plain answer.`)
-      answer = await answerQuestion(question, pages, vaultRoot)
+      answer = await answerQuestion(question, pages, vaultRoot, { history })
       steps = []
     }
   } else {
-    answer = await answerQuestion(question, pages, vaultRoot)
+    answer = await answerQuestion(question, pages, vaultRoot, { history })
   }
 
   const citedSlugs = extractCitedSlugs(answer, candidateSlugs)
@@ -234,14 +250,14 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  *
  * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], steps: Array, callId: string|null, arenaId: string|null}}
  */
-async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null } = {}) {
-  const candidates = await retrieveCandidates(question, vaultRoot)
+async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [] } = {}) {
+  const candidates = await retrieveCandidates(question, vaultRoot, { history })
   if (candidates.length === 0 && !anySkills(vaultRoot)) {
     return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
   const pages = readPageBodies(vaultRoot, candidates)
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena })
+  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history })
 }
 
 /**
@@ -256,7 +272,7 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */
-async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null } = {}) {
+async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null, history = [] } = {}) {
   // An upcoming event the user wants reminding about ("I have a meeting Friday
   // at 15h", "remind me to …") — route to the skills path (the `reminders`
   // skill creates it), NOT fact-capture, which would file it as a nest page.
@@ -264,11 +280,11 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
     return { intent: 'reminder', ...(await answerFromPages(input, [], { fileToNest: false, vaultRoot })) }
   }
 
-  const candidates = await retrieveCandidates(input, vaultRoot)
+  const candidates = await retrieveCandidates(input, vaultRoot, { history })
   const pages = readPageBodies(vaultRoot, candidates)
   const candidateSlugs = pages.map((p) => p.slug)
 
-  if (classifyPeckInput(input) === 'statement') {
+  if (classifyPeckInput(input, history) === 'statement') {
     const capture = await captureFacts(input, pages, vaultRoot)
     const results = capture.learned ? fileCapturedFacts(capture.pages, vaultRoot) : []
     const touched = [...new Set(results.map((r) => r.slug))]
@@ -282,7 +298,7 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
     return { intent: 'question', answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena })) }
+  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history })) }
 }
 
 module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs }

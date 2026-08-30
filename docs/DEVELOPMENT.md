@@ -213,6 +213,18 @@ classifies the input (`classifyPeckInput`) and dispatches:
 `scripts/chat.js` (the app's Peck panel backend) calls `peckTurn` with
 `fileToNest: false`.
 
+**Follow-up context** (kip-app#82) — `peckTurn(input, { history })` /
+`chat.js --history '<json>'` takes a short buffer of recent turns
+(`[{ role, text }]`, oldest→newest, clipped by the app). It flows into
+`classifyPeckInput` (a bare "tell me more" / "the second one" after a Kip
+answer classifies as a question, not a statement), `extractKeyTerms` +
+`retrieveCandidates` (so a follow-up with no shared nouns still retrieves —
+the recent user turns are folded into the direct FTS query and the
+pronouns are resolved for the key-term pass), and `answerQuestion` /
+`answerQuestionWithSkills` (a "Conversation so far:" block, marked
+not-a-source). `prompts.formatConversation` does the clipping/formatting.
+Session-only; the app resets the buffer when the Peck conversation clears.
+
 - **Tell it about an upcoming event** ("I have a meeting with Acme on Friday
   at 15h", "remind me to email Bob tomorrow") → `peckTurn` detects the
   reminder intent and routes to the `reminders` skill instead of fact
