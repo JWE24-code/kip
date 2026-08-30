@@ -54,11 +54,11 @@ function fakeAnthropicClient (responseText) {
   return { FakeAnthropic, getLastCall: () => lastCall }
 }
 
-function fakeFetch (responseBody, { ok = true, status = 200 } = {}) {
+function fakeFetch (responseBody, { ok = true, status = 200, resHeaders = {} } = {}) {
   let lastCall = null
   const impl = async (url, init) => {
     lastCall = { url, init }
-    return { ok, status, json: async () => responseBody, text: async () => JSON.stringify(responseBody) }
+    return { ok, status, headers: new Headers(resHeaders), json: async () => responseBody, text: async () => JSON.stringify(responseBody) }
   }
   return { impl, getLastCall: () => lastCall }
 }
@@ -80,6 +80,7 @@ test('callLLM: openai provider normalizes to {text, raw}, uses its own base URL/
     const result = await callLLM({ system: 'sys', prompt: 'hi' }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
     assert.equal(result.text, 'hello from openai')
     assert.ok(result.raw)
+    assert.equal(result.callId, null, 'callId is null for a non-managed provider')
     assert.ok(getLastCall().url.startsWith('https://api.openai.com/v1'))
     const body = JSON.parse(getLastCall().init.body)
     assert.equal(body.model, 'gpt-test')
@@ -246,6 +247,7 @@ test('callLLM: records one content-free telemetry entry per successful call', as
   assert.equal(entries[0].label, 'test:call')
   assert.equal(typeof entries[0].ms, 'number')
   assert.equal(entries[0].promptChars, 5)
+  assert.equal(entries[0].callId, null, 'callId recorded (null for anthropic)')
   // fake response has no `usage` — the extractor must tolerate that, not throw
   assert.equal(entries[0].inputTokens, 0)
   for (const k of ['prompt', 'responseText', 'system']) assert.ok(!(k in entries[0]))
@@ -358,9 +360,12 @@ test('callLLM: "other" provider works like any OpenAI-compatible endpoint once c
 
 test('callLLM: "kip" provider routes through the managed backend with routing headers', async () => {
   await withEnv({ PROVIDER: 'kip', KIP_API_KEY: 'kip_env', KIP_BASE_URL: 'http://lan.test:8080' }, async () => {
-    const { impl, getLastCall } = fakeFetch({ model: 'claude-sonnet-4-6', choices: [{ message: { content: 'from kip' } }] })
+    const { impl, getLastCall } = fakeFetch(
+      { model: 'claude-sonnet-4-6', choices: [{ message: { content: 'from kip' } }] },
+      { resHeaders: { 'x-kip-call-id': 'call_xyz' } })
     const result = await callLLM({ system: 's', prompt: 'p', label: 'peck:answer' }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
     assert.equal(result.text, 'from kip')
+    assert.equal(result.callId, 'call_xyz', 'callId passed through from the kip connector')
     assert.equal(getLastCall().url, 'http://lan.test:8080/v1/chat/completions')
     assert.equal(getLastCall().init.headers.Authorization, 'Bearer kip_env')
     assert.equal(getLastCall().init.headers['X-Kip-Workload'], 'peck:answer')

@@ -76,6 +76,8 @@ scripts/
 │   │                # (fields + complete()); built-ins + bundled/graph-local
 │   │                # connectors (install from a .tgz, @kip-ai/* allowlist)
 │   ├── kip-connector.js # the managed-backend "kip" connector (AGPL, built-in)
+│   ├── preference-signals.js # the "is the kip connector active" gate — every
+│   │                # preference-signal surface (kip-app#73) checks it
 │   ├── untar.js    # zero-dep npm-tarball (.tgz) extractor for connector install
 │   ├── telemetry.js # per-run LLM-call timing/token recorder every callLLM()
 │   │                # feeds; content-free summary() + opt-in full-text trace
@@ -340,8 +342,21 @@ equivalent server-side for `model:"auto"` picks.
 `X-Kip-Workload` (the full call label) / `X-Kip-Phase` (its first
 `:`-segment) routing headers; body is `{ model: "auto", max_tokens,
 messages }`. `baseUrl` defaults to `https://api.kip-ai.be`, overridable to
-a self-hosted backend. Contract: `JWE24-code/kip-backend` → `KIP-BACKEND.md`.
+a self-hosted backend. It reads the `X-Kip-Call-Id` response header and
+returns it as `callId` on `{ text, raw, callId }` — `callLLM` passes that
+through and records it in telemetry; every other connector returns
+`callId: null`. Contract: `JWE24-code/kip-backend` → `KIP-BACKEND.md`.
 Tested against a mocked `fetch` in `scripts/test/kip-connector.test.js`.
+
+**Preference signals** (`lib/preference-signals.js`, epic kip-app#73) —
+content-free feedback (behaviour, micro-ratings, blind arena) that tunes
+the managed router. `preferenceSignalsEnabled(vaultRoot)` is the one gate:
+true only when the active provider is `kip`. `preferenceSignalsTarget()`
+hands back its resolved `{ baseUrl, apiKey }` (or null) for the
+`/v1/feedback` and `/v1/arena/*` POSTs. The renderer reaches this through
+an IPC shim. Everything downstream — block marking, the rating widget, the
+behaviour watcher, the arena UI, the batching poster — is gated on it, so
+a direct Anthropic/OpenAI/DeepSeek/local provider sees none of it.
 
 #### `groom.js` — coop health checks
 

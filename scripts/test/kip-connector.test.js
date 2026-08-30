@@ -6,14 +6,16 @@ const { validateSpec } = require('../lib/connectors')
 
 const RESOLVED = { apiKey: 'kip_testkey', baseUrl: 'http://lan.test:8080' }
 
-/** A fake fetch that records the last call and returns `body` (200 unless overridden). */
-function fakeFetch (body, { ok = true, status = 200 } = {}) {
+/** A fake fetch that records the last call and returns `body` (200 unless overridden).
+ *  `resHeaders` populates the response's Headers (e.g. { 'x-kip-call-id': '…' }). */
+function fakeFetch (body, { ok = true, status = 200, resHeaders = {} } = {}) {
   let last = null
   const impl = async (url, init) => {
     last = { url, init, headers: init.headers, body: JSON.parse(init.body) }
     return {
       ok,
       status,
+      headers: new Headers(resHeaders),
       json: async () => body,
       text: async () => (typeof body === 'string' ? body : JSON.stringify(body))
     }
@@ -54,6 +56,7 @@ test('complete: sends auth + routing headers + model:"auto"', async () => {
 
   assert.equal(res.text, 'hi from kip')
   assert.ok(res.raw)
+  assert.equal(res.callId, null, 'no X-Kip-Call-Id header -> null')
   assert.equal(last().url, 'http://lan.test:8080/v1/chat/completions')
   assert.equal(last().headers.Authorization, 'Bearer kip_testkey')
   assert.equal(last().headers['X-Kip-Workload'], 'hatch:generate:entity')
@@ -64,6 +67,25 @@ test('complete: sends auth + routing headers + model:"auto"', async () => {
     { role: 'system', content: 'sys' },
     { role: 'user', content: 'q' }
   ])
+})
+
+test('complete: returns the X-Kip-Call-Id header as callId', async () => {
+  const { impl } = fakeFetch(reply('hi'), { resHeaders: { 'x-kip-call-id': 'call_abc123' } })
+  const res = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
+  assert.equal(res.callId, 'call_abc123')
+})
+
+test('complete json:true: callId survives the prompt-and-strip 400 retry', async () => {
+  const impl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    if (body.response_format) {
+      return { ok: false, status: 400, headers: new Headers(), json: async () => ({ error: { message: 'no response_format' } }), text: async () => '' }
+    }
+    return { ok: true, status: 200, headers: new Headers({ 'x-kip-call-id': 'call_retry' }), json: async () => reply('{"ok":true}'), text: async () => '' }
+  }
+  const res = await kip.complete(RESOLVED, { system: 's', prompt: 'q', json: true, maxTokens: 50 }, { fetch: impl })
+  assert.equal(res.text, '{"ok":true}')
+  assert.equal(res.callId, 'call_retry')
 })
 
 test('complete: no label -> no routing headers', async () => {

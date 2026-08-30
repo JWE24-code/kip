@@ -93,10 +93,13 @@ async function post (baseUrl, apiKey, body, headers, doFetch, signal) {
     err.status = res.status
     throw err
   }
-  return res.json()
+  // The backend tags every completion with a call id; every later preference
+  // signal (rating / behaviour / arena verdict) references it. See kip-app#73.
+  const callId = (res.headers && typeof res.headers.get === 'function' && res.headers.get('x-kip-call-id')) || null
+  return { data: await res.json(), callId }
 }
 
-/** Shared by complete() and testConnection(): one call, returns { text, raw }. */
+/** The connector's complete(): one backend call, returns { text, raw, callId }. */
 async function callBackend (resolved, call, ctx) {
   const doFetch = (ctx && ctx.fetch) || fetch
   const signal = ctx && ctx.signal
@@ -115,23 +118,23 @@ async function callBackend (resolved, call, ctx) {
     messages: buildMessages(call.system, call.prompt)
   }
 
-  let data
+  let data, callId
   if (call.json) {
     try {
-      data = await post(baseUrl, resolved.apiKey, { ...base, response_format: { type: 'json_object' } }, routingHeaders, doFetch, signal)
+      ({ data, callId } = await post(baseUrl, resolved.apiKey, { ...base, response_format: { type: 'json_object' } }, routingHeaders, doFetch, signal))
     } catch (err) {
       // a routing/plan/auth error is real — only retry a plain 400 (upstream
       // rejected response_format), matching the OpenAI-compatible path.
       if (err.status !== 400) throw err
       const sys = call.system ? `${call.system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION
-      data = await post(baseUrl, resolved.apiKey, { ...base, messages: buildMessages(sys, call.prompt) }, routingHeaders, doFetch, signal)
+      ;({ data, callId } = await post(baseUrl, resolved.apiKey, { ...base, messages: buildMessages(sys, call.prompt) }, routingHeaders, doFetch, signal))
     }
   } else {
-    data = await post(baseUrl, resolved.apiKey, base, routingHeaders, doFetch, signal)
+    ({ data, callId } = await post(baseUrl, resolved.apiKey, base, routingHeaders, doFetch, signal))
   }
 
   const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
-  return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data }
+  return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data, callId: callId || null }
 }
 
 /** GET {baseUrl}/v1/usage — auth-only, not routed, not plan-checked. The

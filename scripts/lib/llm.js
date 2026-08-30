@@ -126,7 +126,9 @@ function assertConfigured (spec, resolved) {
 /**
  * The one entry point every caller uses. Routes to the connector named by
  * coop/.henhouse/llm.json / the PROVIDER env var (default "anthropic");
- * always resolves to the same shape: { text, raw }.
+ * always resolves to the same shape: { text, raw, callId }. `callId` is the
+ * managed backend's per-call id — set only by the kip connector, null for
+ * every other provider — and is what preference signals reference (kip-app#73).
  *
  * `overrides` (optional, second arg) is for tests only — real callers never
  * pass it: { AnthropicClient } to replace the Anthropic SDK class,
@@ -159,6 +161,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
   }
   try {
     const result = await spec.complete(resolved, call, ctx)
+    const callId = (result && result.callId) || null
 
     const usage = extractUsage(result.raw)
     const reasoning = extractReasoning(result.raw)
@@ -168,6 +171,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
     telemetry.record({
       ...common,
       model: realModel,
+      callId,
       ms: Date.now() - started,
       ok: true,
       systemChars: (system || '').length,
@@ -181,7 +185,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
       responseText: result.text,
       reasoning
     })
-    return result
+    return { ...result, callId }
   } catch (err) {
     telemetry.record({
       ...common,
