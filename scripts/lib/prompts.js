@@ -7,13 +7,34 @@
 const { callLLM } = require('./llm')
 const { runSkill, parseSkillCall, scrubInput } = require('./skills')
 
-/** Extracts key search terms from a question, for a broader secondary searchPages() pass. */
-async function extractKeyTerms (question, vaultRoot) {
-  const system = 'Extract 3-8 short key search terms/phrases from a question, for a full-text ' +
-    'search over a personal wiki. Strip stopwords; choose terms that maximize search recall. ' +
-    'Respond with a JSON object of exactly this shape: {"terms": ["term1", "term2", ...]}.'
+// --- conversation context (kip-app#82) --------------------------------------
+// A short buffer of recent Peck turns so a follow-up ("expand on that", "and
+// his salary?") can resolve what it refers to. The renderer clips each turn;
+// we re-clip here as a backstop and cap the number of turns.
+const HISTORY_TURN_CLIP = 700
+const HISTORY_MAX_TURNS = 6
 
-  const { text } = await callLLM({ system, prompt: `Question: ${question}`, json: true, maxTokens: 1024, label: 'peck:key-terms' }, { vaultRoot })
+/** history: [{ role: "user"|"assistant", text }] oldest→newest, or falsy. */
+function formatConversation (history, { heading = 'Conversation so far' } = {}) {
+  if (!Array.isArray(history) || !history.length) return ''
+  const lines = history
+    .filter((t) => t && typeof t.text === 'string' && t.text.trim())
+    .slice(-HISTORY_MAX_TURNS)
+    .map((t) => `${t.role === 'assistant' ? 'Kip' : 'User'}: ${t.text.trim().replace(/\s+/g, ' ').slice(0, HISTORY_TURN_CLIP)}`)
+  return lines.length ? `${heading}:\n${lines.join('\n')}` : ''
+}
+
+/** Extracts key search terms from a question, for a broader secondary searchPages() pass. */
+async function extractKeyTerms (question, vaultRoot, { history = [] } = {}) {
+  const convo = formatConversation(history)
+  const system = 'Extract 3-8 short key search terms/phrases for a full-text search over a ' +
+    'personal wiki, to answer the user\'s current question. Strip stopwords; choose terms that ' +
+    'maximize search recall. If the question is a follow-up, resolve its pronouns and references ' +
+    'from the conversation and include the real subjects as terms. ' +
+    'Respond with a JSON object of exactly this shape: {"terms": ["term1", "term2", ...]}.'
+  const prompt = convo ? `${convo}\n\nCurrent question: ${question}` : `Question: ${question}`
+
+  const { text } = await callLLM({ system, prompt, json: true, maxTokens: 1024, label: 'peck:key-terms' }, { vaultRoot })
   try {
     const parsed = JSON.parse(text)
     return Array.isArray(parsed.terms) ? parsed.terms : []
@@ -32,14 +53,20 @@ const ANSWER_SYSTEM_PROMPT = `You are answering a question from a personal wiki 
 
 Answer using ONLY the information in these pages — do not use outside knowledge, and do not speculate beyond what's written. If the pages don't contain enough information to answer, say so plainly rather than guessing.
 
+If a "Conversation so far" section is present, it is only there to tell you what a follow-up question refers to — it is NOT a source, so never cite it or treat it as fact.
+
 Cite every claim back to the specific page it came from using Logseq's wikilink syntax: [[exact-page-slug]], using the exact slug shown in each "### Page: <slug>" heading. Prefer citing inline, next to the claim it supports, over a single list of links at the end.`
 
 /** Answers a question against a set of candidate wiki pages, with [[slug]]
  *  citations. `arena` (optional): { compareToCallId } runs this as arena
  *  candidate B against an earlier answer — the regenerate free-rider
- *  (kip-app#73). Only meaningful on the managed kip connector. */
-async function answerQuestion (question, pages, vaultRoot, { arena = null } = {}) {
-  const prompt = `${formatPagesForPrompt(pages)}\n\n---\n\nQuestion: ${question}`
+ *  (kip-app#73). `history` (optional): recent {role,text} turns for
+ *  follow-up context (kip-app#82). */
+async function answerQuestion (question, pages, vaultRoot, { arena = null, history = [] } = {}) {
+  const convo = formatConversation(history)
+  const prompt = `${formatPagesForPrompt(pages)}\n\n---\n\n` +
+    (convo ? `${convo}\n\n---\n\n` : '') +
+    `Question: ${question}`
   const { text } = await callLLM({ system: ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer', arena }, { vaultRoot })
   return text
 }
@@ -118,14 +145,17 @@ function formatSkillsBlock (skills) {
  * With no skills it's just answerQuestion(). Any unexpected throw is the
  * caller's (peck.js's) to catch and downgrade.
  */
-async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill } = {}) {
+async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill, history = [] } = {}) {
   if (!skills || !skills.length) {
-    return { answer: await answerQuestion(question, pages, vaultRoot), steps: [] }
+    return { answer: await answerQuestion(question, pages, vaultRoot, { history }), steps: [] }
   }
 
   const byName = new Map(skills.map((s) => [s.name, s]))
   const system = ANSWER_WITH_SKILLS_SYSTEM_PROMPT + formatSkillsBlock(skills)
-  let transcript = `${formatPagesForPrompt(pages)}\n\n---\n\nQuestion: ${question}`
+  const convo = formatConversation(history)
+  let transcript = `${formatPagesForPrompt(pages)}\n\n---\n\n` +
+    (convo ? `${convo}\n\n---\n\n` : '') +
+    `Question: ${question}`
   const steps = []
 
   for (let turn = 0; turn <= MAX_SKILL_ITERATIONS; turn++) {
@@ -501,6 +531,7 @@ async function captureFacts (input, existingPages, vaultRoot) {
 module.exports = {
   extractKeyTerms,
   answerQuestion,
+  formatConversation,
   generateMeetingPrep,
   answerQuestionWithSkills,
   formatSkillsBlock,

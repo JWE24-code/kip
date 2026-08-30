@@ -22,6 +22,14 @@ The retrieval layer (this repo) and the desktop app
   in place; one that vanishes has its still-pending reminder pruned.
   Subscriptions live in `<graph>/.henhouse/calendars.json` (ICS URLs are
   bearer secrets). New dependency: `ical.js`.
+- **Peck remembers the last few turns** (kip-app#82) — `peckTurn` /
+  `chat.js` take a `--history` buffer of recent `{role, text}` turns.
+  A follow-up ("expand on that", "and their salary?", "the second one")
+  now resolves what it refers to: the recent turns are folded into
+  retrieval (so a question with no shared nouns still finds pages) and
+  passed to the answer as a *"Conversation so far"* block (marked
+  not-a-source). A bare continuation right after a Kip answer also
+  classifies as a question rather than a new fact. Session-only.
 
 ## [0.3.7] — 2026-08-30
 

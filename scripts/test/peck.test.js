@@ -184,6 +184,18 @@ test('classifyPeckInput — trailing ? or a leading question word is a question,
   assert.equal(classifyPeckInput(''), 'question')
 })
 
+test('classifyPeckInput — a bare follow-up after a Kip answer is a question (kip-app#82)', () => {
+  const afterAnswer = [{ role: 'user', text: 'what are the pricing tiers?' },
+    { role: 'assistant', text: 'There are three: Free, Pro, Team [[pricing]].' }]
+  for (const q of ['tell me more', 'the second one', 'what about Team', 'and the price?', 'why', 'says who']) {
+    assert.equal(classifyPeckInput(q, afterAnswer), 'question', q)
+  }
+  // with no history, the same short inputs still read as statements
+  assert.equal(classifyPeckInput('the second one'), 'statement')
+  // a real new fact after an answer is still a statement
+  assert.equal(classifyPeckInput('the CDO of CompanyX is John Doe', afterAnswer), 'statement')
+})
+
 test('captureFacts returns a safe default on unusable output', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -362,6 +374,32 @@ test('peckTurn — with no skills, only peck:answer is called (no skill-turn)', 
     assert.equal(r.answer, 'Per [[sleep]], sleep more.')
     assert.deepEqual(r.steps, [])
     assert.ok(!s.calls.some((c) => /Available skills:/.test(c)), 'no skills block was ever sent')
+  } finally { s.restore() }
+})
+
+test('peckTurn — a follow-up carries the conversation history into key-terms + the answer (kip-app#82)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'entities', 'acme', { type: 'entity', body: 'Acme pays $120k for the senior role.' })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({ keyTerms: '{"terms":["Acme","salary"]}', answer: 'Per [[acme]], $120k.' })
+  try {
+    const history = [
+      { role: 'user', text: 'what do we know about Acme?' },
+      { role: 'assistant', text: 'Acme is a prospective client [[acme]].' }
+    ]
+    const r = await peckTurn('and their salary?', { vaultRoot: root, history })
+    assert.equal(r.intent, 'question')
+    assert.equal(r.answer, 'Per [[acme]], $120k.')
+    // stubPeckFetch collects each call's joined system+user text in .calls
+    const keyTermsCall = s.calls.find((p) => /key search terms/i.test(p))
+    assert.ok(keyTermsCall && /Acme is a prospective client/.test(keyTermsCall) && /Current question: and their salary\?/.test(keyTermsCall),
+      'the key-terms prompt carried the recent turns + the follow-up')
+    const answerCall = s.calls.find((p) => !/key search terms/i.test(p) && !/told their personal wiki/i.test(p))
+    assert.ok(answerCall && /Conversation so far:/.test(answerCall) && /Acme is a prospective client/.test(answerCall),
+      'the answer prompt carried a "Conversation so far" block')
   } finally { s.restore() }
 })
 
