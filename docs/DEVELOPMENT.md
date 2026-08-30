@@ -346,10 +346,18 @@ equivalent server-side for `model:"auto"` picks.
 `:`-segment) routing headers; body is `{ model: "auto", max_tokens,
 messages }`. `baseUrl` defaults to `https://api.kip-ai.be`, overridable to
 a self-hosted backend. It reads the `X-Kip-Call-Id` response header and
-returns it as `callId` on `{ text, raw, callId }` — `callLLM` passes that
-through and records it in telemetry; every other connector returns
-`callId: null`. Contract: `JWE24-code/kip-backend` → `KIP-BACKEND.md`.
-Tested against a mocked `fetch` in `scripts/test/kip-connector.test.js`.
+returns it as `callId` on `{ text, raw, callId, arenaId }` — `callLLM`
+passes that through and records it in telemetry; every other connector
+returns `callId: null`. Contract: `JWE24-code/kip-backend` →
+`KIP-BACKEND.md`. Tested against a mocked `fetch` in
+`scripts/test/kip-connector.test.js`.
+
+A call carrying `arena: { compareToCallId }` (only `answerQuestion`, for a
+Peck regenerate — see below) goes to `{baseUrl}/v1/arena/completions`
+instead, with `compare_to_call_id` set so only candidate B runs. The
+response is `{ arena_id, origin, b: { …completion, kip_call_id }, a? }`;
+the connector returns B's text, `callId: b.kip_call_id`, and
+`arenaId: arena_id` (mirrored by the `X-Kip-Arena-Id` header).
 
 **Preference signals** (epic kip-app#73) — content-free feedback (behaviour,
 micro-ratings, blind arena) that tunes the managed router.
@@ -373,7 +381,16 @@ micro-ratings, blind arena) that tunes the managed router.
   `call_id/kind/behavior/edit_bucket`) — a stray `text`/`prompt`/`note`
   can't ride along. `installFeedbackPoster()` wires one to `telemetry` +
   a `beforeExit` flush; every CLI entrypoint calls it right after
-  `telemetry.reset()`.
+  `telemetry.reset()`. `postArenaVerdict(arenaId, winner, { vaultRoot })` is
+  the sibling one-shot for an arena A/B verdict (`winner` ∈
+  `a`/`b`/`tie`/`skip`) — POSTs to `{baseUrl}/v1/arena/<id>/verdict`; the
+  app drives it from its `:kipArena` IPC.
+- **The regenerate free-rider** — `peckTurn(input, { arenaCompareToCallId })`
+  / `chat.js --arena-compare-to <callId>` re-answers a question as arena
+  candidate B against the first answer. `answerFromPages` takes the plain
+  `answerQuestion` path for it (no skills — they add per-run variance that
+  muddies a model-vs-model comparison). The turn result carries `arenaId`;
+  the app shows a "was this better?" strip and posts the verdict.
 
 #### `groom.js` — coop health checks
 

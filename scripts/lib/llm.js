@@ -126,9 +126,15 @@ function assertConfigured (spec, resolved) {
 /**
  * The one entry point every caller uses. Routes to the connector named by
  * coop/.henhouse/llm.json / the PROVIDER env var (default "anthropic");
- * always resolves to the same shape: { text, raw, callId }. `callId` is the
- * managed backend's per-call id — set only by the kip connector, null for
- * every other provider — and is what preference signals reference (kip-app#73).
+ * always resolves to the same shape: { text, raw, callId, arenaId }. `callId`
+ * is the managed backend's per-call id — set only by the kip connector, null
+ * for every other provider — and is what preference signals reference
+ * (kip-app#73). `arenaId` is set only when `arena` was passed and the kip
+ * connector ran an A/B comparison — null otherwise.
+ *
+ * `arena` (optional): { compareToCallId } routes the call through the managed
+ * backend's arena endpoint as candidate B against an existing answer (the
+ * regenerate free-rider). Ignored by every non-kip connector.
  *
  * `overrides` (optional, second arg) is for tests only — real callers never
  * pass it: { AnthropicClient } to replace the Anthropic SDK class,
@@ -138,7 +144,7 @@ function assertConfigured (spec, resolved) {
  * `label` (optional) tags the call in scripts/lib/telemetry.js — e.g.
  * "hatch:propose", "hatch:generate:entity", "peck:answer".
  */
-async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label }, overrides = {}) {
+async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label, arena = null }, overrides = {}) {
   const vaultRoot = overrides.vaultRoot || DEFAULT_VAULT_ROOT
   const { spec, resolved } = resolveActive(vaultRoot, {
     anthropicClient: overrides.AnthropicClient,
@@ -146,7 +152,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
   })
   assertConfigured(spec, resolved)
 
-  const call = { system, prompt, json, maxTokens, label: label || null }
+  const call = { system, prompt, json, maxTokens, label: label || null, arena: arena || null }
   const ctx = {
     fetch: overrides.fetchImpl || fetch,
     signal: overrides.signal,
@@ -162,6 +168,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
   try {
     const result = await spec.complete(resolved, call, ctx)
     const callId = (result && result.callId) || null
+    const arenaId = (result && result.arenaId) || null
 
     const usage = extractUsage(result.raw)
     const reasoning = extractReasoning(result.raw)
@@ -172,6 +179,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
       ...common,
       model: realModel,
       callId,
+      arenaId,
       ms: Date.now() - started,
       ok: true,
       systemChars: (system || '').length,
@@ -185,7 +193,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label 
       responseText: result.text,
       reasoning
     })
-    return { ...result, callId }
+    return { ...result, callId, arenaId }
   } catch (err) {
     telemetry.record({
       ...common,

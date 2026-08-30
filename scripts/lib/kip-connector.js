@@ -20,6 +20,12 @@
 //   errors: 401 bad key · 402 plan/budget · 429 rate limit · 5xx upstream,
 //           OpenAI-shaped { error: { message, type, code } }.
 //   testConnection() uses GET {baseUrl}/v1/usage — auth-only, not routed.
+//
+//   Arena (kip-app#73): a call carrying call.arena goes to
+//   POST {baseUrl}/v1/arena/completions instead, with an optional
+//   compare_to_call_id (regen free-rider — only B is run). Response:
+//   { arena_id, origin, b{…completion, kip_call_id}, a? }; a later verdict
+//   goes to POST {baseUrl}/v1/arena/<arena_id>/verdict (see feedback-poster.js).
 
 const CONNECTOR_API = 1
 const DEFAULT_BASE_URL = 'https://api.kip-ai.be'
@@ -65,8 +71,7 @@ function networkError (url, err) {
   return e
 }
 
-async function post (baseUrl, apiKey, body, headers, doFetch, signal) {
-  const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`
+async function postJson (url, apiKey, body, headers, doFetch, signal) {
   let res
   try {
     res = await doFetch(url, {
@@ -93,13 +98,37 @@ async function post (baseUrl, apiKey, body, headers, doFetch, signal) {
     err.status = res.status
     throw err
   }
-  // The backend tags every completion with a call id; every later preference
-  // signal (rating / behaviour / arena verdict) references it. See kip-app#73.
-  const callId = (res.headers && typeof res.headers.get === 'function' && res.headers.get('x-kip-call-id')) || null
-  return { data: await res.json(), callId }
+  return res
 }
 
-/** The connector's complete(): one backend call, returns { text, raw, callId }. */
+const header = (res, name) =>
+  (res && res.headers && typeof res.headers.get === 'function' && res.headers.get(name)) || null
+
+async function post (baseUrl, apiKey, body, headers, doFetch, signal) {
+  const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`
+  const res = await postJson(url, apiKey, body, headers, doFetch, signal)
+  // The backend tags every completion with a call id; every later preference
+  // signal (rating / behaviour / arena verdict) references it. See kip-app#73.
+  return { data: await res.json(), callId: header(res, 'x-kip-call-id') }
+}
+
+/** POST {baseUrl}/v1/arena/completions — runs B (and A, unless compare_to_call_id
+ *  names an existing call) and returns the pair for a later verdict. See
+ *  kip-app#73 and KIP-BACKEND.md §3.5. Body: { arena_id, origin, b{…,kip_call_id},
+ *  a? }. The header X-Kip-Arena-Id mirrors body.arena_id. */
+async function postArena (baseUrl, apiKey, body, headers, doFetch, signal) {
+  const url = `${baseUrl.replace(/\/+$/, '')}/v1/arena/completions`
+  const res = await postJson(url, apiKey, body, headers, doFetch, signal)
+  const data = await res.json()
+  return { data, arenaId: data.arena_id || header(res, 'x-kip-arena-id') }
+}
+
+const completionText = (c) =>
+  (c && c.choices && c.choices[0] && c.choices[0].message && c.choices[0].message.content) || ''
+
+/** The connector's complete(): one backend call, returns
+ *  { text, raw, callId, arenaId }. `arenaId` is null unless call.arena asked
+ *  for an arena comparison (see kip-app#73). */
 async function callBackend (resolved, call, ctx) {
   const doFetch = (ctx && ctx.fetch) || fetch
   const signal = ctx && ctx.signal
@@ -118,6 +147,22 @@ async function callBackend (resolved, call, ctx) {
     messages: buildMessages(call.system, call.prompt)
   }
 
+  // Arena: run this call as candidate B against an existing answer (regen
+  // free-rider — kip-app#73). Text-only; the Peck answer call is the only
+  // caller and it isn't a JSON call.
+  if (call.arena) {
+    const arenaBody = { ...base }
+    if (call.arena.compareToCallId) arenaBody.compare_to_call_id = call.arena.compareToCallId
+    const { data, arenaId } = await postArena(baseUrl, resolved.apiKey, arenaBody, routingHeaders, doFetch, signal)
+    const b = data.b || {}
+    return {
+      text: String(completionText(b)).trim(),
+      raw: b,
+      callId: b.kip_call_id || null,
+      arenaId: arenaId || null
+    }
+  }
+
   let data, callId
   if (call.json) {
     try {
@@ -133,8 +178,8 @@ async function callBackend (resolved, call, ctx) {
     ({ data, callId } = await post(baseUrl, resolved.apiKey, base, routingHeaders, doFetch, signal))
   }
 
-  const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
-  return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data, callId: callId || null }
+  const raw = completionText(data)
+  return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data, callId: callId || null, arenaId: null }
 }
 
 /** GET {baseUrl}/v1/usage — auth-only, not routed, not plan-checked. The
@@ -216,5 +261,5 @@ module.exports = {
   },
 
   // exported for tests
-  _internals: { phaseOf, networkError, DEFAULT_BASE_URL }
+  _internals: { phaseOf, networkError, postArena, DEFAULT_BASE_URL }
 }

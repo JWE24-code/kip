@@ -7,6 +7,28 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.3.7] — 2026-08-30
+
+### The retrieval layer (`scripts/`)
+
+- **Preference signals** (epic kip-app#73) — content-free plumbing so the
+  managed backend can learn which model / workload pairings land. All of it
+  is inert unless the active provider is the `kip` connector.
+  - `callLLM` now resolves to `{ text, raw, callId, arenaId }`. The `kip`
+    connector reads `X-Kip-Call-Id` off every completion; every other
+    connector reports `null`.
+  - `telemetry.onFeedback` / `sendFeedback` — a closed enum/int sink
+    parallel to the full-text trace sink. `lib/feedback-poster.js` batches
+    those to `/v1/feedback` (best-effort, `unref`'d timer, capped flush,
+    re-checks the provider every enqueue) and is wired into every CLI
+    entrypoint.
+  - **Regenerate free-rider** — `chat.js --arena-compare-to <callId>` (and
+    `peckTurn({ arenaCompareToCallId })`) re-answers a question as arena
+    candidate B against the first answer, via `/v1/arena/completions`. The
+    turn result carries `arenaId`; `feedback-poster.postArenaVerdict()`
+    posts the A/B verdict. Skills are skipped on this path — a regenerate
+    is a clean model-vs-model comparison.
+
 ## [0.3.5] — 2026-08-30
 
 ### The retrieval layer (`scripts/`)

@@ -34,10 +34,13 @@ Answer using ONLY the information in these pages — do not use outside knowledg
 
 Cite every claim back to the specific page it came from using Logseq's wikilink syntax: [[exact-page-slug]], using the exact slug shown in each "### Page: <slug>" heading. Prefer citing inline, next to the claim it supports, over a single list of links at the end.`
 
-/** Answers a question against a set of candidate wiki pages, with [[slug]] citations. */
-async function answerQuestion (question, pages, vaultRoot) {
+/** Answers a question against a set of candidate wiki pages, with [[slug]]
+ *  citations. `arena` (optional): { compareToCallId } runs this as arena
+ *  candidate B against an earlier answer — the regenerate free-rider
+ *  (kip-app#73). Only meaningful on the managed kip connector. */
+async function answerQuestion (question, pages, vaultRoot, { arena = null } = {}) {
   const prompt = `${formatPagesForPrompt(pages)}\n\n---\n\nQuestion: ${question}`
-  const { text } = await callLLM({ system: ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer' }, { vaultRoot })
+  const { text } = await callLLM({ system: ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer', arena }, { vaultRoot })
   return text
 }
 

@@ -134,7 +134,7 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
  * can call them mid-answer — `steps` records what it ran. Skill discovery and
  * the whole tool loop are best-effort: a failure downgrades to a plain answer.
  */
-async function answerFromPages (question, pages, { fileToNest, vaultRoot }) {
+async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null }) {
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
 
@@ -147,7 +147,12 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot }) {
 
   let answer
   let steps = []
-  if (skills.length) {
+  if (arena) {
+    // A regenerate free-rider (kip-app#73): plain answer only. Skills add
+    // per-run variance that would muddy a model-vs-model comparison, and a
+    // regen is "answer this again, differently" — not "re-run the tool loop".
+    answer = await answerQuestion(question, pages, vaultRoot, { arena })
+  } else if (skills.length) {
     try {
       ({ answer, steps } = await answerQuestionWithSkills(question, pages, skills, vaultRoot))
     } catch (err) {
@@ -163,21 +168,24 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot }) {
   if (fileToNest) {
     await fileAnswerToNest(question, answer, candidateSlugs, vaultRoot)
   }
-  // The managed backend's id for the answer call, so the app can attach a
-  // preference signal (👍/👎, "was the regen better?") to it. null for every
-  // other provider. Read from telemetry (which already records callId per
-  // PR kip-app#73) rather than threaded through answerQuestion's string
-  // return — bounded to the calls THIS invocation just made.
-  return { answer, citedSlugs, candidateSlugs, steps, callId: answerCallIdSince(telemetryStart) }
+  // The managed backend's ids for the answer call, so the app can attach a
+  // preference signal (👍/👎, "was the regen better?") to it. Both null for
+  // every other provider. Read from telemetry (which already records callId /
+  // arenaId per PR kip-app#73) rather than threaded through answerQuestion's
+  // string return — bounded to the calls THIS invocation just made.
+  const { callId, arenaId } = answerCallSince(telemetryStart)
+  return { answer, citedSlugs, candidateSlugs, steps, callId, arenaId }
 }
 
-/** callId of the newest peck:answer* call at or after `startIdx` in telemetry, else null. */
-function answerCallIdSince (startIdx) {
+/** callId + arenaId of the newest peck:answer* call at or after `startIdx`. */
+function answerCallSince (startIdx) {
   const es = telemetry.entries()
   for (let i = es.length - 1; i >= startIdx; i--) {
-    if (es[i].callId && /^peck:answer/.test(es[i].label || '')) return es[i].callId
+    if (/^peck:answer/.test(es[i].label || '') && (es[i].callId || es[i].arenaId)) {
+      return { callId: es[i].callId || null, arenaId: es[i].arenaId || null }
+    }
   }
-  return null
+  return { callId: null, arenaId: null }
 }
 
 /**
@@ -220,15 +228,20 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  * afterward (e.g. after an interactive y/n prompt). fileToNest:true does the
  * whole transaction — search, answer, file, log — in one call.
  *
- * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], steps: Array, callId: string|null}}
+ * `arenaCompareToCallId` (optional): the callId of an earlier answer to this
+ * same question — routes the answer call through the managed backend's arena
+ * as candidate B (the regenerate free-rider, kip-app#73).
+ *
+ * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], steps: Array, callId: string|null, arenaId: string|null}}
  */
-async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT } = {}) {
+async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null } = {}) {
   const candidates = await retrieveCandidates(question, vaultRoot)
   if (candidates.length === 0 && !anySkills(vaultRoot)) {
     return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
   const pages = readPageBodies(vaultRoot, candidates)
-  return answerFromPages(question, pages, { fileToNest, vaultRoot })
+  const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
+  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena })
 }
 
 /**
@@ -243,7 +256,7 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */
-async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false } = {}) {
+async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null } = {}) {
   // An upcoming event the user wants reminding about ("I have a meeting Friday
   // at 15h", "remind me to …") — route to the skills path (the `reminders`
   // skill creates it), NOT fact-capture, which would file it as a nest page.
@@ -268,7 +281,8 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
   if (pages.length === 0 && !anySkills(vaultRoot)) {
     return { intent: 'question', answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
-  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot })) }
+  const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
+  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena })) }
 }
 
 module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs }

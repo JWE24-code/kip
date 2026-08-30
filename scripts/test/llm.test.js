@@ -374,6 +374,37 @@ test('callLLM: "kip" provider routes through the managed backend with routing he
   })
 })
 
+test('callLLM: arena regen threads arenaId + B\'s callId through and records them', async () => {
+  await withEnv({ PROVIDER: 'kip', KIP_API_KEY: 'kip_env', KIP_BASE_URL: 'http://lan.test:8080' }, async () => {
+    telemetry.reset()
+    const { impl, getLastCall } = fakeFetch(
+      { arena_id: 'arena_42', origin: 'regen',
+        b: { model: 'gpt-4o', choices: [{ message: { content: 'B answer' } }], kip_call_id: 'call_B' } },
+      { resHeaders: { 'x-kip-arena-id': 'arena_42' } })
+    const result = await callLLM(
+      { system: 's', prompt: 'p', label: 'peck:answer', arena: { compareToCallId: 'call_A' } },
+      { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+
+    assert.equal(getLastCall().url, 'http://lan.test:8080/v1/arena/completions')
+    assert.equal(JSON.parse(getLastCall().init.body).compare_to_call_id, 'call_A')
+    assert.equal(result.text, 'B answer')
+    assert.equal(result.callId, 'call_B')
+    assert.equal(result.arenaId, 'arena_42')
+
+    const e = telemetry.entries().at(-1)
+    assert.equal(e.callId, 'call_B')
+    assert.equal(e.arenaId, 'arena_42')
+  })
+})
+
+test('callLLM: a normal call reports arenaId: null', async () => {
+  await withEnv({ PROVIDER: 'local', LOCAL_MODEL: 'llama3.1' }, async () => {
+    const { impl } = fakeFetch({ choices: [{ message: { content: 'x' } }] })
+    const result = await callLLM({ system: 's', prompt: 'p' }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+    assert.equal(result.arenaId, null)
+  })
+})
+
 test('callLLM: "kip" provider needs a key', async () => {
   await withEnv({ PROVIDER: 'kip', KIP_API_KEY: undefined }, async () => {
     await assert.rejects(() => callLLM({ system: 's', prompt: 'p' }, { vaultRoot: EMPTY_VAULT }), /KIP_API_KEY/)

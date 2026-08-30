@@ -4,7 +4,8 @@
 //   telemetry.onFeedback(feedback.enqueue)
 //   // ... and `await feedback.flush()` once before it exits
 // or the electron main process drives `enqueue` straight from its
-// kipFeedback IPC.
+// kipFeedback IPC. postArenaVerdict() is the sibling one-shot for an arena
+// A/B verdict (the electron kipArena IPC).
 //
 // Rules (from the epic):
 //   - kip provider only — enqueue() and flush() no-op otherwise (checked
@@ -81,6 +82,35 @@ async function postFeedback (signal, { vaultRoot, fetchImpl, logger = console } 
   return { ok: await postBody(target, clean, doFetch, debugWith(logger)) }
 }
 
+const ARENA_WINNERS = new Set(['a', 'b', 'tie', 'skip'])
+
+/**
+ * One-shot: POST a verdict on an arena comparison (kip-app#73). For the
+ * electron main process's kipArena IPC. `winner` must be "a" | "b" | "tie" |
+ * "skip"; anything else, a blank arenaId, or a non-kip provider resolves
+ * { ok: false } without a request. Never throws.
+ */
+async function postArenaVerdict (arenaId, winner, { vaultRoot, fetchImpl, logger = console } = {}) {
+  if (typeof arenaId !== 'string' || !arenaId) return { ok: false }
+  if (!ARENA_WINNERS.has(winner)) return { ok: false }
+  const target = preferenceSignalsTarget(vaultRoot)
+  if (!target) return { ok: false }
+  const doFetch = fetchImpl || ((...a) => fetch(...a))
+  const debug = debugWith(logger)
+  try {
+    const res = await doFetch(`${target.baseUrl}/v1/arena/${encodeURIComponent(arenaId)}/verdict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${target.apiKey}` },
+      body: JSON.stringify({ winner })
+    })
+    if (res && !res.ok) debug(`${res.status} for arena verdict`)
+    return { ok: !!(res && res.ok) }
+  } catch (err) {
+    debug((err && err.message) || String(err))
+    return { ok: false }
+  }
+}
+
 function createFeedbackPoster ({
   vaultRoot,
   fetchImpl,
@@ -155,4 +185,4 @@ function installFeedbackPoster (opts = {}) {
   return poster
 }
 
-module.exports = { createFeedbackPoster, installFeedbackPoster, postFeedback, sanitizeSignal }
+module.exports = { createFeedbackPoster, installFeedbackPoster, postFeedback, postArenaVerdict, sanitizeSignal }

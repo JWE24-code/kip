@@ -7,8 +7,12 @@
 //
 // Prints the peckTurn() result as JSON to stdout; the provider banner goes to
 // stderr so stdout stays pure JSON for the caller.
-//   { intent: "question",  answer, citedSlugs, candidateSlugs, steps }
+//   { intent: "question",  answer, citedSlugs, candidateSlugs, steps, callId, arenaId }
 //   { intent: "statement", learned, note, pages?, candidateSlugs }
+//
+// callId / arenaId are the managed backend's ids for the answer call (both
+// null on any other provider). arenaId is set only for a --arena-compare-to
+// regenerate; a verdict on it goes back via the app's :kipArena IPC.
 //
 // `steps` (question only) is what the skills tool loop ran, if anything:
 //   [{ skill, input, ok, ms, outputPreview }, ...].
@@ -35,12 +39,17 @@ const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const traceOn = process.argv.includes('--trace') || process.env.KIP_PECK_TRACE === '1'
 
 async function main () {
-  const input = process.argv.slice(2).find((a) => !a.startsWith('--'))
+  const args = process.argv.slice(2)
+  const input = args.find((a) => !a.startsWith('--'))
   if (!input || !input.trim()) {
-    console.error('Usage: node scripts/chat.js "your question — or a fact to remember" [--trace]')
+    console.error('Usage: node scripts/chat.js "your question — or a fact to remember" [--trace] [--arena-compare-to <callId>]')
     process.exitCode = 1
     return
   }
+  // A regenerate on the managed backend (kip-app#73): re-answer this question
+  // as arena candidate B against the first answer's callId.
+  const acIdx = args.indexOf('--arena-compare-to')
+  const arenaCompareToCallId = acIdx >= 0 ? args[acIdx + 1] : null
 
   console.error(describeProvider())
 
@@ -60,7 +69,7 @@ async function main () {
   reporter.flush(true)
 
   try {
-    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT })
+    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId })
     reporter.flush(false)
     reporter.writeMetrics()
     reporter.close()

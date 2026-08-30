@@ -395,6 +395,50 @@ test('peckTurn — a question carries the managed backend callId (null for other
   } finally { s.restore() }
 })
 
+test('peckTurn — a regenerate (arenaCompareToCallId) routes the answer through the arena', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'notes on sleep' })
+  rebuildRoost(root)
+
+  const original = global.fetch
+  t.after(() => { global.fetch = original })
+
+  saveLLMConfig({ provider: 'kip', providers: { kip: { apiKey: 'kip_x', baseUrl: 'http://lan.test:3000' } } }, root)
+  let arenaCall = null
+  global.fetch = async (url, init) => {
+    const body = JSON.parse(init.body)
+    if (/\/v1\/arena\/completions$/.test(url)) {
+      arenaCall = { url, body }
+      return {
+        ok: true, status: 200,
+        headers: new Headers({ 'x-kip-arena-id': 'arena_1' }),
+        json: async () => ({
+          arena_id: 'arena_1', origin: 'regen',
+          b: { choices: [{ message: { content: 'A better take, per [[sleep]].' }, finish_reason: 'stop' }], kip_call_id: 'call_B' }
+        })
+      }
+    }
+    // key-terms call still goes to /v1/chat/completions
+    return { ok: true, status: 200, headers: new Headers({ 'x-kip-call-id': 'call_terms' }), json: async () => ({ choices: [{ message: { content: '{"terms":["sleep"]}' }, finish_reason: 'stop' }] }) }
+  }
+
+  const r = await peckTurn('what about sleep?', { vaultRoot: root, arenaCompareToCallId: 'call_A' })
+  assert.equal(r.intent, 'question')
+  assert.equal(r.answer, 'A better take, per [[sleep]].')
+  assert.equal(r.arenaId, 'arena_1')
+  assert.equal(r.callId, 'call_B', 'callId is the regenerated answer\'s own id')
+  assert.ok(arenaCall, 'the answer call went to /v1/arena/completions')
+  assert.equal(arenaCall.body.compare_to_call_id, 'call_A')
+
+  // no arenaCompareToCallId -> normal path, arenaId null
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], rest.' })
+  try {
+    const r2 = await peckTurn('what about sleep?', { vaultRoot: root })
+    assert.equal(r2.arenaId, null, 'no arena on a plain turn')
+  } finally { s.restore() }
+})
+
 test('peckTurn — an upcoming-event statement routes to the reminders skill, not fact capture', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

@@ -88,6 +88,47 @@ test('complete json:true: callId survives the prompt-and-strip 400 retry', async
   assert.equal(res.callId, 'call_retry')
 })
 
+test('complete: non-arena calls report arenaId: null', async () => {
+  const { impl } = fakeFetch(reply('hi'))
+  const res = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
+  assert.equal(res.arenaId, null)
+})
+
+test('complete arena: routes to /v1/arena/completions with compare_to_call_id', async () => {
+  const arenaBody = {
+    arena_id: 'arena_9',
+    origin: 'regen',
+    b: { ...reply('the regenerated answer'), kip_call_id: 'call_B' }
+  }
+  const { impl, last } = fakeFetch(arenaBody, { resHeaders: { 'x-kip-arena-id': 'arena_9' } })
+  const res = await kip.complete(RESOLVED,
+    { system: 'sys', prompt: 'q', maxTokens: 4096, label: 'peck:answer', arena: { compareToCallId: 'call_A' } },
+    { fetch: impl })
+
+  assert.equal(last().url, 'http://lan.test:8080/v1/arena/completions')
+  assert.equal(last().body.compare_to_call_id, 'call_A')
+  assert.equal(last().body.model, 'auto')
+  assert.equal(last().headers['X-Kip-Workload'], 'peck:answer')
+  assert.equal(res.text, 'the regenerated answer')
+  assert.equal(res.callId, 'call_B', 'callId is candidate B\'s own kip_call_id')
+  assert.equal(res.arenaId, 'arena_9')
+})
+
+test('complete arena: arenaId falls back to the X-Kip-Arena-Id header', async () => {
+  const arenaBody = { origin: 'regen', b: { ...reply('x'), kip_call_id: 'call_B' } } // no arena_id in body
+  const { impl } = fakeFetch(arenaBody, { resHeaders: { 'x-kip-arena-id': 'arena_hdr' } })
+  const res = await kip.complete(RESOLVED,
+    { prompt: 'q', maxTokens: 10, arena: { compareToCallId: 'call_A' } }, { fetch: impl })
+  assert.equal(res.arenaId, 'arena_hdr')
+})
+
+test('complete arena: a plan-check failure throws like any other backend error', async () => {
+  const { impl } = fakeFetch({ error: { message: 'plan limit reached' } }, { ok: false, status: 402 })
+  await assert.rejects(
+    kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10, arena: { compareToCallId: 'call_A' } }, { fetch: impl }),
+    /402.*plan limit/)
+})
+
 test('complete: no label -> no routing headers', async () => {
   const { impl, last } = fakeFetch(reply('ok'))
   await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
