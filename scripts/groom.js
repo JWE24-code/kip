@@ -27,6 +27,7 @@ const {
 const { describeProvider } = require('./lib/llm')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
+const { installFeedbackPoster } = require('./lib/feedback-poster')
 
 const MAX_CONTRADICTION_GROUP_SIZE = 6
 const DEEP_CONTRADICTION_GROUP_SIZE = 12
@@ -468,6 +469,7 @@ async function main () {
     console.error('  deep groom — many LLM calls, can take several minutes')
     const roostDir = path.join(vaultRoot, '.roost')
     telemetry.reset()
+    installFeedbackPoster({ vaultRoot })
     reporter = createRunReporter({
       dir: roostDir,
       progressFile: path.join(roostDir, 'groom-progress.json'),

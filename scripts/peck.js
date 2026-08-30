@@ -19,6 +19,7 @@ const { describeProvider } = require('./lib/llm')
 const { DEFAULT_VAULT_ROOT } = require('./lib/paths')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
+const { installFeedbackPoster } = require('./lib/feedback-poster')
 
 const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const traceOn = process.argv.includes('--trace') || process.env.KIP_PECK_TRACE === '1'
@@ -35,6 +36,7 @@ async function main () {
   console.error(describeProvider())
 
   telemetry.reset()
+  installFeedbackPoster({ vaultRoot })
   const reporter = createRunReporter({
     dir: ROOST_DIR,
     progressFile: path.join(ROOST_DIR, 'peck-progress.json'),

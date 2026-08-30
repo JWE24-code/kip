@@ -78,9 +78,12 @@ scripts/
 │   ├── kip-connector.js # the managed-backend "kip" connector (AGPL, built-in)
 │   ├── preference-signals.js # the "is the kip connector active" gate — every
 │   │                # preference-signal surface (kip-app#73) checks it
+│   ├── feedback-poster.js # batches content-free preference signals and POSTs
+│   │                # them to the managed backend; kip-only, best-effort
 │   ├── untar.js    # zero-dep npm-tarball (.tgz) extractor for connector install
 │   ├── telemetry.js # per-run LLM-call timing/token recorder every callLLM()
 │   │                # feeds; content-free summary() + opt-in full-text trace
+│   │                # + onFeedback sink for preference signals (kip-app#73)
 │   ├── prompts.js  # prompt content built on callLLM(): extractKeyTerms,
 │   │                # answerQuestion, answerQuestionWithSkills (the Peck tool
 │   │                # loop), flagContradictions, proposeAndDraftPages, ...
@@ -348,15 +351,29 @@ through and records it in telemetry; every other connector returns
 `callId: null`. Contract: `JWE24-code/kip-backend` → `KIP-BACKEND.md`.
 Tested against a mocked `fetch` in `scripts/test/kip-connector.test.js`.
 
-**Preference signals** (`lib/preference-signals.js`, epic kip-app#73) —
-content-free feedback (behaviour, micro-ratings, blind arena) that tunes
-the managed router. `preferenceSignalsEnabled(vaultRoot)` is the one gate:
-true only when the active provider is `kip`. `preferenceSignalsTarget()`
-hands back its resolved `{ baseUrl, apiKey }` (or null) for the
-`/v1/feedback` and `/v1/arena/*` POSTs. The renderer reaches this through
-an IPC shim. Everything downstream — block marking, the rating widget, the
-behaviour watcher, the arena UI, the batching poster — is gated on it, so
-a direct Anthropic/OpenAI/DeepSeek/local provider sees none of it.
+**Preference signals** (epic kip-app#73) — content-free feedback (behaviour,
+micro-ratings, blind arena) that tunes the managed router.
+
+- `lib/preference-signals.js` — `preferenceSignalsEnabled(vaultRoot)` is the
+  one gate: true only when the active provider is `kip`.
+  `preferenceSignalsTarget()` hands back its resolved `{ baseUrl, apiKey }`
+  (or null) for the `/v1/feedback` and `/v1/arena/*` POSTs. The renderer
+  reaches this through an IPC shim. Everything downstream — block marking,
+  the rating widget, the behaviour watcher, the arena UI — is gated on it,
+  so a direct Anthropic/OpenAI/DeepSeek/local provider sees none of it.
+- `telemetry.onFeedback(fn)` / `telemetry.sendFeedback(signal)` — a sink
+  parallel to `onTrace`, but for closed enum/int signals only (`reset()`
+  clears it too).
+- `lib/feedback-poster.js` — `createFeedbackPoster({ vaultRoot })` →
+  `{ enqueue, flush, stop }`: batches, auto-flushes every 5 s on an
+  `unref()`'d timer, `flush()` is capped at 1 s, and it re-checks
+  `preferenceSignalsTarget` on every enqueue/flush so switching provider
+  mid-run stops it. `sanitizeSignal` reduces a signal to the wire field set
+  (`rating`: `call_id/kind/score/scale`; `behavior`:
+  `call_id/kind/behavior/edit_bucket`) — a stray `text`/`prompt`/`note`
+  can't ride along. `installFeedbackPoster()` wires one to `telemetry` +
+  a `beforeExit` flush; every CLI entrypoint calls it right after
+  `telemetry.reset()`.
 
 #### `groom.js` — coop health checks
 

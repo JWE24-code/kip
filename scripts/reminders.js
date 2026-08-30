@@ -24,6 +24,7 @@ const { generateMeetingPrep } = require('./lib/prompts')
 const { DEFAULT_VAULT_ROOT } = require('./lib/paths')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
+const { installFeedbackPoster } = require('./lib/feedback-poster')
 const {
   addReminder, listReminders, cancelReminder, setReminderSound, dueReminders, markNotified,
   loadReminders, describeReminder, fmtWhen, fmtLead
@@ -61,6 +62,7 @@ async function runDue () {
   if (!due.length) { out({ fired: [] }, 'Nothing due.'); return }
 
   telemetry.reset()
+  installFeedbackPoster({ vaultRoot: DEFAULT_VAULT_ROOT })
   const reporter = createRunReporter({
     dir: ROOST_DIR,
     progressFile: path.join(ROOST_DIR, 'reminders-progress.json'),

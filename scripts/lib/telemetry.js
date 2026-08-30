@@ -10,13 +10,15 @@
 
 let records = []
 let traceSink = null
+let feedbackSink = null
 let phaseStack = []
 
-/** Clears everything, including any registered trace sink. Call at run start. */
+/** Clears everything, including the trace and feedback sinks. Call at run start. */
 function reset () {
   records = []
   phaseStack = []
   traceSink = null
+  feedbackSink = null
 }
 
 function currentPhase () {
@@ -66,6 +68,28 @@ function record (rec) {
 /** Register (or clear, with null) the full-text trace sink. */
 function onTrace (fn) {
   traceSink = fn || null
+}
+
+/**
+ * Register (or clear, with null) the preference-signal sink (kip-app#73).
+ * Separate from onTrace: this one carries ONLY closed enum/int signals —
+ * `{ call_id, kind, score?/scale?/behavior?/edit_bucket? }` — never prompt,
+ * response, or edit text. Wired by the entrypoints to lib/feedback-poster.
+ */
+function onFeedback (fn) {
+  feedbackSink = fn || null
+}
+
+/**
+ * Emit one content-free preference signal. Best-effort and fire-and-forget:
+ * a missing or throwing sink never disturbs the run. No-op unless a sink is
+ * registered (which lib/feedback-poster only does for the kip provider).
+ */
+function sendFeedback (signal) {
+  if (!feedbackSink || !signal) return
+  try {
+    feedbackSink(signal)
+  } catch { /* best-effort — never let a signal break a run */ }
 }
 
 function num (x) {
@@ -127,4 +151,4 @@ function entries () {
   return records.map((e) => ({ ...e }))
 }
 
-module.exports = { reset, withPhase, record, onTrace, currentPhase, summary, entries }
+module.exports = { reset, withPhase, record, onTrace, onFeedback, sendFeedback, currentPhase, summary, entries }

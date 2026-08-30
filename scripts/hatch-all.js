@@ -30,6 +30,7 @@ const { pendingSourcesSummary, hatchAllSources, proposeNextPending, commitReview
 const { DEFAULT_VAULT_ROOT } = require('./lib/paths')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
+const { installFeedbackPoster } = require('./lib/feedback-poster')
 
 const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const PROGRESS_FILE = path.join(ROOST_DIR, 'hatch-progress.json')
@@ -116,6 +117,7 @@ async function main () {
   }
 
   telemetry.reset()
+  installFeedbackPoster({ vaultRoot: DEFAULT_VAULT_ROOT })
   reporter = createRunReporter({
     dir: ROOST_DIR, progressFile: PROGRESS_FILE, metricsFile: METRICS_FILE, traceFile: TRACE_FILE, traceOn
   })

@@ -9,7 +9,7 @@
     "peck": "node scripts/peck.js",
     "groom": "node scripts/groom.js",
     "hatch": "node scripts/hatch.js",
-    "test": "node --test scripts/test/roost.test.js scripts/test/pages.test.js scripts/test/groom.test.js scripts/test/llm.test.js scripts/test/connectors.test.js scripts/test/untar.test.js scripts/test/kip-connector.test.js scripts/test/preference-signals.test.js scripts/test/hatch.test.js scripts/test/peck.test.js scripts/test/telemetry.test.js scripts/test/whiteboard.test.js scripts/test/skills.test.js scripts/test/web-search.test.js scripts/test/reminders.test.js"
+    "test": "node --test scripts/test/roost.test.js scripts/test/pages.test.js scripts/test/groom.test.js scripts/test/llm.test.js scripts/test/connectors.test.js scripts/test/untar.test.js scripts/test/kip-connector.test.js scripts/test/preference-signals.test.js scripts/test/feedback-poster.test.js scripts/test/hatch.test.js scripts/test/peck.test.js scripts/test/telemetry.test.js scripts/test/whiteboard.test.js scripts/test/skills.test.js scripts/test/web-search.test.js scripts/test/reminders.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.0",
