@@ -6,6 +6,7 @@
 // in scripts/lib/llm.js — nothing here is provider-specific.
 const { callLLM } = require('./llm')
 const { runSkill, parseSkillCall, scrubInput } = require('./skills')
+const { parseWebSearchOutput } = require('./web-sources')
 
 // --- conversation context (kip-app#82) --------------------------------------
 // A short buffer of recent Peck turns so a follow-up ("expand on that", "and
@@ -147,7 +148,7 @@ function formatSkillsBlock (skills) {
  */
 async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill, history = [] } = {}) {
   if (!skills || !skills.length) {
-    return { answer: await answerQuestion(question, pages, vaultRoot, { history }), steps: [] }
+    return { answer: await answerQuestion(question, pages, vaultRoot, { history }), steps: [], webSearches: [] }
   }
 
   const byName = new Map(skills.map((s) => [s.name, s]))
@@ -157,6 +158,7 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
     (convo ? `${convo}\n\n---\n\n` : '') +
     `Question: ${question}`
   const steps = []
+  const webSearches = []   // parsed results of every web-search run this turn (kip-app#81)
 
   for (let turn = 0; turn <= MAX_SKILL_ITERATIONS; turn++) {
     const { text, raw } = await callLLM({
@@ -170,7 +172,7 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
     // No <use_skill> tag (⇒ text is the final answer), or the model was cut
     // off (⇒ answer with what came back rather than loop on a partial tag).
     if (!call || responseWasTruncated(raw)) {
-      return { answer: text, steps }
+      return { answer: text, steps, webSearches }
     }
 
     // model still wants a tool on the last allowed turn — force a final answer
@@ -181,7 +183,7 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
         maxTokens: 4096,
         label: 'peck:answer:final'
       }, { vaultRoot })
-      return { answer: final, steps }
+      return { answer: final, steps, webSearches }
     }
 
     const skill = byName.get(call.name)
@@ -204,12 +206,18 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
       ms: res.ms,
       outputPreview: (res.output || res.error || '').replace(/\s+/g, ' ').trim().slice(0, 500)
     })
+    // Any skill whose output is a web-search result list (the built-in
+    // web-search, or a user's own) — capture it as a savable source (kip-app#81).
+    if (res.ok) {
+      const parsed = parseWebSearchOutput(res.output)
+      if (parsed && parsed.results.length) webSearches.push(parsed)
+    }
     const body = res.ok ? String(res.output || '').slice(0, 6000) : `ERROR: ${res.error}`
     transcript += `\n\n<skill_result name="${skill.name}" ok="${res.ok}">\n${body}\n</skill_result>\nCall another skill or write your final answer now.`
   }
 
   // unreachable (the turn === MAX branch returns), but be safe
-  return { answer: await answerQuestion(question, pages, vaultRoot), steps }
+  return { answer: await answerQuestion(question, pages, vaultRoot), steps, webSearches }
 }
 
 /**

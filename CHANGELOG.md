@@ -30,6 +30,11 @@ The retrieval layer (this repo) and the desktop app
   passed to the answer as a *"Conversation so far"* block (marked
   not-a-source). A bare continuation right after a Kip answer also
   classifies as a question rather than a new fact. Session-only.
+- **Web-search results can be kept** (kip-app#81) — when Peck runs the
+  `web-search` skill to answer a question, the turn result now carries a
+  `webSource` (front-matter + the result list, ready for `eggs/`). The app
+  offers to save it, so a search you found useful becomes reference material
+  in the nest instead of vanishing with the turn. `lib/web-sources.js`.
 
 ## [0.3.7] — 2026-08-30
 

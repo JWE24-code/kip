@@ -341,6 +341,49 @@ test('peckTurn — the model calls a skill, then answers with its output', async
   } finally { s.restore() }
 })
 
+test('peckTurn — a web-search run comes back as a hatchable webSource (kip-app#81)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'topic', { type: 'concept', body: 'placeholder' })
+  rebuildRoost(root)
+  // a graph-local fixture named web-search (overrides the built-in), emitting
+  // the built-in's output format. Set the skills-config *before* the fixture
+  // so writeFixtureSkill's setSkillApproval isn't clobbered.
+  onlyFixtureSkills(root, ['web-search'])
+  writeFixtureSkill(root, 'web-search',
+    'console.log(`Results for "latest on X" (via duckduckgo):\\n\\n- [A page](https://a.test) — a snippet\\n- [B page](https://b.test) — b snippet`)')
+
+  const s = stubPeckFetch({
+    keyTerms: '{"terms":["topic"]}',
+    answerFn: (sys) => !/<skill_result name="web-search"/.test(sys)
+      ? '<use_skill name="web-search">{"query":"latest on X"}</use_skill>'
+      : 'Per the web, A and B (via web-search).'
+  })
+  try {
+    const r = await peckTurn('what is the latest on X?', { vaultRoot: root })
+    assert.equal(r.intent, 'question')
+    assert.ok(r.webSource, 'the turn carries a webSource')
+    assert.match(r.webSource.filename, /^web-search-\d{4}-\d{2}-\d{2}-what-is-the-latest-on-x\.md$/)
+    assert.match(r.webSource.content, /source: web-search/)
+    assert.match(r.webSource.content, /\[A page\]\(https:\/\/a\.test\)/)
+    assert.match(r.webSource.content, /\[B page\]\(https:\/\/b\.test\)/)
+  } finally { s.restore() }
+})
+
+test('peckTurn — no web-search, no webSource', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'notes on sleep' })
+  rebuildRoost(root)
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], rest.' })
+  try {
+    const r = await peckTurn('what about sleep?', { vaultRoot: root })
+    assert.equal(r.webSource, null)
+  } finally { s.restore() }
+})
+
 test('peckTurn — a failing skill does not break the answer', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
