@@ -22,6 +22,7 @@ const { extractKeyTerms, answerQuestion, answerQuestionWithSkills, captureFacts 
 const { discoverSkills } = require('./skills')
 const { looksLikeReminder } = require('./reminders')
 const { DEFAULT_VAULT_ROOT } = require('./paths')
+const telemetry = require('./telemetry')
 
 const BROAD_SEARCH_LIMIT = 15
 const CAPTURE_TYPES = new Set(['entity', 'concept'])
@@ -135,6 +136,7 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
  */
 async function answerFromPages (question, pages, { fileToNest, vaultRoot }) {
   const candidateSlugs = pages.map((p) => p.slug)
+  const telemetryStart = telemetry.entries().length
 
   let skills = []
   try {
@@ -161,7 +163,21 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot }) {
   if (fileToNest) {
     await fileAnswerToNest(question, answer, candidateSlugs, vaultRoot)
   }
-  return { answer, citedSlugs, candidateSlugs, steps }
+  // The managed backend's id for the answer call, so the app can attach a
+  // preference signal (👍/👎, "was the regen better?") to it. null for every
+  // other provider. Read from telemetry (which already records callId per
+  // PR kip-app#73) rather than threaded through answerQuestion's string
+  // return — bounded to the calls THIS invocation just made.
+  return { answer, citedSlugs, candidateSlugs, steps, callId: answerCallIdSince(telemetryStart) }
+}
+
+/** callId of the newest peck:answer* call at or after `startIdx` in telemetry, else null. */
+function answerCallIdSince (startIdx) {
+  const es = telemetry.entries()
+  for (let i = es.length - 1; i >= startIdx; i--) {
+    if (es[i].callId && /^peck:answer/.test(es[i].label || '')) return es[i].callId
+  }
+  return null
 }
 
 /**
@@ -204,7 +220,7 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  * afterward (e.g. after an interactive y/n prompt). fileToNest:true does the
  * whole transaction — search, answer, file, log — in one call.
  *
- * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], steps: Array}}
+ * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], steps: Array, callId: string|null}}
  */
 async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT } = {}) {
   const candidates = await retrieveCandidates(question, vaultRoot)

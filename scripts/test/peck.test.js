@@ -365,6 +365,36 @@ test('peckTurn — with no skills, only peck:answer is called (no skill-turn)', 
   } finally { s.restore() }
 })
 
+test('peckTurn — a question carries the managed backend callId (null for other providers)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'notes on sleep' })
+  rebuildRoost(root)
+
+  const original = global.fetch
+  t.after(() => { global.fetch = original })
+
+  // kip connector, backend tags the answer call
+  saveLLMConfig({ provider: 'kip', providers: { kip: { apiKey: 'kip_x', baseUrl: 'http://lan.test:3000' } } }, root)
+  global.fetch = async (url, init) => {
+    const sys = JSON.parse(init.body).messages.map((m) => m.content).join('\n')
+    const content = /key search terms/.test(sys) ? '{"terms":["sleep"]}' : 'Per [[sleep]], rest.'
+    const callId = /key search terms/.test(sys) ? 'call_terms' : 'call_answer'
+    return { ok: true, status: 200, headers: new Headers({ 'x-kip-call-id': callId }), json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }) }
+  }
+  const r = await peckTurn('what about sleep?', { vaultRoot: root })
+  assert.equal(r.intent, 'question')
+  assert.equal(r.callId, 'call_answer', 'the peck:answer call id, not the key-terms one')
+
+  // a plain provider: same shape, callId null
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], rest.' })
+  try {
+    const r2 = await peckTurn('what about sleep?', { vaultRoot: root })
+    assert.equal(r2.callId, null)
+  } finally { s.restore() }
+})
+
 test('peckTurn — an upcoming-event statement routes to the reminders skill, not fact capture', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
