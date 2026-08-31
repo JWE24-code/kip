@@ -53,6 +53,19 @@ never edits them. (A `whiteboards/*.edn` board becomes a deterministic
 text outline plus a one-call LLM "Context" section; the rest go through the
 full multi-call LLM hatch.)
 
+**Office / PDF sources** (`scripts/lib/office.js`, kip-app#91) — a `.docx`,
+`.xlsx`/`.xls`/`.csv`, `.pptx` or `.pdf` dropped into `eggs/` is converted to
+a compact Markdown sibling (`<stem>.md`) *before* the hatch scan sees it —
+Word keeps headings/lists/tables (`mammoth`), a spreadsheet becomes one table
+per sheet (`xlsx`), a deck becomes per-slide bullets + notes (`pizzip`), a PDF
+its text layer (`pdf-parse`). The scan then skips the original and hatches the
+`.md`. `convertPendingOfficeSources()` runs at the top of `hatchAllSources`,
+`proposeNextPending` and `pendingSourcesSummary`, is idempotent (mtime check),
+and collects per-file failures rather than throwing. `scripts/office-extract.js`
+is the standalone CLI (`--json` / `--stdout`); the app shells out to it on drop
+so the `.md` appears immediately. Legacy `.doc`/`.ppt`/OpenDocument are rejected
+with a "re-save as .docx" hint.
+
 The whole `coop/` tree here is just the default the CLI scripts use. The
 Kip app operates on **whatever folder you open as your graph** — see
 "Pointing it at a coop" below.

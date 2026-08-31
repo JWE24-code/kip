@@ -14,6 +14,7 @@ const {
 const { resolvePage } = require('./pages')
 const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, describeWhiteboard } = require('./prompts')
 const { parseWhiteboard, whiteboardToOutline } = require('./whiteboard')
+const { isSupported: isOfficeFile, convertFile: convertOfficeFile, markdownNameFor } = require('./office')
 const { DEFAULT_VAULT_ROOT, eggsPath, nestPath, TYPE_DIRS } = require('./paths')
 
 const VALID_TYPES = new Set(Object.keys(TYPE_DIRS))
@@ -279,6 +280,37 @@ function meaningfulTextLength (raw) {
 }
 
 /**
+ * Turn every Office / PDF file dropped into eggs/ into a Markdown sibling
+ * (scripts/lib/office.js) so the normal source scan can read it. Idempotent —
+ * an up-to-date `<stem>.md` is left alone. Best-effort per file: a conversion
+ * failure is collected, not thrown.
+ *
+ * Runs before every hatch entry point (hatchAllSources, proposeNextPending,
+ * pendingSourcesSummary) so a `.docx` synced in through Dropbox, or added by
+ * `office-extract.js`, or dropped in the app all end up hatched the same way.
+ *
+ * @returns {{converted: Array<{source, kind}>, failed: Array<{source, error}>}}
+ */
+async function convertPendingOfficeSources (vaultRoot = DEFAULT_VAULT_ROOT) {
+  const eggsDir = eggsPath(vaultRoot)
+  if (!fs.existsSync(eggsDir)) return { converted: [], failed: [] }
+
+  const converted = []
+  const failed = []
+  for (const entry of fs.readdirSync(eggsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || entry.name.startsWith('.') || !isOfficeFile(entry.name)) continue
+    const absPath = path.join(eggsDir, entry.name)
+    try {
+      const r = await convertOfficeFile(absPath, path.join(eggsDir, markdownNameFor(entry.name)))
+      if (!r.skipped) converted.push({ source: entry.name, kind: r.kind })
+    } catch (err) {
+      failed.push({ source: entry.name, error: (err && err.message) || String(err) })
+    }
+  }
+  return { converted, failed }
+}
+
+/**
  * The deterministic half of "Hatch sources": scans the coop's source dirs
  * (eggs/, journals/, pages/, whiteboards/) and buckets every file. No LLM,
  * no writes.
@@ -309,6 +341,10 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
       if (!entry.isFile() || entry.name.startsWith('.')) continue
       const name = entry.name.toLowerCase()
       if (board ? !name.endsWith('.edn') : (root !== 'eggs' && !name.endsWith('.md'))) continue
+      // An Office/PDF file in eggs/ is a *source for* conversion, not a source
+      // to hatch — convertPendingOfficeSources() turns it into a .md sibling
+      // that this scan then picks up on its own. See hatch-all.js / the app.
+      if (root === 'eggs' && isOfficeFile(name)) continue
 
       const absPath = path.join(dir, entry.name)
       const relPath = `${root}/${entry.name}`
@@ -333,14 +369,17 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
 /**
  * Preview for the "Hatch sources" UI — what a run would touch, with no LLM
  * calls. `totalKb` is the combined size of `pending`, a rough proxy for how
- * much a full run will cost.
+ * much a full run will cost. Converts any pending Office/PDF file first so it
+ * shows up as its `.md`; `conversionFailed` lists the ones that wouldn't.
  */
-function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {}) {
+async function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {}) {
+  const conv = await convertPendingOfficeSources(vaultRoot)
   const { pending, oversized, empty } = collectPendingSources(vaultRoot, opts)
   return {
     pending: pending.map((p) => ({ source: humanizeFilename(p.absPath), kind: p.kind, kb: Math.round(p.bytes / 1024) })),
     oversized: oversized.map((o) => ({ source: o.relPath, kb: Math.round(o.bytes / 1024) })),
     empty,
+    conversionFailed: conv.failed,
     totalKb: Math.round(pending.reduce((sum, p) => sum + p.bytes, 0) / 1024)
   }
 }
@@ -373,6 +412,7 @@ function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {}) {
  */
 async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
   { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, onProgress = () => {}, combined = true } = {}) {
+  const conversion = await convertPendingOfficeSources(vaultRoot)
   const { pending, oversized, empty } = collectPendingSources(vaultRoot, { roots })
   const batch = pending.slice(0, limit)
 
@@ -416,9 +456,14 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
 
   if (hatched.length) regenerateIndexMd(vaultRoot)
 
+  // A file that couldn't be converted (a corrupt .docx, a scanned-image PDF)
+  // is a failure the user should see, same as a bad hatch.
+  for (const f of conversion.failed) failed.push({ source: f.source, error: `couldn't convert: ${f.error}`, ms: 0 })
+
   return {
     hatched,
     failed,
+    converted: conversion.converted,
     oversized: oversized.map((o) => ({ source: o.relPath, kb: Math.round(o.bytes / 1024) })),
     empty,
     remaining: Math.max(0, pending.length - batch.length)
@@ -439,6 +484,7 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
  */
 async function proposeNextPending (vaultRoot = DEFAULT_VAULT_ROOT,
   { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, skip = 0, combined = true } = {}) {
+  await convertPendingOfficeSources(vaultRoot)
   const { pending } = collectPendingSources(vaultRoot, { roots })
   const capped = pending.slice(0, limit)
   const file = capped[skip]
@@ -523,6 +569,7 @@ module.exports = {
   meaningfulTextLength,
   mapLimit,
   collectPendingSources,
+  convertPendingOfficeSources,
   pendingSourcesSummary,
   hatchAllSources,
   hatchWhiteboard,
