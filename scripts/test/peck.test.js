@@ -405,6 +405,50 @@ test('peckTurn — a web-search run comes back as a hatchable webSource (kip-app
   } finally { s.restore() }
 })
 
+test('peckTurn — nest miss falls back to a web search (kip-app#93)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'globex', { type: 'concept', body: 'Globex is a client we onboarded in Q2.' })
+  writePage(root, 'concepts', 'globex-project', { type: 'concept', body: 'The Globex project timeline.' })
+  rebuildRoost(root)
+  onlyFixtureSkills(root, ['web-search'])
+  writeFixtureSkill(root, 'web-search',
+    'console.log(`Results for "Globex CEO" (via duckduckgo):\\n\\n- [Globex leadership](https://globex.test/about) — Jane Roe is the CEO`)')
+
+  // the nest pages mention Globex but not its CEO -> the plain answer is
+  // NO_ANSWER, then the web answer takes over.
+  const s = stubPeckFetch({
+    keyTerms: '{"terms":["Globex","CEO"]}',
+    answerFn: (sys) => /Web search results:/.test(sys)
+      ? 'Jane Roe is the CEO of Globex (via web search).'
+      : 'NO_ANSWER'
+  })
+  try {
+    const r = await peckTurn('who is the CEO of Globex?', { vaultRoot: root })
+    assert.equal(r.intent, 'question')
+    assert.match(r.answer, /Jane Roe/)
+    assert.ok(r.webSource, 'the web results are offered as a hatchable source')
+    assert.deepEqual(r.citedSlugs, [], 'no nest pages were cited')
+  } finally { s.restore() }
+})
+
+test('peckTurn — nest miss with no web search available returns a null answer', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'globex', { type: 'concept', body: 'Globex is a client.' })
+  writePage(root, 'concepts', 'globex-two', { type: 'concept', body: 'More on Globex.' })
+  rebuildRoost(root)
+  // makeTempVault already disabled every bundled skill, web-search included.
+  const s = stubPeckFetch({ keyTerms: '{"terms":["Globex"]}', answerFn: () => 'NO_ANSWER' })
+  try {
+    const r = await peckTurn('who is the CEO of Globex?', { vaultRoot: root })
+    assert.equal(r.answer, null)
+    assert.equal(r.webSource, null)
+  } finally { s.restore() }
+})
+
 test('peckTurn — no web-search, no webSource', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

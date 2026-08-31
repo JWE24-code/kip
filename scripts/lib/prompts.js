@@ -50,13 +50,35 @@ function formatPagesForPrompt (pages) {
     .join('\n\n---\n\n')
 }
 
+// Emitted verbatim by the answer model when the retrieved pages don't hold the
+// answer — peck.js catches it and falls back to a web search (kip-app#93).
+const NO_ANSWER_TOKEN = 'NO_ANSWER'
+const NO_ANSWER_RE = /^\s*NO_ANSWER\b/i
+/** True when an answer string is the model's "the pages don't cover this" signal. */
+function isNoAnswer (text) {
+  return NO_ANSWER_RE.test(String(text || ''))
+}
+
 const ANSWER_SYSTEM_PROMPT = `You are answering a question from a personal wiki — a second brain for journaling, goals, and health tracking. You are given the full text of the wiki pages retrieved as candidates for this question.
 
-Answer using ONLY the information in these pages — do not use outside knowledge, and do not speculate beyond what's written. If the pages don't contain enough information to answer, say so plainly rather than guessing.
+Answer using ONLY the information in these pages — do not use outside knowledge, and do not speculate beyond what's written.
+
+If the pages don't contain enough to answer, reply with exactly this on its own line and nothing else:
+${NO_ANSWER_TOKEN}
+Do not guess, apologise, or explain — just the token. (Something else will take it from there.)
 
 If a "Conversation so far" section is present, it is only there to tell you what a follow-up question refers to — it is NOT a source, so never cite it or treat it as fact.
 
 Cite every claim back to the specific page it came from using Logseq's wikilink syntax: [[exact-page-slug]], using the exact slug shown in each "### Page: <slug>" heading. Prefer citing inline, next to the claim it supports, over a single list of links at the end.`
+
+const WEB_ANSWER_SYSTEM_PROMPT = `The user asked their personal notes a question, but the notes didn't contain the answer, so a web search was run. You are given the search results.
+
+Answer the question from these results. Keep it tight and factual. Attribute a claim to its source inline as "(via web search)" and include the most useful URL when it helps.
+
+If the results don't actually answer the question either, reply with exactly this on its own line and nothing else:
+${NO_ANSWER_TOKEN}
+
+Do not cite anything with [[wikilink]] syntax here — these are web pages, not nest pages.`
 
 /** Answers a question against a set of candidate wiki pages, with [[slug]]
  *  citations. `arena` (optional): { compareToCallId } runs this as arena
@@ -69,6 +91,20 @@ async function answerQuestion (question, pages, vaultRoot, { arena = null, histo
     (convo ? `${convo}\n\n---\n\n` : '') +
     `Question: ${question}`
   const { text } = await callLLM({ system: ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer', arena, onStream }, { vaultRoot })
+  return text
+}
+
+/** Answer a question from web-search results (the nest didn't have it,
+ *  kip-app#93). `resultsText` is the web-search skill's markdown output.
+ *  Returns the answer, or the NO_ANSWER token if the web didn't help either. */
+async function answerFromWeb (question, resultsText, vaultRoot, { history = [], onStream = null } = {}) {
+  const convo = formatConversation(history)
+  const prompt = `Web search results:\n\n${resultsText}\n\n---\n\n` +
+    (convo ? `${convo}\n\n---\n\n` : '') +
+    `Question: ${question}`
+  const { text } = await callLLM(
+    { system: WEB_ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer:web', onStream },
+    { vaultRoot })
   return text
 }
 
@@ -545,6 +581,9 @@ async function captureFacts (input, existingPages, vaultRoot) {
 module.exports = {
   extractKeyTerms,
   answerQuestion,
+  answerFromWeb,
+  isNoAnswer,
+  NO_ANSWER_TOKEN,
   formatConversation,
   generateMeetingPrep,
   answerQuestionWithSkills,

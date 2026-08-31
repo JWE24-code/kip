@@ -7,6 +7,19 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Peck falls back to a web search when your notes don't have the answer**
+  (kip-app#93) — the answer model now signals `NO_ANSWER` when the retrieved
+  pages can't answer the question; `peck.js` catches it, runs the bundled
+  `web-search` skill, and answers from the results (`answerFromWeb`). The web
+  results are still offered as a savable source. Skipped for a regenerate
+  (arena) and when a skill already searched the web that turn; falls through
+  to the old "nothing in your nest" state when web search is disabled or comes
+  back empty.
+
 ## [0.4.2] — 2026-08-31
 
 ### The retrieval layer (`scripts/`)

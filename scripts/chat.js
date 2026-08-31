@@ -49,13 +49,19 @@ const VALUE_FLAGS = new Set(['--arena-compare-to', '--history'])
 // panel polls.
 const STREAM_WRITE_MS = 120
 
-/** True while the buffer still might be a `<use_skill …>` tag rather than prose
- *  — the skills tool loop streams every turn, and a tool-call turn must show
- *  nothing. Once real prose diverges from the tag prefix this goes false. */
-function looksLikePartialSkillTag (text) {
+/** True while the buffer is still empty or could be the opening of a control
+ *  token the answer model emits — a `<use_skill …>` tool call or `NO_ANSWER`
+ *  (the "not in the nest" signal peck.js catches to fall back to a web search).
+ *  Suppress the partial bubble until the text diverges into real prose. */
+function looksLikeControlToken (text) {
   const s = String(text || '').replace(/^\s+/, '').toLowerCase()
   if (!s) return true
-  return s.startsWith('<use_skill') || '<use_skill'.startsWith(s.slice(0, 10))
+  // a <use_skill> tag: '<' is rare at the start of a real answer, so match it
+  // as a prefix freely.
+  if (s.startsWith('<use_skill') || '<use_skill'.startsWith(s.slice(0, 10))) return true
+  // NO_ANSWER: 'no' is a plausible real answer, so only hold back while the
+  // buffer is still a whitespace-free prefix of the token.
+  return !/\s/.test(s) && 'no_answer'.startsWith(s)
 }
 
 async function main () {
@@ -108,7 +114,7 @@ async function main () {
   const onStream = (chunk, first) => {
     if (first) streamBuf = ''
     streamBuf += chunk
-    if (looksLikePartialSkillTag(streamBuf)) return
+    if (looksLikeControlToken(streamBuf)) return
     const now = Date.now()
     if (now - lastStreamWrite < STREAM_WRITE_MS) return
     lastStreamWrite = now

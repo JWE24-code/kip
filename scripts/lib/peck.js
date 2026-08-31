@@ -18,9 +18,9 @@ const matter = require('gray-matter')
 
 const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSlugs } = require('./roost')
 const { resolvePage } = require('./pages')
-const { extractKeyTerms, answerQuestion, answerQuestionWithSkills, captureFacts } = require('./prompts')
-const { discoverSkills } = require('./skills')
-const { buildWebSource } = require('./web-sources')
+const { extractKeyTerms, answerQuestion, answerQuestionWithSkills, answerFromWeb, isNoAnswer, captureFacts } = require('./prompts')
+const { discoverSkills, runSkill } = require('./skills')
+const { buildWebSource, parseWebSearchOutput } = require('./web-sources')
 const { looksLikeReminder } = require('./reminders')
 const { DEFAULT_VAULT_ROOT } = require('./paths')
 const telemetry = require('./telemetry')
@@ -216,8 +216,24 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
     answer = await answerQuestion(question, pages, vaultRoot, { history, onStream })
   }
 
-  const citedSlugs = extractCitedSlugs(answer, candidateSlugs)
-  if (fileToNest) {
+  // The nest didn't cover it → search the web and answer from that
+  // (kip-app#93). Not for arena (keeps a model-vs-model compare clean), and
+  // not when a skill already web-searched this turn.
+  let webbed = false
+  if (isNoAnswer(answer)) {
+    if (!arena && !webSearches.length) {
+      const web = await webFallback(question, vaultRoot, { history, onStream })
+      answer = web.answer
+      webSearches = web.webSearches
+      steps = [...steps, ...web.steps]
+      webbed = webSearches.length > 0
+    } else {
+      answer = null
+    }
+  }
+
+  const citedSlugs = answer ? extractCitedSlugs(answer, candidateSlugs) : []
+  if (fileToNest && answer && !webbed) {
     await fileAnswerToNest(question, answer, candidateSlugs, vaultRoot)
   }
   // The managed backend's ids for the answer call, so the app can attach a
@@ -230,6 +246,43 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // (kip-app#81) — the app shows a "save these" affordance on the answer.
   const webSource = buildWebSource(question, webSearches);
   return { answer, citedSlugs, candidateSlugs, steps, callId, arenaId, webSource: webSource || null }
+}
+
+/**
+ * Auto web-search fallback (kip-app#93): run the bundled `web-search` skill on
+ * the question, then answer from its results. Returns { answer, webSearches }.
+ * `answer` is null when web search isn't available/enabled or returned nothing;
+ * a short honest line when it ran but didn't produce a clear answer.
+ */
+async function webFallback (question, vaultRoot, { history = [], onStream = null } = {}) {
+  let skill
+  try {
+    skill = discoverSkills(vaultRoot).find((s) => s.name === 'web-search')
+  } catch { /* discovery failed — treat as no web search */ }
+  if (!skill) return { answer: null, webSearches: [], steps: [] }
+
+  let res
+  try {
+    res = await runSkill(skill, { query: question }, vaultRoot)
+  } catch (err) {
+    console.error(`Warning: the web-search fallback failed (${err.message}).`)
+    return { answer: null, webSearches: [], steps: [] }
+  }
+
+  const preview = ((res && (res.output || res.error)) || '').replace(/\s+/g, ' ').trim().slice(0, 200)
+  const step = { skill: 'web-search', input: { query: question }, ok: !!(res && res.ok), ms: (res && res.ms) || 0, outputPreview: preview }
+  const parsed = res && res.ok ? parseWebSearchOutput(res.output) : null
+  if (!parsed || !parsed.results.length) return { answer: null, webSearches: [], steps: [step] }
+
+  const answer = await answerFromWeb(question, res.output, vaultRoot, { history, onStream })
+  if (isNoAnswer(answer)) {
+    return {
+      answer: "I couldn't find this in your notes, and a quick web search didn't turn up a clear answer either — try rephrasing?",
+      webSearches: [parsed],
+      steps: [step]
+    }
+  }
+  return { answer, webSearches: [parsed], steps: [step] }
 }
 
 /** callId + arenaId of the newest peck:answer* call at or after `startIdx`. */

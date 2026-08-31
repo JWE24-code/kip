@@ -256,6 +256,19 @@ a "save these" affordance on the answer and writes it via the existing
 `buildWebSource`). v1 saves the list + snippets; full page-text fetch is a
 follow-up.
 
+**Auto web-search fallback** (kip-app#93) — `ANSWER_SYSTEM_PROMPT` now tells
+the model to reply with the bare token `NO_ANSWER` when the retrieved pages
+don't cover the question. `peck.js` `answerFromPages` catches it (`isNoAnswer`)
+and calls `webFallback()`: run the bundled `web-search` skill on the question,
+then `answerFromWeb()` (a web-oriented `ANSWER_SYSTEM_PROMPT` sibling) over the
+results. Skipped for arena and when a skill already web-searched this turn.
+The web results still flow into `webSource` (kip-app#81) and a synthetic
+`web-search` step shows in the ⚙ line. If web search is disabled or returns
+nothing the answer is `null` (the app's "not in your nest" state); if it ran
+but didn't produce a clear answer, a short honest line. `chat.js` suppresses a
+partial `NO_ANSWER` from the live stream the same way it holds back a partial
+`<use_skill>` tag.
+
 **Streamed answers** (kip-app#88) — `callLLM({ …, onStream })` takes an
 optional `onStream(chunk, first)`. `llm.js` passes it to the connector as
 `ctx.onDelta` **only for non-json calls**; a json call needs the whole
