@@ -22,12 +22,20 @@ function toMatchQuery (query) {
     .join(' OR ')
 }
 
+// Keep any Unicode letter or digit — a nest can be in any language, and
+// stripping to [a-z0-9] turned "Größe" into "gr-e" and "北京会議" into "" (an
+// empty slug, i.e. a broken page). Punctuation and whitespace still collapse
+// to a single dash. An all-punctuation / emoji title falls back to a short
+// stable hash so the slug is never empty. (kip-app#97)
 function slugify (title) {
-  return title
+  const s = String(title == null ? '' : title)
+    .normalize('NFC')
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '')
+  if (s) return s
+  return 'page-' + crypto.createHash('sha1').update(String(title == null ? '' : title)).digest('hex').slice(0, 8)
 }
 
 function humanize (slug) {

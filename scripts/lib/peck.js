@@ -59,7 +59,31 @@ function mightNeedSkill (question, pageCount) {
 //     me" verb (make/create/summarize/…) — the last so "build me a deck from the
 //     Q3 sheet" reaches the skills tool loop instead of the fact-capture path.
 //   statement: anything else.
-const QUESTION_START_RE = /^\s*(who|what|whats|when|where|why|how|which|whose|whom|is|are|was|were|do|does|did|can|could|should|would|will|have|has|had|am|tell me|remind me|show me|list|give me|find|search|look up|any\b|make|create|build|generate|draft|write|compose|produce|prepare|compile|convert|summari[sz]e|turn)\b/i
+// Interrogatives / question openers. English, plus the main Latin-script
+// languages (DE/NL/FR/ES/IT/PT) — a nest in another language would otherwise
+// have every question that lacks a trailing "?" filed as a fact (kip-app#97).
+const QUESTION_START_RE = new RegExp('^\\s*(?:' + [
+  // EN
+  'who|what|whats|when|where|why|how|which|whose|whom|is|are|was|were|do|does|did|can|could|should|would|will|have|has|had|am',
+  'tell me|remind me|show me|list|give me|find|search|look up|any\\b',
+  'make|create|build|generate|draft|write|compose|produce|prepare|compile|convert|summari[sz]e|turn',
+  // DE
+  'wer|was|wann|wo|warum|wieso|weshalb|wie|welche[rs]?|wessen|ist|sind|war|waren|hat|haben|kann|können|soll|wird|gibt es|zeig mir|erstelle|fasse?\\b|zusammenfass',
+  // NL
+  'wie|wat|wanneer|waar|waarom|hoe|welke?|is|zijn|was|waren|heeft|hebben|kan|kun(?:nen)?|moet|toon|maak|vat samen|geef',
+  // FR
+  'qui|que|quoi|quel(?:le)?s?|quand|où|pourquoi|comment|combien|est-ce|montre|résume|fais|liste|donne|cherche',
+  // ES
+  'qui[eé]n(?:es)?|qu[eé]|cu[aá]l(?:es)?|cu[aá]ndo|d[oó]nde|ad[oó]nde|por qu[eé]|c[oó]mo|cu[aá]nto[sa]?|mu[eé]strame|resume|haz|lista|busca|dame',
+  // IT
+  'chi|che|cosa|quale|quali|quando|dove|perch[eé]|come|quanto[ei]?|mostrami|riepiloga|fai|elenca|cerca',
+  // PT
+  'quem|que|qual|quais|quando|onde|aonde|por que|porqu[eê]|como|quanto[sa]?|mostre|resuma|fa[çc]a|liste|busque'
+].join('|') + ')\\b', 'i')
+
+// Any question mark anywhere — trailing is the common case, but "Globex, wer
+// ist der CEO?" and fullwidth / inverted marks count too.
+const QUESTION_MARK_RE = /[?？¿؟]/
 
 // A short input right after a Kip answer that reads as "keep going" rather
 // than a new fact — treat these as a question even without a '?' or a
@@ -71,7 +95,7 @@ const CONTINUATION_RE = /^\s*(and\b|also\b|what about|how about|tell me more|say
 function classifyPeckInput (input, history = []) {
   const t = String(input || '').trim()
   if (!t) return 'question'
-  if (t.endsWith('?') || QUESTION_START_RE.test(t)) return 'question'
+  if (QUESTION_MARK_RE.test(t) || QUESTION_START_RE.test(t)) return 'question'
   const lastWasAnswer = Array.isArray(history) && history.length &&
     history[history.length - 1] && history[history.length - 1].role === 'assistant'
   if (lastWasAnswer && CONTINUATION_RE.test(t)) return 'question'

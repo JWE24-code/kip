@@ -209,7 +209,9 @@ node scripts/peck.js "the CDO of CompanyX is John Doe"      # a fact to remember
 ```
 
 `scripts/lib/peck.js`'s `peckTurn(input, {fileToNest, vaultRoot})`
-classifies the input (`classifyPeckInput`) and dispatches:
+classifies the input (`classifyPeckInput` — a fast heuristic: a `?` anywhere,
+or a leading interrogative / imperative in English or one of the main
+Latin-script languages, DE/NL/FR/ES/IT/PT — kip-app#97) and dispatches:
 
 - **A question** → `askQuestion`: search, read the candidate pages, ask the
   LLM for a `{answer, citedSlugs, candidateSlugs}` with `[[slug]]` citations.
