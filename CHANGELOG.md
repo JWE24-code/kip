@@ -28,6 +28,18 @@ The retrieval layer (this repo) and the desktop app
   so the app can render it live. In the skills tool loop every turn streams;
   a turn that turns out to be a `<use_skill>` tag is held back by the
   consumer until the text proves to be prose.
+- **Office & PDF documents as Hatch sources** (kip-app#91) — new
+  `scripts/lib/office.js` + `scripts/office-extract.js` CLI convert a `.docx`,
+  `.xlsx` / `.xls` / `.csv`, `.pptx` or `.pdf` into compact Markdown: Word
+  keeps its headings / lists / tables (`mammoth`), a workbook becomes one
+  Markdown table per sheet (`xlsx`), a deck becomes per-slide bullets plus
+  speaker notes (`pizzip`), a PDF its text layer (`pdf-parse`). Hatch runs the
+  conversion automatically for anything in `eggs/` (idempotent; the original
+  is left in place, the `.md` sibling is what gets hatched), so a document
+  synced in via Dropbox or added by the app all land the same way — and the
+  LLM reads a few KB of prose instead of megabytes of zipped XML. Legacy
+  `.doc` / `.ppt` / OpenDocument are rejected with a "re-save as .docx" hint.
+  New deps: `mammoth`, `pdf-parse`.
 
 ## [0.4.0] — 2026-08-31
 

@@ -84,7 +84,7 @@ function parseSkip () {
 
 async function main () {
   if (process.argv.includes('--preview')) {
-    console.log(JSON.stringify(pendingSourcesSummary(DEFAULT_VAULT_ROOT)))
+    console.log(JSON.stringify(await pendingSourcesSummary(DEFAULT_VAULT_ROOT)))
     return
   }
 
