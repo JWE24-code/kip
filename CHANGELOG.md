@@ -19,6 +19,17 @@ The retrieval layer (this repo) and the desktop app
   (arena) and when a skill already searched the web that turn; falls through
   to the old "nothing in your nest" state when web search is disabled or comes
   back empty.
+- **Peck works in other languages** (kip-app#97) — two Latin-script bugs:
+  - `classifyPeckInput` only recognised a question by a trailing `?` or an
+    *English* question word, so a German / French / Spanish / … question
+    typed without a `?` was classified as a *statement* and filed into the
+    nest as a fact instead of being answered. It now also matches a `?`
+    anywhere and the interrogatives / imperatives of DE, NL, FR, ES, IT, PT.
+  - `slugify` stripped every non-ASCII character, turning "Größe" into
+    `gr-e` and "北京会議" into an empty (broken) slug. It now keeps any
+    Unicode letter or digit, and an all-punctuation title falls back to a
+    short stable hash. Existing ASCII slugs are unchanged; only pages
+    hatched from non-English titles from here on get the better slug.
 
 ## [0.4.2] — 2026-08-31
 

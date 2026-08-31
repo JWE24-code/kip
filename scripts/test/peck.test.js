@@ -218,6 +218,30 @@ test('classifyPeckInput — trailing ? or a leading question word is a question,
   assert.equal(classifyPeckInput(''), 'question')
 })
 
+test('classifyPeckInput — non-English questions without a "?" still classify as questions (kip-app#97)', () => {
+  const questions = [
+    'Wer leitet das Atlas-Projekt',            // DE
+    'Was weiß ich über Schlaf',                // DE
+    'Wie ist der Zeitplan für Q3',             // DE
+    'Wie is de CEO van Globex',                // NL
+    'Wat weet ik over slaap',                  // NL
+    'Qui est le PDG de Globex',                // FR
+    'Résume mes notes de sommeil',             // FR (imperative)
+    'Quién es el director de Globex',          // ES
+    'Muéstrame mis notas de la reunión',       // ES (imperative)
+    'Chi guida il progetto Atlas',             // IT
+    'Quem lidera o projeto Atlas',             // PT
+    'Globex — wer ist eigentlich der CEO? danke' // "?" mid-string
+  ]
+  for (const q of questions) assert.equal(classifyPeckInput(q), 'question', q)
+
+  // genuine declaratives in other languages are still statements
+  for (const s of ['Der neue CDO von CompanyX ist John Doe', 'De lucht is blauw',
+    'Le ciel est bleu', 'CompanyX ha spostato la sede a Rotterdam']) {
+    assert.equal(classifyPeckInput(s), 'statement', s)
+  }
+})
+
 test('classifyPeckInput — a bare follow-up after a Kip answer is a question (kip-app#82)', () => {
   const afterAnswer = [{ role: 'user', text: 'what are the pricing tiers?' },
     { role: 'assistant', text: 'There are three: Free, Pro, Team [[pricing]].' }]
@@ -338,6 +362,26 @@ test('peckTurn — a question is answered and (fileToNest:false) writes nothing'
     assert.deepEqual(r.citedSlugs, ['sleep-hygiene'])
     assert.deepEqual(fs.readdirSync(path.join(root, 'nest', 'concepts')).sort(), ['sleep-hygiene.md'], 'no answer page filed')
     assert.deepEqual(fs.readdirSync(path.join(root, 'clucks')), [], 'an unfiled question is not logged')
+  } finally { s.restore() }
+})
+
+test('peckTurn — a German question with no "?" is answered, not filed as a fact (kip-app#97)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'schlafhygiene', { type: 'concept', tags: [], body: 'Konsistente Schlafenszeit, keine Bildschirme vor dem Schlafengehen.' })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({
+    keyTerms: '{"terms": ["Schlaf", "Schlafhygiene"]}',
+    answer: 'Laut [[schlafhygiene]]: konsistente Schlafenszeit.'
+  })
+  try {
+    const r = await peckTurn('Was weiß ich über Schlaf', { vaultRoot: root })
+    assert.equal(r.intent, 'question', 'classified as a question, not a statement')
+    assert.match(r.answer, /Schlafenszeit/)
+    // nothing was filed as a "learned" fact
+    assert.deepEqual(fs.readdirSync(path.join(root, 'nest', 'concepts')).sort(), ['schlafhygiene.md'])
   } finally { s.restore() }
 })
 

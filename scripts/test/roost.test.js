@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { searchPages, findSimilarSlug, getPage, appendLog, recentClucks, regenerateIndexMd } = require('../lib/roost')
+const { searchPages, findSimilarSlug, getPage, appendLog, recentClucks, regenerateIndexMd, slugify } = require('../lib/roost')
 
 function makeTempVault () {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-test-'))
@@ -27,6 +27,24 @@ function writePage (root, dir, slug, { type, tags = [], body = '' }) {
   ].join('\n')
   fs.writeFileSync(path.join(root, 'nest', dir, `${slug}.md`), frontmatter + body + '\n')
 }
+
+test('slugify — ASCII unchanged, Unicode letters kept, never empty (kip-app#97)', () => {
+  // ASCII behaviour is exactly as before
+  assert.equal(slugify('Sleep Hygiene'), 'sleep-hygiene')
+  assert.equal(slugify('  Q3 Planning!!  '), 'q3-planning')
+  assert.equal(slugify('A/B test'), 'a-b-test')
+  // non-English letters and digits survive instead of collapsing to dashes
+  assert.equal(slugify('Größe'), 'größe')
+  assert.equal(slugify('Café-Notizen'), 'café-notizen')
+  assert.equal(slugify('Réunion budget'), 'réunion-budget')
+  assert.equal(slugify('北京会議'), '北京会議')
+  assert.equal(slugify('Año nuevo'), 'año-nuevo')
+  // an all-punctuation / emoji title falls back to a stable non-empty hash
+  const h = slugify('🎉🎊')
+  assert.match(h, /^page-[0-9a-f]{8}$/)
+  assert.equal(slugify('🎉🎊'), h, 'the fallback is deterministic')
+  assert.equal(slugify(''), slugify(''))
+})
 
 test('rebuildRoost + searchPages + findSimilarSlug + clucks', async (t) => {
   const root = makeTempVault()
