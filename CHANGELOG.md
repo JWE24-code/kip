@@ -7,6 +7,19 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Faster Peck** — a turn used to make two-plus serial LLM calls no matter
+  what. Now: the key-term expansion pass is skipped when the direct
+  full-text search already found enough pages (≥ 3), and the skills tool
+  loop is skipped — along with its bigger prompt — unless a skill is
+  plausibly needed (retrieval was thin, or the question asks for
+  current/external info or a generated document). Both are recoverable with
+  Regenerate. Most "what do I know about X" questions now cost a single LLM
+  call.
+
 ## [0.4.0] — 2026-08-31
 
 ### The retrieval layer (`scripts/`)

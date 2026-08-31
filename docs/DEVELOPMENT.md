@@ -198,11 +198,20 @@ node scripts/peck.js "the CDO of CompanyX is John Doe"      # a fact to remember
 `scripts/lib/peck.js`'s `peckTurn(input, {fileToNest, vaultRoot})`
 classifies the input (`classifyPeckInput`) and dispatches:
 
-- **A question** → `askQuestion`: search (direct + key-term pass, unioned),
-  read the candidate pages, ask the LLM for a `{answer, citedSlugs,
-  candidateSlugs}` with `[[slug]]` citations. The CLI prints it and asks
-  (y/n) whether to file it as a `concept` page; the app does not file
-  answers.
+- **A question** → `askQuestion`: search, read the candidate pages, ask the
+  LLM for a `{answer, citedSlugs, candidateSlugs}` with `[[slug]]` citations.
+  The CLI prints it and asks (y/n) whether to file it as a `concept` page;
+  the app does not file answers.
+  - *Retrieval* is a direct FTS pass plus — **only if the direct pass found
+    fewer than `DIRECT_HIT_CONFIDENCE` (3)** — an LLM key-term expansion pass,
+    unioned. Skipping the expansion when the direct search is already
+    confident saves a round-trip.
+  - *The skills tool loop* (`answerQuestionWithSkills`) is entered **only when
+    `mightNeedSkill(question, pageCount)`** — retrieval was thin (< 2 pages)
+    or the question matches `SKILL_HINT_RE` (asks for current/external info,
+    a generated document, or a Kip action). Otherwise it's a plain
+    `answerQuestion` — one call, small prompt. A wrong skip is recoverable
+    with the app's Regenerate.
 - **A statement** → `captureFacts` + `fileCapturedFacts`: it files the fact
   onto the relevant existing page (appended under a dated `_Update_`
   section) or plainly creates an `entity`/`concept` page — same

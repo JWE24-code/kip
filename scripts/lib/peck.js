@@ -28,6 +28,29 @@ const telemetry = require('./telemetry')
 const BROAD_SEARCH_LIMIT = 15
 const CAPTURE_TYPES = new Set(['entity', 'concept'])
 
+// Latency: both the key-term expansion pass and the skills tool loop cost an
+// LLM round-trip. Skip each when it's very unlikely to change the answer.
+
+// The direct FTS search already found this many ranked hits -> skip the LLM
+// key-term pass (it mostly earns its keep when the question shares few nouns
+// with the nest).
+const DIRECT_HIT_CONFIDENCE = 3
+
+// The question plausibly needs a skill (external/current info, a generated
+// document, a Kip action). Retrieval being thin also triggers the skills path.
+const SKILL_HINT_RE = new RegExp(
+  '\\b(latest|current(?:ly)?|today|tonight|recent(?:ly)?|nowadays|as of \\d|up[- ]?to[- ]?date|this (?:week|month|year))\\b' +
+  '|\\b(?:search|look ?up|google|web ?search|find (?:online|on the web)|on the (?:web|internet))\\b' +
+  '|\\bnews\\b|\\bweather\\b|\\bprice of\\b|\\bstock price\\b|\\bwho (?:won|is winning|leads)\\b|\\bscore of\\b' +
+  '|\\b(?:make|create|draft|generate|build|produce|compose|prepare|export|convert|turn)\\b[^.?!]{0,50}' +
+    '\\b(?:doc|document|word|\\.docx|deck|slides?|presentation|powerpoint|\\.pptx|spreadsheet|sheet|excel|\\.xlsx|\\.csv|chart|graph|report|email|letter|brief)\\b' +
+  '|\\b(?:hatch|groom|rebuild[- ]?roost|coop status|open settings)\\b',
+  'i')
+
+function mightNeedSkill (question, pageCount) {
+  return pageCount < 2 || SKILL_HINT_RE.test(String(question || ''))
+}
+
 // A Peck turn is a 'question' (answer it — running a skill first if that helps)
 // or a 'statement' (a fact to file into the nest). Heuristic on purpose: fast,
 // free, deterministic, and not at the mercy of a weak model mis-reading a plain
@@ -99,11 +122,15 @@ async function retrieveCandidates (question, vaultRoot, { history = [] } = {}) {
     .slice(-3).map((t) => t.text).join(' ')
   const direct = searchPages(`${recentUser} ${question}`.trim(), {}, vaultRoot)
 
+  // Skip the LLM key-term pass when the direct search already found enough —
+  // one fewer round-trip per turn, and a tighter set of pages to answer over.
   let keyTerms = []
-  try {
-    keyTerms = await extractKeyTerms(question, vaultRoot, { history })
-  } catch (err) {
-    console.error(`Warning: key-term extraction failed (${err.message}); continuing with the direct search only.`)
+  if (direct.length < DIRECT_HIT_CONFIDENCE) {
+    try {
+      keyTerms = await extractKeyTerms(question, vaultRoot, { history })
+    } catch (err) {
+      console.error(`Warning: key-term extraction failed (${err.message}); continuing with the direct search only.`)
+    }
   }
   const broad = keyTerms.length ? searchPages(keyTerms.join(' '), { limit: BROAD_SEARCH_LIMIT }, vaultRoot) : []
 
@@ -155,12 +182,19 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
 
+  // The skills tool loop adds a bigger system prompt and, when a skill runs,
+  // extra round-trips. Only take that path — or even look for skills — when
+  // one is plausibly needed; otherwise answer straight from the nest. A miss
+  // is recoverable with the Regenerate button.
   let skills = []
-  try {
-    skills = discoverSkills(vaultRoot)
-  } catch (err) {
-    console.error(`Warning: skill discovery failed (${err.message}); answering without skills.`)
+  if (!arena && mightNeedSkill(question, pages.length)) {
+    try {
+      skills = discoverSkills(vaultRoot)
+    } catch (err) {
+      console.error(`Warning: skill discovery failed (${err.message}); answering without skills.`)
+    }
   }
+  const wantSkills = skills.length > 0
 
   let answer
   let steps = []
@@ -170,7 +204,7 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
     // per-run variance that would muddy a model-vs-model comparison, and a
     // regen is "answer this again, differently" — not "re-run the tool loop".
     answer = await answerQuestion(question, pages, vaultRoot, { arena, history })
-  } else if (skills.length) {
+  } else if (wantSkills) {
     try {
       ({ answer, steps, webSearches } = await answerQuestionWithSkills(question, pages, skills, vaultRoot, { history }))
     } catch (err) {

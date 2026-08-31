@@ -420,6 +420,83 @@ test('peckTurn — with no skills, only peck:answer is called (no skill-turn)', 
   } finally { s.restore() }
 })
 
+test('peckTurn — skips the key-term LLM pass when the direct search is confident', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  for (const slug of ['sleep-hygiene', 'sleep-quality', 'sleep-tracking', 'sleep-debt']) {
+    writePage(root, 'concepts', slug, { type: 'concept', body: 'notes about sleep and rest' })
+  }
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep-hygiene]], rest more.' })
+  try {
+    const r = await peckTurn('what do I know about sleep?', { vaultRoot: root })
+    assert.equal(r.answer, 'Per [[sleep-hygiene]], rest more.')
+    assert.ok(!s.calls.some((c) => /key search terms/i.test(c)),
+      'the key-term extraction call was skipped — direct FTS had enough hits')
+  } finally { s.restore() }
+})
+
+test('peckTurn — thin retrieval still runs the key-term pass', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'notes on sleep' })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], rest.' })
+  try {
+    await peckTurn('what about sleep?', { vaultRoot: root })
+    assert.ok(s.calls.some((c) => /key search terms/i.test(c)),
+      'one matching page (< the confidence threshold) → key-term expansion runs')
+  } finally { s.restore() }
+})
+
+test('peckTurn — skills are skipped when the nest answers and the question is not skill-ish', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  onlyFixtureSkills(root, ['web-search'])
+  writeFixtureSkill(root, 'web-search', 'console.log("Results for \\"x\\" (via duckduckgo):\\n\\n- [a](https://a) — s")')
+  for (const slug of ['acme-corp', 'acme-pricing', 'acme-contacts']) {
+    writePage(root, 'entities', slug, { type: 'entity', body: 'Acme is a client we work with.' })
+  }
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({ answer: 'Per [[acme-corp]], they are a client.' })
+  try {
+    const r = await peckTurn('what do we know about Acme?', { vaultRoot: root })
+    assert.equal(r.answer, 'Per [[acme-corp]], they are a client.')
+    assert.deepEqual(r.steps, [])
+    assert.ok(!s.calls.some((c) => /Available skills:/.test(c)), 'no skills block was sent')
+  } finally { s.restore() }
+})
+
+test('peckTurn — a skill-ish question still gets the skills tool loop', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  onlyFixtureSkills(root, ['web-search'])
+  writeFixtureSkill(root, 'web-search',
+    'console.log("Results for \\"latest\\" (via duckduckgo):\\n\\n- [a page](https://a.test) — snip")')
+  for (const slug of ['topic-a', 'topic-b', 'topic-c']) {
+    writePage(root, 'concepts', slug, { type: 'concept', body: 'some notes on the topic' })
+  }
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({
+    answerFn: (sys) => !/<skill_result name="web-search"/.test(sys)
+      ? '<use_skill name="web-search">{"query":"latest news"}</use_skill>'
+      : 'Per the web, ... (via web-search).'
+  })
+  try {
+    const r = await peckTurn('what is the latest news on the topic?', { vaultRoot: root })
+    assert.ok(s.calls.some((c) => /Available skills:/.test(c)), '"latest news" is skill-ish → skills block sent')
+    assert.ok(r.steps.some((x) => x.skill === 'web-search'))
+  } finally { s.restore() }
+})
+
 test('peckTurn — a follow-up carries the conversation history into key-terms + the answer (kip-app#82)', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
