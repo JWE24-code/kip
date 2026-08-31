@@ -17,9 +17,10 @@
 // `steps` (question only) is what the skills tool loop ran, if anything:
 //   [{ skill, input, ok, ms, outputPreview }, ...].
 //
-// During the turn it writes <coop>/.roost/peck-progress.json (a content-free
-// rolling activity feed + running metrics, for the panel to poll) and, on
-// completion, <coop>/.roost/peck-metrics.json. With --trace (or
+// During the turn it writes <coop>/.roost/peck-progress.json (a rolling
+// activity feed + running metrics + the accumulating answer as `partialAnswer`
+// while it streams, for the panel to poll) and, on completion,
+// <coop>/.roost/peck-metrics.json. With --trace (or
 // KIP_PECK_TRACE=1) it also streams every LLM + skill call, full I/O included,
 // to <coop>/.roost/peck-trace.jsonl.
 //
@@ -42,6 +43,20 @@ const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const traceOn = process.argv.includes('--trace') || process.env.KIP_PECK_TRACE === '1'
 
 const VALUE_FLAGS = new Set(['--arena-compare-to', '--history'])
+
+// How often the accumulating answer is written to peck-progress.json while it
+// streams. Fast enough to read as live, slow enough not to thrash the file the
+// panel polls.
+const STREAM_WRITE_MS = 120
+
+/** True while the buffer still might be a `<use_skill …>` tag rather than prose
+ *  — the skills tool loop streams every turn, and a tool-call turn must show
+ *  nothing. Once real prose diverges from the tag prefix this goes false. */
+function looksLikePartialSkillTag (text) {
+  const s = String(text || '').replace(/^\s+/, '').toLowerCase()
+  if (!s) return true
+  return s.startsWith('<use_skill') || '<use_skill'.startsWith(s.slice(0, 10))
+}
 
 async function main () {
   const args = process.argv.slice(2)
@@ -84,8 +99,26 @@ async function main () {
   reporter.setProgress({ phase: 'peck' })
   reporter.flush(true)
 
+  // Stream the answer into peck-progress.json as `partialAnswer` so the panel
+  // can render it live. `first` resets the buffer at the start of every LLM
+  // turn (the skills loop streams each turn); partial `<use_skill>` tags are
+  // held back until the text proves to be prose.
+  let streamBuf = ''
+  let lastStreamWrite = 0
+  const onStream = (chunk, first) => {
+    if (first) streamBuf = ''
+    streamBuf += chunk
+    if (looksLikePartialSkillTag(streamBuf)) return
+    const now = Date.now()
+    if (now - lastStreamWrite < STREAM_WRITE_MS) return
+    lastStreamWrite = now
+    reporter.setProgress({ partialAnswer: streamBuf.replace(/^\s+/, '') })
+    reporter.flush(true)
+  }
+
   try {
-    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId, history })
+    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId, history, onStream })
+    reporter.setProgress({ partialAnswer: null })
     reporter.flush(false)
     reporter.writeMetrics()
     reporter.close()

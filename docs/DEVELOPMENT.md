@@ -243,6 +243,21 @@ a "save these" affordance on the answer and writes it via the existing
 `buildWebSource`). v1 saves the list + snippets; full page-text fetch is a
 follow-up.
 
+**Streamed answers** (kip-app#88) — `callLLM({ …, onStream })` takes an
+optional `onStream(chunk, first)`. `llm.js` passes it to the connector as
+`ctx.onDelta` **only for non-json calls**; a json call needs the whole
+string for fence-stripping and has no partial value. The `anthropic` and
+OpenAI-compatible connectors honour it — they request an SSE stream
+(`stream: true`) and forward text deltas; other connectors (the managed
+`kip` backend) ignore it and return whole, unchanged. `answerQuestion` /
+`answerQuestionWithSkills` thread it through; in the skills loop **every
+turn** streams (a turn is either a `<use_skill>` tag or the final prose),
+and `first` is `true` on the first chunk of each turn so the consumer can
+reset its buffer. `scripts/chat.js` accumulates the deltas and throttle-
+writes them to `peck-progress.json` as `partialAnswer` (holding back
+anything that still looks like a partial `<use_skill …>` tag); the app
+polls that and renders the answer live.
+
 - **Tell it about an upcoming event** ("I have a meeting with Acme on Friday
   at 15h", "remind me to email Bob tomorrow") → `peckTurn` detects the
   reminder intent and routes to the `reminders` skill instead of fact

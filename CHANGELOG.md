@@ -19,6 +19,15 @@ The retrieval layer (this repo) and the desktop app
   current/external info or a generated document). Both are recoverable with
   Regenerate. Most "what do I know about X" questions now cost a single LLM
   call.
+- **Streamed Peck answers** — `callLLM()` takes an optional `onStream(chunk,
+  first)` callback; the Anthropic and OpenAI-compatible connectors honour it
+  by requesting an SSE stream and forwarding text deltas as they arrive
+  (json calls and the managed `kip` connector are unchanged — they still
+  return whole). `peckTurn()` threads it through, and `scripts/chat.js`
+  writes the accumulating answer to `peck-progress.json` as `partialAnswer`
+  so the app can render it live. In the skills tool loop every turn streams;
+  a turn that turns out to be a `<use_skill>` tag is held back by the
+  consumer until the text proves to be prose.
 
 ## [0.4.0] — 2026-08-31
 

@@ -39,13 +39,21 @@ async function withEnv (vars, fn) {
   }
 }
 
-function fakeAnthropicClient (responseText) {
+function fakeAnthropicClient (responseText, { streamDeltas } = {}) {
   let lastCall = null
   class FakeAnthropic {
     constructor () {
       this.messages = {
         create: async (args) => {
           lastCall = args
+          if (args.stream) {
+            const deltas = streamDeltas || [responseText]
+            return (async function * () {
+              yield { type: 'message_start', message: { usage: { input_tokens: 3, output_tokens: 0 } } }
+              for (const d of deltas) yield { type: 'content_block_delta', delta: { type: 'text_delta', text: d } }
+              yield { type: 'message_delta', usage: { output_tokens: 5 }, delta: { stop_reason: 'end_turn' } }
+            })()
+          }
           return { content: [{ type: 'text', text: responseText }] }
         }
       }
@@ -59,6 +67,22 @@ function fakeFetch (responseBody, { ok = true, status = 200, resHeaders = {} } =
   const impl = async (url, init) => {
     lastCall = { url, init }
     return { ok, status, headers: new Headers(resHeaders), json: async () => responseBody, text: async () => JSON.stringify(responseBody) }
+  }
+  return { impl, getLastCall: () => lastCall }
+}
+
+/** A fake fetch whose response body streams OpenAI-shaped SSE chunks — one
+ *  `data:` line per delta, a final line with finish_reason + usage, [DONE]. */
+function fakeStreamFetch (deltas, { finishReason = 'stop' } = {}) {
+  let lastCall = null
+  const impl = async (url, init) => {
+    lastCall = { url, init }
+    const lines = deltas.map((d) =>
+      `data: ${JSON.stringify({ choices: [{ delta: { content: d } }] })}\n\n`)
+    lines.push(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }], usage: { prompt_tokens: 3, completion_tokens: 5 } })}\n\n`)
+    lines.push('data: [DONE]\n\n')
+    const body = (async function * () { for (const l of lines) yield Buffer.from(l) })()
+    return { ok: true, status: 200, headers: new Headers(), body, json: async () => ({}), text: async () => '' }
   }
   return { impl, getLastCall: () => lastCall }
 }
@@ -123,6 +147,54 @@ test('callLLM: switching PROVIDER changes which code path gets hit', async () =>
     callLLM({ system: 's', prompt: 'p' }, { AnthropicClient: FakeAnthropic, fetchImpl: impl, vaultRoot: EMPTY_VAULT }))
   assert.equal(openaiResult.text, 'openai reply')
   assert.ok(getFetchCall(), 'fetch path should have been hit for PROVIDER=openai')
+})
+
+test('callLLM: onStream streams OpenAI-compatible deltas and still returns the full text', async () => {
+  await withEnv({ PROVIDER: 'openai', OPENAI_API_KEY: 'k', OPENAI_MODEL: 'gpt-test' }, async () => {
+    const { impl, getLastCall } = fakeStreamFetch(['Hel', 'lo ', 'world'])
+    const seen = []
+    const result = await callLLM(
+      { system: 's', prompt: 'p', onStream: (c, first) => seen.push([c, first]) },
+      { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+    assert.equal(result.text, 'Hello world')
+    assert.deepEqual(seen, [['Hel', true], ['lo ', false], ['world', false]])
+    assert.equal(JSON.parse(getLastCall().init.body).stream, true)
+  })
+})
+
+test('callLLM: onStream is ignored for json:true (whole string needed, no partial value)', async () => {
+  await withEnv({ PROVIDER: 'openai', OPENAI_API_KEY: 'k', OPENAI_MODEL: 'gpt-test' }, async () => {
+    const { impl, getLastCall } = fakeFetch({ choices: [{ message: { content: '{"a":1}' } }] })
+    const seen = []
+    const result = await callLLM(
+      { system: 's', prompt: 'p', json: true, onStream: (c) => seen.push(c) },
+      { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+    assert.equal(result.text, '{"a":1}')
+    assert.equal(seen.length, 0)
+    assert.ok(!JSON.parse(getLastCall().init.body).stream)
+  })
+})
+
+test('callLLM: onStream streams Anthropic text deltas and returns the joined text', async () => {
+  await withEnv({ PROVIDER: 'anthropic' }, async () => {
+    const { FakeAnthropic, getLastCall } = fakeAnthropicClient(null, { streamDeltas: ['Hel', 'lo'] })
+    const seen = []
+    const result = await callLLM(
+      { system: 's', prompt: 'p', onStream: (c, first) => seen.push([c, first]) },
+      { AnthropicClient: FakeAnthropic, vaultRoot: EMPTY_VAULT })
+    assert.equal(result.text, 'Hello')
+    assert.deepEqual(seen, [['Hel', true], ['lo', false]])
+    assert.equal(getLastCall().stream, true)
+  })
+})
+
+test('callLLM: without onStream the non-streaming path is used', async () => {
+  await withEnv({ PROVIDER: 'openai', OPENAI_API_KEY: 'k', OPENAI_MODEL: 'gpt-test' }, async () => {
+    const { impl, getLastCall } = fakeFetch({ choices: [{ message: { content: 'plain' } }] })
+    const result = await callLLM({ system: 's', prompt: 'p' }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+    assert.equal(result.text, 'plain')
+    assert.ok(!JSON.parse(getLastCall().init.body).stream)
+  })
 })
 
 test('callLLM: json:true on anthropic appends the JSON instruction and strips code fences', async () => {

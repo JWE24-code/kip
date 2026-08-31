@@ -168,6 +168,40 @@ test('askQuestion', async (t) => {
       global.fetch = originalFetch
     }
   })
+
+  await t.test('onStream forwards the answer deltas from the provider (kip-app#88)', async () => {
+    writePage(root, 'concepts', 'sailing', { type: 'concept', tags: [], body: 'Started sailing this summer.' })
+    rebuildRoost(root)
+    saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+    const originalFetch = global.fetch
+    global.fetch = async (url, init) => {
+      const body = JSON.parse(init.body)
+      const isKeyTerms = body.messages.some((m) => m.content.includes('key search terms'))
+      if (isKeyTerms) {
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"terms":["sailing"]}' } }] }) }
+      }
+      // the answer call arrives with stream:true — reply with SSE
+      assert.equal(body.stream, true, 'the answer call should be a streaming request')
+      const parts = ['I ', 'sail ', '[[sailing]].']
+      const lines = parts.map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`)
+      lines.push('data: [DONE]\n\n')
+      const bodyStream = (async function * () { for (const l of lines) yield Buffer.from(l) })()
+      return { ok: true, status: 200, headers: new Headers(), body: bodyStream, json: async () => ({}), text: async () => '' }
+    }
+
+    try {
+      const chunks = []
+      const result = await askQuestion('what do I know about sailing?', {
+        vaultRoot: root,
+        onStream: (c) => chunks.push(c)
+      })
+      assert.equal(chunks.join(''), 'I sail [[sailing]].')
+      assert.equal(result.answer, 'I sail [[sailing]].')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
 })
 
 test('classifyPeckInput — trailing ? or a leading question word is a question, else a statement', () => {

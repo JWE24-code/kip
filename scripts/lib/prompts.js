@@ -63,12 +63,12 @@ Cite every claim back to the specific page it came from using Logseq's wikilink 
  *  candidate B against an earlier answer — the regenerate free-rider
  *  (kip-app#73). `history` (optional): recent {role,text} turns for
  *  follow-up context (kip-app#82). */
-async function answerQuestion (question, pages, vaultRoot, { arena = null, history = [] } = {}) {
+async function answerQuestion (question, pages, vaultRoot, { arena = null, history = [], onStream = null } = {}) {
   const convo = formatConversation(history)
   const prompt = `${formatPagesForPrompt(pages)}\n\n---\n\n` +
     (convo ? `${convo}\n\n---\n\n` : '') +
     `Question: ${question}`
-  const { text } = await callLLM({ system: ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer', arena }, { vaultRoot })
+  const { text } = await callLLM({ system: ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer', arena, onStream }, { vaultRoot })
   return text
 }
 
@@ -146,9 +146,9 @@ function formatSkillsBlock (skills) {
  * With no skills it's just answerQuestion(). Any unexpected throw is the
  * caller's (peck.js's) to catch and downgrade.
  */
-async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill, history = [] } = {}) {
+async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill, history = [], onStream = null } = {}) {
   if (!skills || !skills.length) {
-    return { answer: await answerQuestion(question, pages, vaultRoot, { history }), steps: [], webSearches: [] }
+    return { answer: await answerQuestion(question, pages, vaultRoot, { history, onStream }), steps: [], webSearches: [] }
   }
 
   const byName = new Map(skills.map((s) => [s.name, s]))
@@ -161,11 +161,16 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
   const webSearches = []   // parsed results of every web-search run this turn (kip-app#81)
 
   for (let turn = 0; turn <= MAX_SKILL_ITERATIONS; turn++) {
+    // Stream every turn: a turn is either a <use_skill> tag or the final
+    // prose. The consumer keys off the `first` flag to reset its buffer each
+    // turn and suppresses anything that still looks like a partial skill tag,
+    // so a tool-call turn shows nothing and the answer turn streams clean.
     const { text, raw } = await callLLM({
       system,
       prompt: transcript,
       maxTokens: 4096,
-      label: turn === 0 ? 'peck:answer' : 'peck:skill-turn'
+      label: turn === 0 ? 'peck:answer' : 'peck:skill-turn',
+      onStream
     }, { vaultRoot })
 
     const call = parseSkillCall(text)
@@ -181,7 +186,8 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
         system: ANSWER_SYSTEM_PROMPT,
         prompt: `${transcript}\n\nAnswer the question now with what you have.`,
         maxTokens: 4096,
-        label: 'peck:answer:final'
+        label: 'peck:answer:final',
+        onStream
       }, { vaultRoot })
       return { answer: final, steps, webSearches }
     }
@@ -217,7 +223,7 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
   }
 
   // unreachable (the turn === MAX branch returns), but be safe
-  return { answer: await answerQuestion(question, pages, vaultRoot), steps, webSearches }
+  return { answer: await answerQuestion(question, pages, vaultRoot, { history, onStream }), steps, webSearches }
 }
 
 /**

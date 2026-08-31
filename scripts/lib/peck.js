@@ -178,7 +178,7 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
  * can call them mid-answer — `steps` records what it ran. Skill discovery and
  * the whole tool loop are best-effort: a failure downgrades to a plain answer.
  */
-async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [] }) {
+async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [], onStream = null }) {
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
 
@@ -206,14 +206,14 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
     answer = await answerQuestion(question, pages, vaultRoot, { arena, history })
   } else if (wantSkills) {
     try {
-      ({ answer, steps, webSearches } = await answerQuestionWithSkills(question, pages, skills, vaultRoot, { history }))
+      ({ answer, steps, webSearches } = await answerQuestionWithSkills(question, pages, skills, vaultRoot, { history, onStream }))
     } catch (err) {
       console.error(`Warning: the skills tool loop failed (${err.message}); falling back to a plain answer.`)
-      answer = await answerQuestion(question, pages, vaultRoot, { history })
+      answer = await answerQuestion(question, pages, vaultRoot, { history, onStream })
       steps = []
     }
   } else {
-    answer = await answerQuestion(question, pages, vaultRoot, { history })
+    answer = await answerQuestion(question, pages, vaultRoot, { history, onStream })
   }
 
   const citedSlugs = extractCitedSlugs(answer, candidateSlugs)
@@ -289,14 +289,14 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  *
  * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], steps: Array, callId: string|null, arenaId: string|null}}
  */
-async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [] } = {}) {
+async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
   const candidates = await retrieveCandidates(question, vaultRoot, { history })
   if (candidates.length === 0 && !anySkills(vaultRoot)) {
     return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
   const pages = readPageBodies(vaultRoot, candidates)
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history })
+  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history, onStream })
 }
 
 /**
@@ -311,7 +311,7 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */
-async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null, history = [] } = {}) {
+async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
   // An upcoming event the user wants reminding about ("I have a meeting Friday
   // at 15h", "remind me to …") — route to the skills path (the `reminders`
   // skill creates it), NOT fact-capture, which would file it as a nest page.
@@ -337,7 +337,7 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
     return { intent: 'question', answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history })) }
+  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream })) }
 }
 
 module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs }

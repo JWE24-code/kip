@@ -144,7 +144,7 @@ function assertConfigured (spec, resolved) {
  * `label` (optional) tags the call in scripts/lib/telemetry.js — e.g.
  * "hatch:propose", "hatch:generate:entity", "peck:answer".
  */
-async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label, arena = null }, overrides = {}) {
+async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label, arena = null, onStream = null }, overrides = {}) {
   const vaultRoot = overrides.vaultRoot || DEFAULT_VAULT_ROOT
   const { spec, resolved } = resolveActive(vaultRoot, {
     anthropicClient: overrides.AnthropicClient,
@@ -156,7 +156,11 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label,
   const ctx = {
     fetch: overrides.fetchImpl || fetch,
     signal: overrides.signal,
-    logger: overrides.logger || console
+    logger: overrides.logger || console,
+    // Streaming is prose-only: a json:true call has no partial value and its
+    // fence-stripping wants the whole string. Connectors that can't stream
+    // simply ignore this.
+    onDelta: (!json && typeof onStream === 'function') ? onStream : null
   }
 
   const started = Date.now()

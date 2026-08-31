@@ -81,7 +81,7 @@ function stripCodeFences (text) {
 }
 
 /** Anthropic has no forced-JSON mode: for json:true, ask for it in the system prompt and strip fences after. */
-async function callAnthropic ({ system, prompt, json, maxTokens, apiKey }, AnthropicClient) {
+async function callAnthropic ({ system, prompt, json, maxTokens, apiKey, onDelta }, AnthropicClient) {
   const Anthropic = AnthropicClient || require('@anthropic-ai/sdk')
   // Only pass an explicit apiKey when we have one (from the config file or
   // ANTHROPIC_API_KEY) — an explicit undefined can short-circuit the SDK's
@@ -93,12 +93,41 @@ async function callAnthropic ({ system, prompt, json, maxTokens, apiKey }, Anthr
     ? (system ? `${system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION)
     : system
 
-  const response = await client.messages.create({
+  const createArgs = {
     model: DEFAULT_ANTHROPIC_MODEL,
     max_tokens: maxTokens,
     system: finalSystem,
     messages: [{ role: 'user', content: prompt }]
-  })
+  }
+
+  // Non-JSON + a delta sink ⇒ stream: iterate the SSE events, forward text
+  // deltas, and rebuild the same response shape the non-streaming path returns.
+  if (!json && typeof onDelta === 'function') {
+    const stream = await client.messages.create({ ...createArgs, stream: true })
+    let text = ''
+    let usage = null
+    let stopReason = null
+    let first = true
+    for await (const event of stream) {
+      if (!event || typeof event !== 'object') continue
+      if (event.type === 'content_block_delta' && event.delta && event.delta.type === 'text_delta') {
+        text += event.delta.text
+        try { onDelta(event.delta.text, first) } catch { /* best-effort */ }
+        first = false
+      } else if (event.type === 'message_start' && event.message && event.message.usage) {
+        usage = { ...event.message.usage }
+      } else if (event.type === 'message_delta') {
+        if (event.usage) usage = { ...(usage || {}), ...event.usage }
+        if (event.delta && event.delta.stop_reason) stopReason = event.delta.stop_reason
+      }
+    }
+    return {
+      text: text.trim(),
+      raw: { content: [{ type: 'text', text }], usage: usage || undefined, stop_reason: stopReason }
+    }
+  }
+
+  const response = await client.messages.create(createArgs)
 
   const rawText = response.content
     .filter((b) => b.type === 'text')
@@ -128,6 +157,97 @@ async function postChatCompletion (baseUrl, apiKey, body, doFetch) {
   return response.json()
 }
 
+/** Iterate a fetch response body as chunks, whether it's an async iterable
+ *  (undici) or a web ReadableStream (getReader). Yields nothing for a null
+ *  body (a fake fetch that only implements json()/text()). */
+async function * iterateBody (body) {
+  if (!body) return
+  if (typeof body[Symbol.asyncIterator] === 'function') {
+    yield * body
+    return
+  }
+  if (typeof body.getReader === 'function') {
+    const reader = body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) return
+      yield value
+    }
+  }
+}
+
+/**
+ * POST /chat/completions with stream:true and consume the SSE deltas, calling
+ * onDelta(textChunk, isFirst) as prose arrives. Returns the SAME shape
+ * postChatCompletion resolves to — { choices: [{ message: { content },
+ * finish_reason }], usage, model } — so every downstream reader (rawText
+ * extraction, extractUsage, responseWasTruncated) works unchanged.
+ */
+async function streamChatCompletion (baseUrl, apiKey, body, doFetch, onDelta) {
+  const headers = { 'Content-Type': 'application/json' }
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+
+  // No `stream_options: {include_usage}` — OpenAI needs it to report usage
+  // while streaming, but stricter OpenAI-compatible servers (some Ollama
+  // builds) 400 on the unknown field. A streamed Peck answer loses its token
+  // counts in telemetry; that's the trade for working everywhere.
+  const response = await doFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ ...body, stream: true })
+  })
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => response.status)
+    const err = new Error(`${baseUrl} request failed (${response.status}): ${errText}`)
+    err.status = response.status
+    throw err
+  }
+
+  let text = ''
+  let usage = null
+  let model
+  let finishReason = null
+  let first = true
+  let buf = ''
+  const decoder = new TextDecoder()
+
+  const handleData = (payload) => {
+    if (payload === '[DONE]') return
+    let j
+    try { j = JSON.parse(payload) } catch { return }
+    if (j.model) model = j.model
+    if (j.usage) usage = j.usage
+    const choice = j.choices && j.choices[0]
+    if (!choice) return
+    if (choice.finish_reason) finishReason = choice.finish_reason
+    const delta = choice.delta && choice.delta.content
+    if (delta) {
+      text += delta
+      try { onDelta(delta, first) } catch { /* best-effort */ }
+      first = false
+    }
+  }
+
+  for await (const chunk of iterateBody(response.body)) {
+    buf += decoder.decode(chunk, { stream: true })
+    let nl
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (line.startsWith('data:')) handleData(line.slice(5).trim())
+    }
+  }
+  const tail = buf.trim()
+  if (tail.startsWith('data:')) handleData(tail.slice(5).trim())
+
+  return {
+    choices: [{ message: { content: text }, finish_reason: finishReason }],
+    usage,
+    model
+  }
+}
+
 /**
  * One generic client for every OpenAI-compatible chat completions API
  * (openai, deepseek, local/Ollama, "other", and future connectors) — only
@@ -141,7 +261,7 @@ async function postChatCompletion (baseUrl, apiKey, body, doFetch) {
  * first call. Either way json:true costs one round-trip, not two, on every
  * call after (at most) one.
  */
-async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, json, maxTokens }, fetchImpl) {
+async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, json, maxTokens, onDelta }, fetchImpl) {
   const doFetch = fetchImpl || fetch
 
   const buildMessages = (sys) => {
@@ -164,7 +284,13 @@ async function callOpenAICompatible ({ baseUrl, apiKey, model, system, prompt, j
     isReasoningModel(model) || learnedNoResponseFormat.has(jsonModeKey(baseUrl, model))
 
   let data
-  if (!json) {
+  if (!json && typeof onDelta === 'function') {
+    data = await streamChatCompletion(baseUrl, apiKey, {
+      model,
+      max_tokens: maxTokens,
+      messages: buildMessages(system)
+    }, doFetch, onDelta)
+  } else if (!json) {
     data = await postChatCompletion(baseUrl, apiKey, {
       model,
       max_tokens: maxTokens,
@@ -214,7 +340,8 @@ function builtinSpecs ({ anthropicClient, fetchImpl } = {}) {
       system: call.system,
       prompt: call.prompt,
       json: call.json,
-      maxTokens: call.maxTokens
+      maxTokens: call.maxTokens,
+      onDelta: ctx && ctx.onDelta
     }, fetchImpl || (ctx && ctx.fetch))
 
   return [
@@ -228,9 +355,16 @@ function builtinSpecs ({ anthropicClient, fetchImpl } = {}) {
       ],
       envDefaults: { apiKey: 'ANTHROPIC_API_KEY' },
       isReady: () => true,
-      async complete (resolved, call) {
+      async complete (resolved, call, ctx) {
         return callAnthropic(
-          { system: call.system, prompt: call.prompt, json: call.json, maxTokens: call.maxTokens, apiKey: resolved.apiKey },
+          {
+            system: call.system,
+            prompt: call.prompt,
+            json: call.json,
+            maxTokens: call.maxTokens,
+            apiKey: resolved.apiKey,
+            onDelta: ctx && ctx.onDelta
+          },
           anthropicClient
         )
       }
