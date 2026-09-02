@@ -69,7 +69,9 @@ Do not guess, apologise, or explain — just the token. (Something else will tak
 
 If a "Conversation so far" section is present, it is only there to tell you what a follow-up question refers to — it is NOT a source, so never cite it or treat it as fact.
 
-Cite every claim back to the specific page it came from using Logseq's wikilink syntax: [[exact-page-slug]], using the exact slug shown in each "### Page: <slug>" heading. Prefer citing inline, next to the claim it supports, over a single list of links at the end.`
+Cite every claim back to the specific page it came from using Logseq's wikilink syntax: [[exact-page-slug]], using the exact slug shown in each "### Page: <slug>" heading. Prefer citing inline, next to the claim it supports, over a single list of links at the end.
+
+If the pages disagree — different dates, different values, or conflicting claims — do not silently pick one: say there is a disagreement, give both sides (with their dates or sources if the pages show them), and cite both. Your citation must not make a contested claim look settled.`
 
 const WEB_ANSWER_SYSTEM_PROMPT = `The user asked their personal notes a question, but the notes didn't contain the answer, so a web search was run. You are given the search results.
 
@@ -154,6 +156,7 @@ When you can answer, write it as normal prose with NO tag. Cite a wiki-page clai
 
 Rules:
 - At most ${MAX_SKILL_ITERATIONS} skill calls. Prefer the wiki pages — only run a skill when they can't answer.
+- If two wiki pages disagree — different dates, values, or claims — don't silently pick one: name the disagreement, give both sides, and cite both.
 - Some skills produce a file (a document, a deck) instead of an answer. When one does, its result is the path it wrote; give that exact path to the user (e.g. "Saved to exports/report.docx") rather than describing the contents.
 - If a skill errors or returns nothing useful, don't retry it more than once; answer with what you have and note what was missing.`
 
