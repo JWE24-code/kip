@@ -25,6 +25,7 @@ const {
   flagContradictions, reviewPageCoherence, checkSummaryAccuracy, confirmMissingLinks, checkPagesSameSubject
 } = require('./lib/prompts')
 const { describeProvider } = require('./lib/llm')
+const { collectPendingSources } = require('./lib/hatch')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
 const { installFeedbackPoster } = require('./lib/feedback-poster')
@@ -308,6 +309,12 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
     orphans: findOrphans(pages),
     drift: findDrift(vaultRoot, dbPages),
     nearDuplicates: findNearDuplicates(dbPages),
+    // The source-side check the vault's Lint calls "un-ingested raw" —
+    // specifically the *changed* half (kip-app#113): a hatched source edited
+    // since. New drops are the hatch preview's job; re-hatching a changed
+    // one re-appends the whole document, so the user wants to know.
+    changedSources: collectPendingSources(vaultRoot).pending
+      .filter((p) => p.status === 'changed').map((p) => p.relPath),
     contradictions: await findContradictions(pages, vaultRoot, flagFn,
       deep ? DEEP_CONTRADICTION_GROUP_SIZE : MAX_CONTRADICTION_GROUP_SIZE)
   }
@@ -411,6 +418,8 @@ function writeGroomReport (vaultRoot, report) {
     ...(report.drift.untrackedFiles || []).map((f) => `on disk, not in meta.db: ${f}`)
   ]
   section('Filesystem drift', drift, (s) => `${s} — run \`npm run rebuild-roost\``)
+  section('Sources changed since hatch', report.changedSources || [], (s) =>
+    `\`${s}\` — edited after its last hatch; re-hatching re-appends the whole document (consider whether the new content belongs on the existing pages)`)
   section('Near-duplicate slugs', report.nearDuplicates || [], (d) =>
     `${d.slugs[0]} ↔ ${d.slugs[1]} (similarity ${d.score})`)
 
@@ -449,6 +458,7 @@ function printReport (report) {
   list('Filesystem drift', drift, (s) => s)
   if (drift.length) console.log('  -> run `npm run rebuild-roost` to fix\n')
 
+  list('Sources changed since hatch', report.changedSources || [], (s) => s)
   list('Near-duplicate slugs', report.nearDuplicates, (d) => `${d.slugs[0]} <-> ${d.slugs[1]} (similarity ${d.score})`)
   list('Possible contradictions', report.contradictions, (c) => `[${c.slugs.join(', ')}] ${c.description}`)
 }

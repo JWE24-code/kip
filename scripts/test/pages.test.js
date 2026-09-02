@@ -69,3 +69,65 @@ test('resolvePage', async (t) => {
     assert.equal(fs.existsSync(path.join(root, 'nest', 'concepts', 'sleep-quality.md')), false)
   })
 })
+
+test('resolvePage provenance (kip-app#113)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  writePage(root, 'concepts', 'sleep-hygiene', {
+    type: 'concept',
+    tags: ['health'],
+    body: 'Notes on sleep hygiene: consistent bedtime, no screens before bed.'
+  })
+  rebuildRoost(root)
+
+  await t.test('create writes source, source_hatched and summary into the frontmatter', () => {
+    const result = resolvePage({
+      type: 'source',
+      title: 'Clinic Visit Notes',
+      body: 'Visit notes from the sleep clinic.',
+      tags: ['health'],
+      vaultRoot: root,
+      source: 'eggs/clinic-visit.md',
+      summary: 'One LLM one-liner about the visit'
+    })
+    assert.equal(result.action, 'create')
+    const raw = fs.readFileSync(path.join(root, result.path), 'utf8')
+    assert.match(raw, /source: eggs\/clinic-visit\.md/)
+    assert.match(raw, /source_hatched: '?\d{4}-\d{2}-\d{2}'?/)
+    assert.match(raw, /summary: One LLM one-liner about the visit/)
+  })
+
+  await t.test('update refreshes the source stamp and MERGES tags instead of dropping them', () => {
+    const result = resolvePage({
+      type: 'concept',
+      title: 'sleep-quality',
+      body: 'New note: quality matters as much as duration.',
+      tags: ['from-peck'],
+      vaultRoot: root,
+      source: 'eggs/clinic-visit.md'
+    })
+    assert.equal(result.action, 'update')
+    assert.equal(result.slug, 'sleep-hygiene')
+    assert.ok(result.tags.includes('health'), 'existing tag kept')
+    assert.ok(result.tags.includes('from-peck'), 'incoming tag merged in')
+    const raw = fs.readFileSync(path.join(root, result.path), 'utf8')
+    assert.match(raw, /source_hatched: '?\d{4}-\d{2}-\d{2}'?/)
+    const fm = require('gray-matter')(raw).data
+    assert.ok(fm.tags.includes('health') && fm.tags.includes('from-peck'), 'merged tags in frontmatter')
+  })
+
+  await t.test('no source given -> frontmatter stays clean of provenance keys', () => {
+    const result = resolvePage({
+      type: 'concept',
+      title: 'Quarterly Tax Filing',
+      body: 'Filed Q1 estimated taxes on this date.',
+      tags: ['finance'],
+      vaultRoot: root
+    })
+    assert.equal(result.action, 'create')
+    const raw = fs.readFileSync(path.join(root, result.path), 'utf8')
+    assert.ok(!raw.includes('source:'), 'no source key')
+    assert.ok(!raw.includes('summary:'), 'no summary key')
+  })
+})

@@ -271,7 +271,14 @@ function hatchedSourceHashes (vaultRoot = DEFAULT_VAULT_ROOT) {
   }
 }
 
-/** Upserts a `hatched_sources` row: this file has now been hatched at this content hash. */
+/**
+ * Upserts a `hatched_sources` row: this file has now been hatched at this
+ * content hash. Also prunes rows whose file is gone from disk while its
+ * directory still exists (kip-app#113) — a renamed or deleted source
+ * (GETTING-STARTED's versioning guidance: new version under a new filename)
+ * would otherwise leave an orphan row forever. A missing *directory* means
+ * the source root itself isn't there (e.g. not yet synced) — those rows stay.
+ */
 function recordHatchedSource (relPath, hash, vaultRoot = DEFAULT_VAULT_ROOT) {
   const db = openDb(vaultRoot)
   try {
@@ -279,6 +286,14 @@ function recordHatchedSource (relPath, hash, vaultRoot = DEFAULT_VAULT_ROOT) {
       INSERT INTO hatched_sources (path, hash, hatched) VALUES (@path, @hash, @hatched)
       ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, hatched = excluded.hatched
     `).run({ path: relPath, hash, hatched: new Date().toISOString() })
+
+    const rows = db.prepare('SELECT path FROM hatched_sources WHERE path != ?').all(relPath)
+    for (const row of rows) {
+      const abs = path.join(vaultRoot, row.path)
+      if (fs.existsSync(abs)) continue
+      if (!fs.existsSync(path.dirname(abs))) continue
+      db.prepare('DELETE FROM hatched_sources WHERE path = ?').run(row.path)
+    }
   } finally {
     db.close()
   }

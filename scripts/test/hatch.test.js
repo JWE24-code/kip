@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { planCandidates, ensureInEggs, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan } = require('../lib/hatch')
+const { planCandidates, ensureInEggs, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, pendingSourcesSummary } = require('../lib/hatch')
 const { recordHatchedSource, getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
 const { proposeAndDraftPages } = require('../lib/prompts')
@@ -393,4 +393,106 @@ test('planCandidates reuses findSimilarSlug for create-vs-update, without writin
   assert.equal(fs.existsSync(path.join(root, 'nest', 'concepts', 'quarterly-tax-filing.md')), false)
   const untouched = fs.readFileSync(path.join(root, 'nest', 'concepts', 'sleep-hygiene.md'), 'utf8')
   assert.ok(!untouched.includes('_Update'), 'existing page must be untouched until confirmation + write phase')
+})
+
+test('source lineage: ## Source block + frontmatter provenance + synthesized hub page (kip-app#113)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  // The stub proposes NO type:'source' page — the hub must be synthesized.
+  fs.writeFileSync(path.join(root, 'eggs', 'sleep-study.md'),
+    'Slept 6.2h on average this week. Caffeine after 15:00 correlates with worse deep sleep.')
+  const { restore } = stubFetch(() => JSON.stringify({
+    pages: [
+      { title: 'Sleep Study', type: 'concept', tags: ['health'], summary: 'Weekly sleep numbers', body: 'Average 6.2h; late caffeine hurts deep sleep.' }
+    ]
+  }))
+
+  try {
+    const summary = await hatchAllSources(root, { limit: 1 })
+    assert.equal(summary.hatched.length, 1)
+    const slugs = summary.hatched[0].results.map((r) => r.slug).sort()
+    assert.ok(slugs.includes('sleep-study'), 'the synthesized source page uses the source title')
+    assert.equal(slugs.length, 2, 'one proposed page + the synthesized source hub')
+
+    const hubRaw = fs.readFileSync(path.join(root, 'nest', 'sources', 'sleep-study.md'), 'utf8')
+    assert.match(hubRaw, /## Source\n\n- Source file: `eggs\/sleep-study\.md`/)
+    assert.match(hubRaw, /- Content hash at hatch: `[0-9a-f]{12}…`/)
+    assert.match(hubRaw, /type: source/)
+    assert.match(hubRaw, /source_hatched: '?\d{4}-\d{2}-\d{2}'?/)
+
+    const entityRaw = fs.readFileSync(path.join(root, 'nest', 'concepts', 'sleep-study.md'), 'utf8')
+    assert.doesNotMatch(entityRaw, /## Source/, 'no ## Source section on non-source pages')
+    assert.match(entityRaw, /source: eggs\/sleep-study\.md/, 'but frontmatter provenance on all pages')
+
+    // rebuild-roost must keep the LLM summary now that it lives in frontmatter
+    const { rebuildRoost: rebuild } = require('../rebuild-roost')
+    rebuild(root)
+    assert.match(getPage('sleep-study', root).summary, /Hatched from eggs\/sleep-study\.md/,
+      'frontmatter summary survives a rebuild instead of degrading to the first paragraph')
+  } finally {
+    restore()
+  }
+})
+
+test('collectPendingSources: status splits new drops from edited-since-hatch sources (kip-app#113)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  fs.writeFileSync(path.join(root, 'eggs', 'fresh.md'), 'A brand new drop of source content here.')
+  fs.writeFileSync(path.join(root, 'eggs', 'edited.md'), 'An egg that was hatched and then edited in place.')
+  const { recordHatchedSource, hashContent } = require('../lib/roost')
+  recordHatchedSource('eggs/edited.md', hashContent(fs.readFileSync(path.join(root, 'eggs', 'edited.md'), 'utf8')), root)
+
+  let { pending } = collectPendingSources(root)
+  const byPath = new Map(pending.map((p) => [p.relPath, p.status]))
+  assert.equal(byPath.get('eggs/fresh.md'), 'new')
+  // edited.md matches its recorded hash -> not pending at all
+  assert.equal(byPath.get('eggs/edited.md'), undefined)
+
+  fs.writeFileSync(path.join(root, 'eggs', 'edited.md'), 'An egg that was hatched and then edited in place — twice now.')
+  ;({ pending } = collectPendingSources(root))
+  const edited = pending.find((p) => p.relPath === 'eggs/edited.md')
+  assert.equal(edited.status, 'changed', 'same path, different hash -> changed, not new')
+})
+
+test('pendingSourcesSummary surfaces changedCount (kip-app#113)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  fs.writeFileSync(path.join(root, 'eggs', 'a.md'), 'First source with enough prose to pass the empty gate easily.')
+  fs.writeFileSync(path.join(root, 'eggs', 'b.md'), 'Second source, also hatched before, also with prose.')
+  const { recordHatchedSource, hashContent } = require('../lib/roost')
+  recordHatchedSource('eggs/a.md', hashContent(fs.readFileSync(path.join(root, 'eggs', 'a.md'), 'utf8')), root)
+  recordHatchedSource('eggs/b.md', hashContent(fs.readFileSync(path.join(root, 'eggs', 'b.md'), 'utf8')), root)
+  fs.writeFileSync(path.join(root, 'eggs', 'a.md'), 'First source edited after its hatch, with enough prose still.')
+  fs.writeFileSync(path.join(root, 'eggs', 'new.md'), 'A brand-new third drop with plenty of prose in it.')
+
+  const summary = await pendingSourcesSummary(root)
+  assert.equal(summary.changedCount, 1)
+  assert.equal(summary.pending.find((p) => p.source === 'A').status, 'changed')
+  assert.equal(summary.pending.find((p) => p.source === 'New').status, 'new')
+})
+
+test('recordHatchedSource prunes the orphan row left by a renamed source (kip-app#113)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  fs.writeFileSync(path.join(root, 'eggs', 'report-v1.md'), 'Version one of a report.')
+  const { hashContent } = require('../lib/roost')
+  recordHatchedSource('eggs/report-v1.md', hashContent('Version one of a report.'), root)
+
+  // The user renames per GETTING-STARTED's versioning guidance: new file, old one gone.
+  fs.rmSync(path.join(root, 'eggs', 'report-v1.md'))
+  recordHatchedSource('eggs/report-v2.md', hashContent('Version two of a report.'), root)
+  const { hatchedSourceHashes } = require('../lib/roost')
+  const hashes = hatchedSourceHashes(root)
+  assert.ok(hashes.has('eggs/report-v2.md'))
+  assert.ok(!hashes.has('eggs/report-v1.md'), 'old row pruned: file gone, its directory still there')
+
+  // A missing *directory* means "maybe not synced yet" — the row must stay.
+  recordHatchedSource('dropbox/report-v2.md', hashContent('Version two of a report.'), root)
+  assert.ok(hatchedSourceHashes(root).has('dropbox/report-v2.md'))
 })

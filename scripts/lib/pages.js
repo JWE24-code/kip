@@ -20,13 +20,28 @@ function relPathFor (type, slug) {
  * existing near-duplicate (per coop/schema.md's duplicate-prevention rule),
  * and writes the markdown file either way.
  *
- * @param {{type: 'entity'|'concept'|'source', title: string, body: string, tags?: string[], vaultRoot?: string}} args
+ * `source` (coop-relative path of the document this page was derived from)
+ * and `summary` (the LLM one-liner) are provenance/metadata: on create they
+ * land in the frontmatter so the markdown stays the source of truth
+ * (rebuild-roost reads `summary:` back); on update `source` is refreshed
+ * (the page was just re-derived from that document) and `tags` are MERGED
+ * into the existing ones rather than dropped — a peck answer filed onto an
+ * existing page keeps its `from-peck` marker visible.
+ *
+ * @param {{type: 'entity'|'concept'|'source', title: string, body: string, tags?: string[], vaultRoot?: string, source?: string|null, summary?: string|null}} args
  * @returns {{action: 'create'|'update', slug: string, path: string, type: string, tags: string[]}}
  */
-function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_ROOT }) {
+function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_ROOT, source = null, summary = null }) {
+  const today = new Date().toISOString().slice(0, 10)
   const similar = findSimilarSlug(title, vaultRoot)
 
-  if (similar && similar.score >= SIMILARITY_THRESHOLD) {
+  // A source page is a per-document hub; it must never be collapsed into an
+  // existing entity/concept that happens to share its name (kip-app#113) —
+  // that would append the hub onto an unrelated page instead of creating the
+  // trace target. Same-name, different-type -> create the hub in its own dir.
+  const typeMismatch = similar && similar.score >= SIMILARITY_THRESHOLD && type === 'source'
+
+  if (similar && similar.score >= SIMILARITY_THRESHOLD && !typeMismatch) {
     const db = openDb(vaultRoot)
     let row
     try {
@@ -38,13 +53,20 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
     const filePath = path.join(vaultRoot, row.path)
     const raw = fs.readFileSync(filePath, 'utf8')
     const { data, content } = matter(raw)
-    const today = new Date().toISOString().slice(0, 10)
 
     data.updated = today
+    if (source) {
+      data.source = source
+      data.source_hatched = today
+    }
+    if (Array.isArray(tags) && tags.length) {
+      data.tags = [...new Set([...(Array.isArray(data.tags) ? data.tags : []), ...tags])]
+    }
     const updatedContent = `${content.trimEnd()}\n\n---\n_Update ${today}:_\n\n${body.trim()}\n`
     fs.writeFileSync(filePath, matter.stringify(updatedContent, data))
 
-    return { action: 'update', slug: similar.slug, path: row.path, type: data.type, tags: JSON.parse(row.tags) }
+    const mergedTags = Array.isArray(data.tags) ? data.tags : []
+    return { action: 'update', slug: similar.slug, path: row.path, type: data.type, tags: mergedTags }
   }
 
   const slug = slugify(title)
@@ -52,8 +74,12 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
   const filePath = path.join(vaultRoot, relPath)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
 
-  const today = new Date().toISOString().slice(0, 10)
   const frontmatter = { type, created: today, updated: today, tags }
+  if (source) {
+    frontmatter.source = source
+    frontmatter.source_hatched = today
+  }
+  if (summary) frontmatter.summary = summary
   fs.writeFileSync(filePath, matter.stringify(`${body.trim()}\n`, frontmatter))
 
   return { action: 'create', slug, path: relPath, type, tags }

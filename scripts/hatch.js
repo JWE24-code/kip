@@ -14,10 +14,12 @@
 //   for whiteboards/. Falls back to outline-only with no provider configured.
 require('dotenv').config()
 const fs = require('node:fs')
+const path = require('node:path')
 const readline = require('node:readline/promises')
 
 const { describeProvider } = require('./lib/llm')
 const { proposeHatchPlan, commitHatchPlan, hatchWhiteboard } = require('./lib/hatch')
+const { hashContent } = require('./lib/roost')
 const { DEFAULT_VAULT_ROOT } = require('./lib/paths')
 
 function printPlan (plan) {
@@ -59,7 +61,7 @@ async function main () {
 
   console.error(describeProvider())
 
-  const { sourceTitle, sourceContent, plan } = await proposeHatchPlan(sourceArg, vaultRoot, { combined })
+  const { sourceTitle, sourceContent, eggsFilePath, plan } = await proposeHatchPlan(sourceArg, vaultRoot, { combined })
   if (plan.length === 0) {
     console.log('The LLM proposed no usable candidate pages for this source. Nothing to do.')
     return
@@ -78,7 +80,13 @@ async function main () {
     return
   }
 
-  const { results } = await commitHatchPlan({ plan, sourceTitle, sourceContent }, vaultRoot)
+  const { results } = await commitHatchPlan({
+    plan,
+    sourceTitle,
+    sourceContent,
+    sourceRelPath: path.relative(vaultRoot, eggsFilePath).split(path.sep).join('/'),
+    sourceHash: hashContent(sourceContent)
+  }, vaultRoot)
 
   console.log('\nDone:')
   for (const r of results) {

@@ -111,6 +111,22 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
   const candidates = proposed.filter((c) =>
     c && typeof c.title === 'string' && c.title.trim() && VALID_TYPES.has(c.type) &&
     (!combined || (typeof c.body === 'string' && c.body.trim())))
+
+  // The per-document trace hub (kip-app#113). The prompt asks for a
+  // type:'source' page but nothing enforced it, so a plan could hatch a whole
+  // document with nothing linking back to it. Synthesize the hub into the
+  // plan HERE — the human reviewing the plan sees it and can deselect it.
+  const sourceRelPath = path.relative(vaultRoot, eggsFilePath).split(path.sep).join('/')
+  if (!candidates.some((c) => c.type === 'source')) {
+    const hash = hashContent(sourceContent)
+    candidates.push({
+      type: 'source',
+      title: sourceTitle,
+      body: `## Source\n\n- Source file: \`${sourceRelPath}\`\n- Content hash at hatch: \`${hash.slice(0, 12)}…\`\n- Hatched: ${new Date().toISOString().slice(0, 10)}\n\nThis page is the document's trace hub: the pages hatched from it carry \`source: ${sourceRelPath}\` in their frontmatter.`,
+      tags: [],
+      summary: `Hatched from ${sourceRelPath}`
+    })
+  }
   const plan = planCandidates(candidates, vaultRoot)
 
   return { sourceTitle, sourceContent, eggsFilePath, plan }
@@ -123,6 +139,15 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
  * are used as-is; any candidate without one gets a generatePageContent()
  * call here (the classic path).
  *
+ * Provenance (kip-app#113): `sourceRelPath` (coop-relative path of the
+ * document, e.g. `eggs/report.md`) and `sourceHash` (its sha1) are written
+ * onto every page this hatch touches — frontmatter `source:`/`source_hatched:`
+ * on all of them, plus a `## Source` section at the top of every
+ * `type: 'source'` page on create. When the plan proposes no source page at
+ * all, one is synthesized: the vault-pattern rule that every wiki page stays
+ * traceable to its raw document needs a per-document hub that isn't
+ * contingent on the model remembering to propose one.
+ *
  * Pages whose generated body comes back empty are skipped, not written — a
  * frontmatter-only page renders as a broken/empty page in the graph app.
  * They land in the returned `skipped` list.
@@ -133,7 +158,23 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
  *
  * @returns {{results: Array<{action, slug, path}>, skipped: string[]}}
  */
-async function commitHatchPlan ({ plan, sourceTitle, sourceContent }, vaultRoot = DEFAULT_VAULT_ROOT, { regenIndex = true } = {}) {
+async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPath = null, sourceHash = null }, vaultRoot = DEFAULT_VAULT_ROOT, { regenIndex = true } = {}) {
+  // Stamp the trace hub onto every source page's body that doesn't already
+  // open with one (the synthesized hub does; a model-proposed source page
+  // gets the block so the egg it came from is named in the page, not just the
+  // frontmatter). Create only — on update the frontmatter source/source_hatched
+  // refresh records the re-hatch, and stacking a dated ## Source per run is
+  // noise. Candidates without a drafted body (classic path) are skipped: the
+  // stamp must never fabricate a body.
+  const today = new Date().toISOString().slice(0, 10)
+  const sourceStamp = sourceRelPath
+    ? `## Source\n\n- Source file: \`${sourceRelPath}\`${sourceHash ? `\n- Content hash at hatch: \`${sourceHash.slice(0, 12)}…\`` : ''}\n- Hatched: ${today}\n\n`
+    : ''
+  plan = plan.map((c) => (c.type === 'source' && c.action !== 'update' && sourceStamp &&
+      typeof c.body === 'string' && c.body.trim() && !c.body.startsWith('## Source'))
+    ? { ...c, body: sourceStamp + c.body }
+    : c)
+
   const allSlugs = plan.map((p) => p.slug)
 
   // Resolve every page's body up front, in parallel (capped). Combined-path
@@ -176,7 +217,9 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent }, vaultRoot 
       title: candidate.title,
       body: bodies[i],
       tags: candidate.tags || [],
-      vaultRoot
+      vaultRoot,
+      source: sourceRelPath,
+      summary: candidate.summary || null
     })
 
     const writtenRaw = fs.readFileSync(path.join(vaultRoot, result.path), 'utf8')
@@ -322,7 +365,7 @@ async function convertPendingOfficeSources (vaultRoot = DEFAULT_VAULT_ROOT) {
  * ~1 MB context-window backstop — whiteboards are exempt, they become a
  * tiny outline).
  *
- * @returns {{pending: Array<{relPath, absPath, kind, bytes}>,
+ * @returns {{pending: Array<{relPath, absPath, kind, bytes, status: 'new'|'changed'}>,
  *            oversized: Array<{relPath, bytes}>,
  *            empty: string[]}}
  */
@@ -356,9 +399,15 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
 
       const content = fs.readFileSync(absPath, 'utf8')
       if (!board && meaningfulTextLength(content) < MIN_CONTENT_CHARS) { empty.push(relPath); continue }
-      if (hashes.get(relPath) === hashContent(content)) continue // unchanged since last hatch
+      const priorHash = hashes.get(relPath)
+      if (priorHash === hashContent(content)) continue // unchanged since last hatch
 
-      pending.push({ relPath, absPath, kind: board ? 'whiteboard' : root, bytes })
+      // status splits the vault-Lint "un-ingested raw" check into its two
+      // cases (kip-app#113): a brand-new source vs one hatched before and
+      // edited since — an "immutable" egg edited in place is a different
+      // signal from a fresh drop, and re-hatching it re-appends the whole
+      // document, so the preview/groom should say which is which.
+      pending.push({ relPath, absPath, kind: board ? 'whiteboard' : root, bytes, status: priorHash === undefined ? 'new' : 'changed' })
     }
   }
 
@@ -371,15 +420,19 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
  * calls. `totalKb` is the combined size of `pending`, a rough proxy for how
  * much a full run will cost. Converts any pending Office/PDF file first so it
  * shows up as its `.md`; `conversionFailed` lists the ones that wouldn't.
+ * Each pending entry carries `status: 'new' | 'changed'` (kip-app#113), and
+ * `changedCount` summarizes the latter so the preview can say "N sources
+ * edited since hatch" instead of blurring edits into new drops.
  */
 async function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {}) {
   const conv = await convertPendingOfficeSources(vaultRoot)
   const { pending, oversized, empty } = collectPendingSources(vaultRoot, opts)
   return {
-    pending: pending.map((p) => ({ source: humanizeFilename(p.absPath), kind: p.kind, kb: Math.round(p.bytes / 1024) })),
+    pending: pending.map((p) => ({ source: humanizeFilename(p.absPath), kind: p.kind, kb: Math.round(p.bytes / 1024), status: p.status })),
     oversized: oversized.map((o) => ({ source: o.relPath, kb: Math.round(o.bytes / 1024) })),
     empty,
     conversionFailed: conv.failed,
+    changedCount: pending.filter((p) => p.status === 'changed').length,
     totalKb: Math.round(pending.reduce((sum, p) => sum + p.bytes, 0) / 1024)
   }
 }
@@ -440,7 +493,9 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
         failed.push({ source, error: 'no usable pages proposed (often a transient LLM formatting issue — re-run to retry this file)', ms: Date.now() - startedAt })
       } else {
         // index.md is regenerated once after the whole batch, not per file.
-        const { results, skipped } = await commitHatchPlan(proposal, vaultRoot, { regenIndex: false })
+        const { results, skipped } = await commitHatchPlan(
+          { ...proposal, sourceRelPath: file.relPath, sourceHash: hash },
+          vaultRoot, { regenIndex: false })
         if (results.length === 0) {
           failed.push({ source, error: 'the LLM returned empty content for every proposed page — re-run to retry this file', ms: Date.now() - startedAt })
         } else {
@@ -544,7 +599,7 @@ async function commitReviewedPlan (vaultRoot = DEFAULT_VAULT_ROOT, { keepSlugs =
     }
 
     const { results, skipped } = await commitHatchPlan(
-      { plan: kept, sourceTitle: stash.sourceTitle, sourceContent: stash.sourceContent },
+      { plan: kept, sourceTitle: stash.sourceTitle, sourceContent: stash.sourceContent, sourceRelPath: stash.relPath, sourceHash: stash.hash },
       vaultRoot, { regenIndex: true })
     if (results.length === 0) {
       return { source, error: 'every kept page came back empty — try again', ms: Date.now() - startedAt }
