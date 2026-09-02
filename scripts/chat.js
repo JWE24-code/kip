@@ -26,14 +26,23 @@
 //
 // Usage: node scripts/chat.js "your question — or a fact to remember" [--trace]
 //        [--arena-compare-to <callId>] [--history '<json>']
+//        [--file-answer '<json>']
 //   --history: [{ "role": "user"|"assistant", "text": "…" }] oldest→newest, a
 //     short buffer of recent turns so a follow-up can resolve what it refers to.
+//   --file-answer (kip-app#112): do NOT run a turn — file an already-settled
+//     answer into the nest. Takes
+//     '{ "question": "…", "answer": "…", "candidateSlugs": ["…"] }' and calls
+//     fileAnswerToNest with log:false, because the turn's `peck` clucks row was
+//     already written at ask time. Prints the resolvePage result as JSON
+//     ({ action, slug, path, ... }). This is the app's "file into the nest"
+//     control; the CLI's interactive y/n prompt remains the other way in.
 //   (set KIP_COOP_ROOT to point at a graph other than this repo's ./coop)
 require('dotenv').config()
 const path = require('node:path')
 
 const { describeProvider } = require('./lib/llm')
-const { peckTurn } = require('./lib/peck')
+const { peckTurn, fileAnswerToNest } = require('./lib/peck')
+const { appendLog } = require('./lib/roost')
 const { DEFAULT_VAULT_ROOT } = require('./lib/paths')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
@@ -42,7 +51,7 @@ const { installFeedbackPoster } = require('./lib/feedback-poster')
 const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const traceOn = process.argv.includes('--trace') || process.env.KIP_PECK_TRACE === '1'
 
-const VALUE_FLAGS = new Set(['--arena-compare-to', '--history'])
+const VALUE_FLAGS = new Set(['--arena-compare-to', '--history', '--file-answer'])
 
 // How often the accumulating answer is written to peck-progress.json while it
 // streams. Fast enough to read as live, slow enough not to thrash the file the
@@ -66,6 +75,30 @@ function looksLikeControlToken (text) {
 
 async function main () {
   const args = process.argv.slice(2)
+
+  // Post-hoc file-back (kip-app#112): no turn, no stream, just the write.
+  const faIdx = args.indexOf('--file-answer')
+  if (faIdx >= 0) {
+    let payload = null
+    try {
+      payload = JSON.parse(args[faIdx + 1] || 'null')
+    } catch { /* falls through to the usage error below */ }
+    if (!payload || typeof payload.question !== 'string' || typeof payload.answer !== 'string') {
+      console.error('Usage: --file-answer \'{"question": "…", "answer": "…", "candidateSlugs": ["…"]}\'')
+      process.exitCode = 1
+      return
+    }
+    const result = await fileAnswerToNest(
+      payload.question,
+      payload.answer,
+      Array.isArray(payload.candidateSlugs) ? payload.candidateSlugs : [],
+      DEFAULT_VAULT_ROOT,
+      { log: false } // the turn's `peck` row was written at ask time
+    )
+    console.log(JSON.stringify({ filed: true, ...result }))
+    return
+  }
+
   const input = args.find((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(args[i - 1]))
   if (!input || !input.trim()) {
     console.error('Usage: node scripts/chat.js "your question — or a fact to remember" [--trace] [--arena-compare-to <callId>] [--history <json>]')
@@ -126,6 +159,13 @@ async function main () {
     const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId, history, onStream })
     reporter.setProgress({ partialAnswer: null })
     reporter.flush(false)
+    // The audit row the CLI writes but the app path never did (kip-app#112):
+    // every question turn leaves one `peck` entry with its candidate slugs,
+    // so asked-but-never-kept questions are visible in the coop's activity.
+    // The later --file-answer write uses log:false — no second row.
+    if (result && result.intent !== 'statement') {
+      appendLog('peck', input, result.candidateSlugs || [], DEFAULT_VAULT_ROOT)
+    }
     reporter.writeMetrics()
     reporter.close()
     console.log(JSON.stringify(result))

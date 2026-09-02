@@ -758,3 +758,50 @@ test('peckTurn — a plain fact statement still goes to capture, not reminders',
     assert.ok(!fs.existsSync(path.join(root, 'reminders.json')))
   } finally { s.restore() }
 })
+
+test('fileAnswerToNest hardening for the app file-back (kip-app#112)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  await t.test('a 300-character question files fine: slug capped, body keeps the full question', async () => {
+    const longQuestion = '这是什么意思呢'.repeat(60) // 360 chars, ~1080 bytes raw — would break an uncapped filename
+    const result = await fileAnswerToNest(longQuestion, 'Short answer.', [], root)
+    assert.equal(result.action, 'create')
+    assert.ok(fs.existsSync(path.join(root, result.path)), 'file written within filename limits')
+    assert.ok(result.slug.length <= 60, 'slug capped like web-sources SLUG_MAX')
+
+    const raw = fs.readFileSync(path.join(root, result.path), 'utf8')
+    assert.ok(raw.includes('**Q:** ' + longQuestion), 'body keeps the full question')
+
+    const dbPage = getPage(result.slug, root)
+    assert.ok(dbPage.summary.length <= 200, 'db summary is the capped question, not the full one')
+  })
+
+  await t.test('updating an existing page preserves its summary and merges the from-peck tag', async () => {
+    writePage(root, 'concepts', 'sleep-quality', { type: 'concept', tags: ['health'], body: 'Original notes on sleep quality.' })
+    rebuildRoost(root)
+
+    const result = await fileAnswerToNest('sleep quality', 'New info.', [], root)
+    assert.equal(result.action, 'update')
+
+    const dbPage = getPage('sleep-quality', root)
+    assert.equal(dbPage.summary, 'Original notes on sleep quality.', 'index summary not clobbered by the question')
+    assert.ok(dbPage.tags.includes('health'), 'existing tag kept')
+    assert.ok(dbPage.tags.includes('from-peck'), 'peck marker merged in')
+
+    const raw = fs.readFileSync(path.join(root, dbPage.path), 'utf8')
+    assert.ok(raw.includes('from-peck'), 'marker visible in the frontmatter too')
+  })
+
+  await t.test('log:false writes no clucks row (the app turn already logged one)', async () => {
+    const logFile = path.join(root, 'clucks', `${new Date().toISOString().slice(0, 7)}.md`)
+    const before = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''
+    const beforeCount = (before.match(/peck \|/g) || []).length
+
+    await fileAnswerToNest('a question nobody logged yet?', 'Answer.', [], root, { log: false })
+
+    const after = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : ''
+    const afterCount = (after.match(/peck \|/g) || []).length
+    assert.equal(afterCount, beforeCount, 'no additional peck row')
+  })
+})

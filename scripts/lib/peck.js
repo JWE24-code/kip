@@ -16,7 +16,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const matter = require('gray-matter')
 
-const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSlugs } = require('./roost')
+const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSlugs, getPage } = require('./roost')
 const { resolvePage } = require('./pages')
 const { extractKeyTerms, answerQuestion, answerQuestionWithSkills, answerFromWeb, isNoAnswer, captureFacts } = require('./prompts')
 const { discoverSkills, runSkill } = require('./skills')
@@ -171,27 +171,52 @@ function extractCitedSlugs (answerText, candidateSlugs) {
   return candidateSlugs.filter((slug) => linked.has(slug))
 }
 
+// Page titles come from raw questions, and slugify has no length cap — a long
+// (especially CJK: ~3 bytes/char) question could blow past filename limits.
+// 60 chars matches web-sources.js SLUG_MAX. Only the title/slug is capped;
+// the full question stays in the body and the clucks row.
+const ANSWER_TITLE_MAX = 60
+
 /**
  * Writes an answer into the nest as a new/updated `concept` page (the same
  * create-vs-update resolution hatch.js uses) and logs the peck. The one
  * place this write+log sequence exists.
+ *
+ * `log: false` skips the clucks row — the app's file-back path uses it
+ * because chat.js already wrote the turn's `peck` row at ask time
+ * (kip-app#112); without it, one question+file would log twice.
  */
-async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = DEFAULT_VAULT_ROOT) {
+async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = DEFAULT_VAULT_ROOT, { log = true } = {}) {
+  const trimmed = question.trim()
+  const title = trimmed.length > ANSWER_TITLE_MAX
+    ? trimmed.slice(0, ANSWER_TITLE_MAX).trimEnd() + '…'
+    : trimmed
+
   const result = resolvePage({
     type: 'concept', // a peck answer is a synthesized note; closest fit of
                       // the three page types. Existing-page updates keep
                       // whatever type the matched page already has.
-    title: question,
+    title,
     body: `**Q:** ${question}\n\n${answer}`,
-    tags: ['from-peck'],
+    tags: ['from-peck'], // merged into existing tags on update (kip-app#113)
     vaultRoot
   })
 
+  // On update, keep the page's existing index summary — overwriting it with
+  // the question replaced hatch's (or an earlier answer's) curated one-liner
+  // and that clobber then propagated to nest/index.md (kip-app#112).
+  const existing = result.action === 'update' ? getPage(result.slug, vaultRoot) : null
+  const summary = existing
+    ? existing.summary
+    : trimmed.length > 200 ? trimmed.slice(0, 197) + '...' : trimmed
+
   const writtenRaw = fs.readFileSync(path.join(vaultRoot, result.path), 'utf8')
   const { content: writtenBody } = matter(writtenRaw)
-  upsertPage(result.slug, result.path, result.type, result.tags, question, writtenBody, vaultRoot)
+  upsertPage(result.slug, result.path, result.type, result.tags, summary, writtenBody, vaultRoot)
   regenerateIndexMd(vaultRoot)
-  appendLog('peck', question, [...new Set([...candidateSlugs, result.slug])], vaultRoot)
+  if (log) {
+    appendLog('peck', question, [...new Set([...candidateSlugs, result.slug])], vaultRoot)
+  }
 
   return result
 }
