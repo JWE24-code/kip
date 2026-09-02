@@ -119,7 +119,10 @@ SQLite + FTS5, via `better-sqlite3`. Fully derived from the Markdown files —
 ### 4.2 The nest — page types
 
 Every page is `coop/nest/<dir>/<slug>.md` with frontmatter
-(`type`, `created`, `updated`, `tags`).
+(`type`, `created`, `updated`, `tags`; hatched pages also carry `source`
++ `source_hatched` pointing back at the document they were derived from,
+`source_original` for converted Office siblings, and the LLM's `summary`
+one-liner — which `rebuild-roost` reads back, so a rebuild keeps it).
 
 | folder | contents |
 |---|---|

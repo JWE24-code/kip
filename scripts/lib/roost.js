@@ -271,13 +271,19 @@ function hatchedSourceHashes (vaultRoot = DEFAULT_VAULT_ROOT) {
   }
 }
 
+// A row whose file is missing prunes only after this long: a file absent for
+// minutes is a sync race or an in-place rewrite, not a rename — pruning it
+// early would make the file re-hatch as brand-new and duplicate its pages.
+const PRUNE_GRACE_MS = 48 * 60 * 60 * 1000
+
 /**
  * Upserts a `hatched_sources` row: this file has now been hatched at this
- * content hash. Also prunes rows whose file is gone from disk while its
- * directory still exists (kip-app#113) — a renamed or deleted source
- * (GETTING-STARTED's versioning guidance: new version under a new filename)
- * would otherwise leave an orphan row forever. A missing *directory* means
- * the source root itself isn't there (e.g. not yet synced) — those rows stay.
+ * content hash. Also prunes rows whose file has been gone from disk for over
+ * a day while its directory still exists (kip-app#113) — a renamed or
+ * deleted source (GETTING-STARTED's versioning guidance: new version under a
+ * new filename) would otherwise leave an orphan row forever. A missing
+ * *directory* means the source root itself isn't there (not yet synced) —
+ * those rows stay regardless of age.
  */
 function recordHatchedSource (relPath, hash, vaultRoot = DEFAULT_VAULT_ROOT) {
   const db = openDb(vaultRoot)
@@ -287,8 +293,10 @@ function recordHatchedSource (relPath, hash, vaultRoot = DEFAULT_VAULT_ROOT) {
       ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, hatched = excluded.hatched
     `).run({ path: relPath, hash, hatched: new Date().toISOString() })
 
-    const rows = db.prepare('SELECT path FROM hatched_sources WHERE path != ?').all(relPath)
+    const cutoff = Date.now() - PRUNE_GRACE_MS
+    const rows = db.prepare('SELECT path, hatched FROM hatched_sources WHERE path != ?').all(relPath)
     for (const row of rows) {
+      if (Date.parse(row.hatched || '') > cutoff) continue
       const abs = path.join(vaultRoot, row.path)
       if (fs.existsSync(abs)) continue
       if (!fs.existsSync(path.dirname(abs))) continue

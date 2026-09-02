@@ -160,10 +160,12 @@ async function main () {
     reporter.setProgress({ partialAnswer: null })
     reporter.flush(false)
     // The audit row the CLI writes but the app path never did (kip-app#112):
-    // every question turn leaves one `peck` entry with its candidate slugs,
-    // so asked-but-never-kept questions are visible in the coop's activity.
-    // The later --file-answer write uses log:false — no second row.
-    if (result && result.intent !== 'statement') {
+    // a question turn leaves one `peck` entry with its candidate slugs, so
+    // asked-but-never-kept questions are visible in the coop's activity.
+    // Statements log their own `told` row; reminders file nothing; a
+    // regenerate is the same question again, not a new one. The later
+    // --file-answer write uses log:false — no second row.
+    if (result && result.intent === 'question' && !arenaCompareToCallId) {
       appendLog('peck', input, result.candidateSlugs || [], DEFAULT_VAULT_ROOT)
     }
     reporter.writeMetrics()

@@ -125,7 +125,7 @@ test('collectPendingSources: buckets eggs/journals/pages by new-or-changed, size
 test('collectPendingSources: no source dirs -> everything empty', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-bare-'))
   try {
-    assert.deepEqual(collectPendingSources(root), { pending: [], oversized: [], empty: [] })
+    assert.deepEqual(collectPendingSources(root), { pending: [], oversized: [], empty: [], errors: [] })
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -413,25 +413,38 @@ test('source lineage: ## Source block + frontmatter provenance + synthesized hub
   try {
     const summary = await hatchAllSources(root, { limit: 1 })
     assert.equal(summary.hatched.length, 1)
-    const slugs = summary.hatched[0].results.map((r) => r.slug).sort()
-    assert.ok(slugs.includes('sleep-study'), 'the synthesized source page uses the source title')
-    assert.equal(slugs.length, 2, 'one proposed page + the synthesized source hub')
+    const results = summary.hatched[0].results
+    assert.equal(results.length, 2, 'one proposed page + the synthesized source hub')
+    const hub = results.find((r) => r.type === 'source')
+    const concept = results.find((r) => r.type === 'concept')
+    assert.equal(concept.slug, 'sleep-study')
+    // The hub must NOT steal the concept's slug: meta.db is keyed by slug,
+    // so a second page under 'sleep-study' would make the concept vanish
+    // from search, index and groom (kip-app#113 review).
+    assert.equal(hub.slug, 'sleep-study-source')
+    assert.equal(hub.path, 'nest/sources/sleep-study-source.md')
 
-    const hubRaw = fs.readFileSync(path.join(root, 'nest', 'sources', 'sleep-study.md'), 'utf8')
+    const conceptRow = getPage('sleep-study', root)
+    assert.equal(conceptRow.type, 'concept', 'concept row intact under its own slug')
+    assert.equal(conceptRow.summary, 'Weekly sleep numbers', 'concept summary intact')
+
+    const hubRaw = fs.readFileSync(path.join(root, hub.path), 'utf8')
     assert.match(hubRaw, /## Source\n\n- Source file: `eggs\/sleep-study\.md`/)
     assert.match(hubRaw, /- Content hash at hatch: `[0-9a-f]{12}…`/)
     assert.match(hubRaw, /type: source/)
     assert.match(hubRaw, /source_hatched: '?\d{4}-\d{2}-\d{2}'?/)
 
-    const entityRaw = fs.readFileSync(path.join(root, 'nest', 'concepts', 'sleep-study.md'), 'utf8')
-    assert.doesNotMatch(entityRaw, /## Source/, 'no ## Source section on non-source pages')
-    assert.match(entityRaw, /source: eggs\/sleep-study\.md/, 'but frontmatter provenance on all pages')
+    const conceptRaw = fs.readFileSync(path.join(root, 'nest', 'concepts', 'sleep-study.md'), 'utf8')
+    assert.doesNotMatch(conceptRaw, /## Source/, 'no ## Source section on non-source pages')
+    assert.match(conceptRaw, /source: eggs\/sleep-study\.md/, 'but frontmatter provenance on all pages')
 
     // rebuild-roost must keep the LLM summary now that it lives in frontmatter
     const { rebuildRoost: rebuild } = require('../rebuild-roost')
     rebuild(root)
-    assert.match(getPage('sleep-study', root).summary, /Hatched from eggs\/sleep-study\.md/,
+    assert.match(getPage('sleep-study-source', root).summary, /Hatched from eggs\/sleep-study\.md/,
       'frontmatter summary survives a rebuild instead of degrading to the first paragraph')
+    assert.equal(getPage('sleep-study', root).summary, 'Weekly sleep numbers',
+      'and the concept keeps its own summary through a rebuild too')
   } finally {
     restore()
   }
@@ -486,6 +499,16 @@ test('recordHatchedSource prunes the orphan row left by a renamed source (kip-ap
 
   // The user renames per GETTING-STARTED's versioning guidance: new file, old one gone.
   fs.rmSync(path.join(root, 'eggs', 'report-v1.md'))
+  // The prune has a 48h grace period (a minutes-old missing file is a sync
+  // race, not a rename) — backdate the row past it.
+  const { openDb } = require('../lib/db')
+  const db = openDb(root)
+  try {
+    db.prepare("UPDATE hatched_sources SET hatched = ? WHERE path = 'eggs/report-v1.md'")
+      .run(new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString())
+  } finally {
+    db.close()
+  }
   recordHatchedSource('eggs/report-v2.md', hashContent('Version two of a report.'), root)
   const { hatchedSourceHashes } = require('../lib/roost')
   const hashes = hatchedSourceHashes(root)

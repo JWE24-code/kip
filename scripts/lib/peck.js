@@ -171,16 +171,16 @@ function extractCitedSlugs (answerText, candidateSlugs) {
   return candidateSlugs.filter((slug) => linked.has(slug))
 }
 
-// Page titles come from raw questions, and slugify has no length cap — a long
-// (especially CJK: ~3 bytes/char) question could blow past filename limits.
-// 60 chars matches web-sources.js SLUG_MAX. Only the title/slug is capped;
-// the full question stays in the body and the clucks row.
-const ANSWER_TITLE_MAX = 60
-
 /**
  * Writes an answer into the nest as a new/updated `concept` page (the same
  * create-vs-update resolution hatch.js uses) and logs the peck. The one
  * place this write+log sequence exists.
+ *
+ * The question is matched against existing pages in full, but the derived
+ * slug is capped by resolvePage (SLUG_MAX) — a long (especially CJK)
+ * question can't blow filename limits, and answers filed by older builds
+ * still resolve to their existing page. The full question stays in the body
+ * and the clucks row either way.
  *
  * `log: false` skips the clucks row — the app's file-back path uses it
  * because chat.js already wrote the turn's `peck` row at ask time
@@ -188,17 +188,16 @@ const ANSWER_TITLE_MAX = 60
  */
 async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = DEFAULT_VAULT_ROOT, { log = true } = {}) {
   const trimmed = question.trim()
-  const title = trimmed.length > ANSWER_TITLE_MAX
-    ? trimmed.slice(0, ANSWER_TITLE_MAX).trimEnd() + '…'
-    : trimmed
 
   const result = resolvePage({
     type: 'concept', // a peck answer is a synthesized note; closest fit of
                       // the three page types. Existing-page updates keep
                       // whatever type the matched page already has.
-    title,
+    title: trimmed, // matched on the full question; the derived slug is
+                    // capped by resolvePage, so old filed answers still resolve
     body: `**Q:** ${question}\n\n${answer}`,
-    tags: ['from-peck'], // merged into existing tags on update (kip-app#113)
+    tags: ['from-peck'],
+    mergeTags: true, // survive updates onto an existing page (kip-app#113)
     vaultRoot
   })
 

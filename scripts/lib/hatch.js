@@ -11,7 +11,7 @@ const {
   findSimilarSlug, slugify, getPage, upsertPage, regenerateIndexMd, appendLog,
   hashContent, hatchedSourceHashes, recordHatchedSource, searchPages, SIMILARITY_THRESHOLD
 } = require('./roost')
-const { resolvePage } = require('./pages')
+const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath } = require('./pages')
 const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, describeWhiteboard } = require('./prompts')
 const { parseWhiteboard, whiteboardToOutline } = require('./whiteboard')
 const { isSupported: isOfficeFile, convertFile: convertOfficeFile, markdownNameFor } = require('./office')
@@ -71,11 +71,24 @@ function ensureInEggs (sourcePath, vaultRoot) {
   return targetPath
 }
 
-/** Resolves create-vs-update for each LLM-proposed candidate. No writes — findSimilarSlug() only. */
-function planCandidates (candidates, vaultRoot) {
+/** Resolves create-vs-update for each LLM-proposed candidate. No writes —
+ *  findSimilarSlug()/getPage() only. Mirrors resolvePage's source-hub rules
+ *  (a source page never updates a non-source page; a document's own hub is
+ *  found by source path, not title), so the plan a human reviews describes
+ *  what the write will actually do. */
+function planCandidates (candidates, vaultRoot, { sourceRelPath = null } = {}) {
   return candidates.map((candidate) => {
+    // A document's own hub resolves by source path first — same as resolvePage.
+    if (candidate.type === 'source' && sourceRelPath) {
+      const hub = findSourceHubByPath(sourceRelPath, vaultRoot)
+      if (hub) return { ...candidate, action: 'update', slug: hub.slug }
+    }
     const similar = findSimilarSlug(candidate.title, vaultRoot)
     if (similar && similar.score >= SIMILARITY_THRESHOLD) {
+      const matched = getPage(similar.slug, vaultRoot)
+      if (matched && sourceHubMustCreate(matched.type, candidate.type)) {
+        return { ...candidate, action: 'create', slug: nextFreeSlug(similar.slug, candidate.type, vaultRoot) }
+      }
       return { ...candidate, action: 'update', slug: similar.slug, similarity: similar.score }
     }
     return { ...candidate, action: 'create', slug: slugify(candidate.title) }
@@ -105,6 +118,16 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
   const sourceContent = fs.readFileSync(eggsFilePath, 'utf8')
   const sourceTitle = humanizeFilename(eggsFilePath)
 
+  // An Office-converted sibling (report.docx -> report.docx.md) carries the
+  // original file's name in its own frontmatter (`source:`, written by
+  // lib/office.js "so a hatched page can be traced back") — read it through,
+  // so the trace names the .docx, not just the .md we generated from it.
+  let sourceOriginal = null
+  try {
+    const eggMeta = matter(sourceContent).data
+    if (eggMeta && typeof eggMeta.source === 'string' && eggMeta.source.trim()) sourceOriginal = eggMeta.source.trim()
+  } catch { /* not frontmatter'd — fine */ }
+
   const proposed = combined
     ? await proposeAndDraftPages(sourceTitle, sourceContent, vaultRoot)
     : await proposeCandidatePages(sourceTitle, sourceContent, vaultRoot)
@@ -122,14 +145,14 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
     candidates.push({
       type: 'source',
       title: sourceTitle,
-      body: `## Source\n\n- Source file: \`${sourceRelPath}\`\n- Content hash at hatch: \`${hash.slice(0, 12)}…\`\n- Hatched: ${new Date().toISOString().slice(0, 10)}\n\nThis page is the document's trace hub: the pages hatched from it carry \`source: ${sourceRelPath}\` in their frontmatter.`,
+      body: `## Source\n\n- Source file: \`${sourceRelPath}\`${sourceOriginal ? `\n- Original document: \`${sourceOriginal}\`` : ''}\n- Content hash at hatch: \`${hash.slice(0, 12)}…\`\n- Hatched: ${new Date().toISOString().slice(0, 10)}\n\nThis page is the document's trace hub: the pages hatched from it carry \`source: ${sourceRelPath}\` in their frontmatter.`,
       tags: [],
       summary: `Hatched from ${sourceRelPath}`
     })
   }
-  const plan = planCandidates(candidates, vaultRoot)
+  const plan = planCandidates(candidates, vaultRoot, { sourceRelPath })
 
-  return { sourceTitle, sourceContent, eggsFilePath, plan }
+  return { sourceTitle, sourceContent, eggsFilePath, sourceRelPath, sourceOriginal, plan }
 }
 
 /**
@@ -158,23 +181,7 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
  *
  * @returns {{results: Array<{action, slug, path}>, skipped: string[]}}
  */
-async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPath = null, sourceHash = null }, vaultRoot = DEFAULT_VAULT_ROOT, { regenIndex = true } = {}) {
-  // Stamp the trace hub onto every source page's body that doesn't already
-  // open with one (the synthesized hub does; a model-proposed source page
-  // gets the block so the egg it came from is named in the page, not just the
-  // frontmatter). Create only — on update the frontmatter source/source_hatched
-  // refresh records the re-hatch, and stacking a dated ## Source per run is
-  // noise. Candidates without a drafted body (classic path) are skipped: the
-  // stamp must never fabricate a body.
-  const today = new Date().toISOString().slice(0, 10)
-  const sourceStamp = sourceRelPath
-    ? `## Source\n\n- Source file: \`${sourceRelPath}\`${sourceHash ? `\n- Content hash at hatch: \`${sourceHash.slice(0, 12)}…\`` : ''}\n- Hatched: ${today}\n\n`
-    : ''
-  plan = plan.map((c) => (c.type === 'source' && c.action !== 'update' && sourceStamp &&
-      typeof c.body === 'string' && c.body.trim() && !c.body.startsWith('## Source'))
-    ? { ...c, body: sourceStamp + c.body }
-    : c)
-
+async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPath = null, sourceHash = null, sourceOriginal = null }, vaultRoot = DEFAULT_VAULT_ROOT, { regenIndex = true } = {}) {
   const allSlugs = plan.map((p) => p.slug)
 
   // Resolve every page's body up front, in parallel (capped). Combined-path
@@ -219,6 +226,8 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPat
       tags: candidate.tags || [],
       vaultRoot,
       source: sourceRelPath,
+      sourceHash,
+      sourceOriginal,
       summary: candidate.summary || null
     })
 
@@ -298,14 +307,18 @@ async function hatchWhiteboard (absPath, vaultRoot = DEFAULT_VAULT_ROOT) {
     }
   }
 
+  const relBoardPath = path.relative(vaultRoot, absPath).split(path.sep).join('/')
   const intro = context
-    ? `_Whiteboard **${boardName}**: the Context is LLM-written, the Outline is regenerated from the board's shapes. Edit the board, not this page._`
-    : `_Outline of the whiteboard **${boardName}**, generated from its shapes. Edit the board, not this page._`
+    ? `_Whiteboard **${boardName}** (source: \`${relBoardPath}\`): the Context is LLM-written, the Outline is regenerated from the board's shapes. Edit the board, not this page._`
+    : `_Outline of the whiteboard **${boardName}**, generated from \`${relBoardPath}\`. Edit the board, not this page._`
   const body = context
     ? `${intro}\n\n## Context\n\n${context}\n\n## Outline\n\n${outline}`
     : `${intro}\n\n${outline}`
 
-  fs.writeFileSync(filePath, matter.stringify(body + '\n', { type: 'source', created, updated: today, tags: ['whiteboard'] }))
+  fs.writeFileSync(filePath, matter.stringify(body + '\n', {
+    type: 'source', created, updated: today, tags: ['whiteboard'],
+    source: relBoardPath, source_hatched: today
+  }))
   upsertPage(slug, relPath, 'source', ['whiteboard'], summary, body, vaultRoot)
   return { action: existing ? 'update' : 'create', slug, path: relPath, enriched: !!context }
 }
@@ -367,13 +380,15 @@ async function convertPendingOfficeSources (vaultRoot = DEFAULT_VAULT_ROOT) {
  *
  * @returns {{pending: Array<{relPath, absPath, kind, bytes, status: 'new'|'changed'}>,
  *            oversized: Array<{relPath, bytes}>,
- *            empty: string[]}}
+ *            empty: string[],
+ *            errors: Array<{relPath, error}>}}
  */
 function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE_ROOTS } = {}) {
   const hashes = hatchedSourceHashes(vaultRoot)
   const pending = []
   const oversized = []
   const empty = []
+  const errors = []
 
   for (const root of roots) {
     const dir = path.join(vaultRoot, root)
@@ -391,13 +406,23 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
 
       const absPath = path.join(dir, entry.name)
       const relPath = `${root}/${entry.name}`
-      const bytes = fs.statSync(absPath).size
+      let bytes
+      let content
+      try {
+        bytes = fs.statSync(absPath).size
+        content = fs.readFileSync(absPath, 'utf8')
+      } catch (err) {
+        // Unreadable now (permissions, a race with the file being replaced).
+        // Report it rather than throwing the whole scan — groom runs
+        // unattended on a schedule and must not die on one bad file.
+        errors.push({ relPath, error: (err && err.code) || (err && err.message) || String(err) })
+        continue
+      }
 
       // Whiteboards are turned into a tiny outline deterministically, so the
       // huge tldraw JSON behind them doesn't count against the size/prose gates.
       if (!board && bytes > MAX_SOURCE_BYTES) { oversized.push({ relPath, bytes }); continue }
 
-      const content = fs.readFileSync(absPath, 'utf8')
       if (!board && meaningfulTextLength(content) < MIN_CONTENT_CHARS) { empty.push(relPath); continue }
       const priorHash = hashes.get(relPath)
       if (priorHash === hashContent(content)) continue // unchanged since last hatch
@@ -412,7 +437,7 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
   }
 
   pending.sort((a, b) => a.relPath.localeCompare(b.relPath))
-  return { pending, oversized, empty }
+  return { pending, oversized, empty, errors }
 }
 
 /**
@@ -560,7 +585,7 @@ async function proposeNextPending (vaultRoot = DEFAULT_VAULT_ROOT,
   const p = await proposeHatchPlan(file.absPath, vaultRoot, { copyToEggs: file.kind === 'eggs', combined })
   fs.writeFileSync(planFile, JSON.stringify({
     relPath: file.relPath, kind: file.kind, hash,
-    sourceTitle: p.sourceTitle, sourceContent: p.sourceContent, plan: p.plan, at: Date.now()
+    sourceTitle: p.sourceTitle, sourceContent: p.sourceContent, sourceOriginal: p.sourceOriginal, plan: p.plan, at: Date.now()
   }))
   return {
     source, relPath: file.relPath, kind: file.kind, remaining,
@@ -599,7 +624,7 @@ async function commitReviewedPlan (vaultRoot = DEFAULT_VAULT_ROOT, { keepSlugs =
     }
 
     const { results, skipped } = await commitHatchPlan(
-      { plan: kept, sourceTitle: stash.sourceTitle, sourceContent: stash.sourceContent, sourceRelPath: stash.relPath, sourceHash: stash.hash },
+      { plan: kept, sourceTitle: stash.sourceTitle, sourceContent: stash.sourceContent, sourceRelPath: stash.relPath, sourceHash: stash.hash, sourceOriginal: stash.sourceOriginal },
       vaultRoot, { regenIndex: true })
     if (results.length === 0) {
       return { source, error: 'every kept page came back empty — try again', ms: Date.now() - startedAt }

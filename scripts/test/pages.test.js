@@ -98,14 +98,15 @@ test('resolvePage provenance (kip-app#113)', async (t) => {
     assert.match(raw, /summary: One LLM one-liner about the visit/)
   })
 
-  await t.test('update refreshes the source stamp and MERGES tags instead of dropping them', () => {
+  await t.test('update refreshes the source stamp and MERGES tags only on request', () => {
     const result = resolvePage({
       type: 'concept',
       title: 'sleep-quality',
       body: 'New note: quality matters as much as duration.',
       tags: ['from-peck'],
       vaultRoot: root,
-      source: 'eggs/clinic-visit.md'
+      source: 'eggs/clinic-visit.md',
+      mergeTags: true
     })
     assert.equal(result.action, 'update')
     assert.equal(result.slug, 'sleep-hygiene')
