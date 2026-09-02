@@ -244,7 +244,8 @@ a **statement**.
    coop has any **skill** configured (§5.4), the model can call one or more
    before answering.
 4. `appendLog('peck', …)`. The CLI asks whether to file the answer as a
-   `concept` page; the app does not file answers.
+   `concept` page; the app offers a per-answer "file into the nest"
+   control instead (kip-app#112), and logs the question turn either way.
 
 **A statement** ("the CDO of CompanyX is John Doe") — a fact to remember:
 
