@@ -11,7 +11,7 @@ const {
   findSimilarSlug, slugify, getPage, upsertPage, regenerateIndexMd, appendLog,
   hashContent, hatchedSourceHashes, recordHatchedSource, searchPages, SIMILARITY_THRESHOLD
 } = require('./roost')
-const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath } = require('./pages')
+const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, hatchedSourcePaths } = require('./pages')
 const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, describeWhiteboard } = require('./prompts')
 const { parseWhiteboard, whiteboardToOutline } = require('./whiteboard')
 const { convertFile: convertOfficeFile, markdownNameFor, toStubSource, UnsupportedFormatError } = require('./office')
@@ -402,6 +402,11 @@ async function prepareSources (vaultRoot = DEFAULT_VAULT_ROOT) {
  *
  * `pending` = new OR content-changed since last hatch (sha1 vs
  * hatched_sources); `kind` is the dir, or 'whiteboard' for a .edn board.
+ * A source whose trace hub already exists in nest/sources/ is treated as
+ * already hatched and skipped — the nest is synced graph markdown, so this
+ * holds across devices (a Dropbox sync that brings over an already-hatched
+ * file is NOT re-hatched), unlike the hatched_sources hash cache which is
+ * device-local. Pass `force` to re-hatch those anyway (a manual re-hatch).
  * Skipped, and reported separately: dotfiles, non-.md files (they're turned
  * into .md siblings by prepareSources() first), near-empty files, and files
  * over MAX_SOURCE_BYTES (a ~1 MB context-window backstop — whiteboards are
@@ -412,8 +417,9 @@ async function prepareSources (vaultRoot = DEFAULT_VAULT_ROOT) {
  *            empty: string[],
  *            errors: Array<{relPath, error}>}}
  */
-function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE_ROOTS } = {}) {
+function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE_ROOTS, force = false } = {}) {
   const hashes = hatchedSourceHashes(vaultRoot)
+  const hatchedPaths = force ? null : hatchedSourcePaths(vaultRoot)
   const pending = []
   const oversized = []
   const empty = []
@@ -449,6 +455,7 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
       if (!board && bytes > MAX_SOURCE_BYTES) { oversized.push({ relPath, bytes }); continue }
 
       if (!board && meaningfulTextLength(content) < MIN_CONTENT_CHARS) { empty.push(relPath); continue }
+      if (hatchedPaths && hatchedPaths.has(relPath)) continue // already hatched (synced trace hub) — skip unless forced
       const priorHash = hashes.get(relPath)
       if (priorHash === hashContent(content)) continue // unchanged since last hatch
 
@@ -514,9 +521,9 @@ async function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {})
  *            remaining: number}}
  */
 async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
-  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, onProgress = () => {}, combined = true } = {}) {
+  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, onProgress = () => {}, combined = true, force = false } = {}) {
   const conversion = await prepareSources(vaultRoot)
-  const { pending, oversized, empty } = collectPendingSources(vaultRoot, { roots })
+  const { pending, oversized, empty } = collectPendingSources(vaultRoot, { roots, force })
   const batch = pending.slice(0, limit)
 
   const hatched = []
@@ -588,9 +595,9 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
  *            whiteboard?: true}}
  */
 async function proposeNextPending (vaultRoot = DEFAULT_VAULT_ROOT,
-  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, skip = 0, combined = true } = {}) {
+  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, skip = 0, combined = true, force = false } = {}) {
   await prepareSources(vaultRoot)
-  const { pending } = collectPendingSources(vaultRoot, { roots })
+  const { pending } = collectPendingSources(vaultRoot, { roots, force })
   const capped = pending.slice(0, limit)
   const file = capped[skip]
   if (!file) return { done: true }

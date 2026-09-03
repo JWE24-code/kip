@@ -131,6 +131,31 @@ test('collectPendingSources: no source dirs -> everything empty', () => {
   }
 })
 
+test('collectPendingSources: skips a source whose trace hub exists (Dropbox-sync idempotency)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  // A source hatched on another device: the source file AND its trace hub
+  // synced over, but this device's hatched_sources cache is empty (it isn't
+  // what Dropbox syncs — the nest is).
+  fs.writeFileSync(path.join(root, 'pages', 'report.md'), 'a report with real content worth hatching')
+  const hub = [
+    '---', 'type: source', 'source: pages/report.md',
+    'created: 2026-01-01', 'updated: 2026-01-01', 'tags: []', '---',
+    '', '## Source', '', '- Source file: `pages/report.md`', ''
+  ].join('\n')
+  fs.writeFileSync(path.join(root, 'nest', 'sources', 'report.md'), hub)
+
+  // No hatched_sources row — this device never hatched it locally. The trace
+  // hub is the cross-device signal that it's already hatched, so it's skipped.
+  let { pending } = collectPendingSources(root)
+  assert.deepEqual(pending, [])
+
+  // A manual re-hatch (--force) still picks it up.
+  ;({ pending } = collectPendingSources(root, { force: true }))
+  assert.deepEqual(pending.map((p) => p.relPath), ['pages/report.md'])
+})
+
 test('prepareSources: unsupported formats become a reference-only .md stub (idempotent)', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -165,6 +190,9 @@ test('migrate-eggs-to-pages: moves files, dedupes identical copies, rewrites hat
   // a source that was already hatched (has a hatched_sources row)
   fs.writeFileSync(path.join(root, 'eggs', 'clipping.md'), 'a source with content')
   recordHatchedSource('eggs/clipping.md', hashContent('a source with content'), root)
+  // …and its trace hub names the old eggs/ path (frontmatter + body)
+  fs.writeFileSync(path.join(root, 'nest', 'sources', 'clipping.md'),
+    '---\ntype: source\nsource: eggs/clipping.md\ncreated: 2026-01-01\nupdated: 2026-01-01\ntags: []\n---\n## Source\n\n- Source file: `eggs/clipping.md`\n')
 
   // an identical duplicate already in pages/
   fs.writeFileSync(path.join(root, 'pages', 'dup.md'), 'duplicate content')
@@ -188,6 +216,16 @@ test('migrate-eggs-to-pages: moves files, dedupes identical copies, rewrites hat
   const { hatchedSourceHashes } = require('../lib/roost')
   assert.ok(hatchedSourceHashes(root).has('pages/clipping.md'))
   assert.ok(!hatchedSourceHashes(root).has('eggs/clipping.md'))
+
+  // the trace hub's `source:` frontmatter + body reference moved too → the
+  // 0.4.8 trace-hub idempotency check still recognizes it as already hatched
+  const { hatchedSourcePaths } = require('../lib/pages')
+  assert.ok(hatchedSourcePaths(root).has('pages/clipping.md'))
+  assert.ok(!hatchedSourcePaths(root).has('eggs/clipping.md'))
+  const hub = fs.readFileSync(path.join(root, 'nest', 'sources', 'clipping.md'), 'utf8')
+  assert.ok(hub.includes('source: pages/clipping.md'))
+  assert.ok(hub.includes('`pages/clipping.md`'))
+  assert.ok(!hub.includes('eggs/clipping.md'))
 })
 
 test('commitHatchPlan: regenIndex:false skips the index.md rewrite (batch callers regen once)', async (t) => {
@@ -410,7 +448,9 @@ test('#114 does not touch source pages: a re-hatched source hub still uses its d
     return gen()
   })
   try {
-    await hatchAllSources(root, { limit: 1 })
+    // A re-hatch is now opt-in (--force): by default a file with a trace hub
+    // is left alone. Force it here to exercise the source-hub update path.
+    await hatchAllSources(root, { limit: 1, force: true })
     assert.deepEqual(kinds, ['draft'], 'no existing-content generate call for a source-type update')
   } finally { s.restore() }
 })

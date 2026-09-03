@@ -6,6 +6,7 @@
 //
 //   node scripts/hatch-all.js --preview        -> JSON of what a run would touch (no LLM calls)
 //   node scripts/hatch-all.js [--limit N]      -> hatch up to N pending files (default 10), print JSON summary
+//   node scripts/hatch-all.js --force          -> also re-hatch files that already have a trace hub (manual re-hatch)
 //   node scripts/hatch-all.js --limit N --trace   -> also record full prompts/responses to .roost/hatch-trace.jsonl
 //   node scripts/hatch-all.js --limit N --classic -> old path: one propose call + one generate call per page
 //                                                    (default is combined: one LLM call per file). Also KIP_HATCH_CLASSIC=1.
@@ -44,6 +45,10 @@ const LOCK_STALE_MS = 15 * 60 * 1000
 
 const traceOn = process.argv.includes('--trace') || process.env.KIP_HATCH_TRACE === '1'
 const combined = !(process.argv.includes('--classic') || process.env.KIP_HATCH_CLASSIC === '1')
+// Re-hatch sources that already have a trace hub in the nest (normally
+// skipped — a synced-already-hatched file is left alone, see
+// collectPendingSources). This is the explicit "hatch it again" trigger.
+const forceOn = process.argv.includes('--force')
 
 let reporter = null
 
@@ -84,7 +89,7 @@ function parseSkip () {
 
 async function main () {
   if (process.argv.includes('--preview')) {
-    console.log(JSON.stringify(await pendingSourcesSummary(DEFAULT_VAULT_ROOT)))
+    console.log(JSON.stringify(await pendingSourcesSummary(DEFAULT_VAULT_ROOT, { force: forceOn })))
     return
   }
 
@@ -102,7 +107,8 @@ async function main () {
       const out = await proposeNextPending(DEFAULT_VAULT_ROOT, {
         ...(parseLimit() ? { limit: parseLimit() } : {}),
         skip: parseSkip(),
-        combined
+        combined,
+        force: forceOn
       })
       console.log(JSON.stringify(out))
     } finally { releaseLock() }
@@ -132,6 +138,7 @@ async function main () {
 
     const summary = await hatchAllSources(DEFAULT_VAULT_ROOT, {
       combined,
+      force: forceOn,
       ...(limit ? { limit } : {}),
       onProgress: (p) => {
         touchLock()
