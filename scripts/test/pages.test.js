@@ -88,12 +88,12 @@ test('resolvePage provenance (kip-app#113)', async (t) => {
       body: 'Visit notes from the sleep clinic.',
       tags: ['health'],
       vaultRoot: root,
-      source: 'eggs/clinic-visit.md',
+      source: 'pages/clinic-visit.md',
       summary: 'One LLM one-liner about the visit'
     })
     assert.equal(result.action, 'create')
     const raw = fs.readFileSync(path.join(root, result.path), 'utf8')
-    assert.match(raw, /source: eggs\/clinic-visit\.md/)
+    assert.match(raw, /source: pages\/clinic-visit\.md/)
     assert.match(raw, /source_hatched: '?\d{4}-\d{2}-\d{2}'?/)
     assert.match(raw, /summary: One LLM one-liner about the visit/)
   })
@@ -105,7 +105,7 @@ test('resolvePage provenance (kip-app#113)', async (t) => {
       body: 'New note: quality matters as much as duration.',
       tags: ['from-peck'],
       vaultRoot: root,
-      source: 'eggs/clinic-visit.md',
+      source: 'pages/clinic-visit.md',
       mergeTags: true
     })
     assert.equal(result.action, 'update')

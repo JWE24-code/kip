@@ -2,7 +2,7 @@ const path = require('node:path')
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..')
 
-// The coop root — eggs/, nest/, clucks/, .roost/, .henhouse/ all live
+// The coop root — pages/, nest/, clucks/, .roost/, .henhouse/ all live
 // directly inside it. When the Kip app shells out to these scripts it sets
 // KIP_COOP_ROOT to the currently-open graph's own directory (see
 // electron.wiki); the CLI, with no such env var, defaults to this repo's
@@ -23,8 +23,12 @@ function clucksPath (vaultRoot = DEFAULT_VAULT_ROOT) {
   return path.join(vaultRoot, 'clucks')
 }
 
-function eggsPath (vaultRoot = DEFAULT_VAULT_ROOT) {
-  return path.join(vaultRoot, 'eggs')
+// The unified source folder (formerly "eggs/"): pages/ is Logseq's native
+// notes dir and the single drop-box for source material. Markdown notes live
+// here already; Office/PDF dropped here are converted to Markdown siblings at
+// hatch time. See docs/DESIGN.md "The nest — page types".
+function pagesPath (vaultRoot = DEFAULT_VAULT_ROOT) {
+  return path.join(vaultRoot, 'pages')
 }
 
 // Everything the LLM layer is configured through lives under .henhouse/ —
@@ -94,7 +98,7 @@ module.exports = {
   dbPath,
   nestPath,
   clucksPath,
-  eggsPath,
+  pagesPath,
   henhousePath,
   configPath,
   skillsPath,

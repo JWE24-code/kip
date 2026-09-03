@@ -96,8 +96,8 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
   let matched = similar && similar.score >= SIMILARITY_THRESHOLD ? getPage(similar.slug, vaultRoot) : null
   let mustCreate = matched ? sourceHubMustCreate(matched.type, type) : false
 
-  // A document's own hub wins over any title match: re-hatching `eggs/x.md`
-  // updates the page whose frontmatter says `source: eggs/x.md`, even when a
+  // A document's own hub wins over any title match: re-hatching `pages/x.md`
+  // updates the page whose frontmatter says `source: pages/x.md`, even when a
   // same-named entity scores higher or the hub's slug drifted to `-source`.
   if (type === 'source' && source) {
     const hub = findSourceHubByPath(source, vaultRoot)
@@ -142,7 +142,7 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
     frontmatter.source_hatched = today
     if (sourceOriginal) frontmatter.source_original = sourceOriginal
     // The vault-pattern trace lives in the page itself: every source page
-    // names the egg it came from (and the original, for converted Office
+    // names the document it came from (and the original, for converted Office
     // siblings) on create — keyed on what actually happened (a create), not
     // on the plan's guess.
     if (type === 'source' && !body.trim().startsWith('## Source')) {

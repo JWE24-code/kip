@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI for the "Hatch sources" workflow: turns every new-or-changed file
-// in eggs/, journals/ and pages/ into nest pages, with NO per-file review.
+// in pages/ and journals/ (plus whiteboards/) into nest pages, with NO per-file review.
 // The Kip app's Hatch modal shells out to this (electron.wiki). No workflow
 // logic lives here; see scripts/lib/hatch.js.
 //

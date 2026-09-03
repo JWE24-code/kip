@@ -14,17 +14,19 @@ const {
 const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath } = require('./pages')
 const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, describeWhiteboard } = require('./prompts')
 const { parseWhiteboard, whiteboardToOutline } = require('./whiteboard')
-const { isSupported: isOfficeFile, convertFile: convertOfficeFile, markdownNameFor } = require('./office')
-const { DEFAULT_VAULT_ROOT, eggsPath, nestPath, TYPE_DIRS } = require('./paths')
+const { convertFile: convertOfficeFile, markdownNameFor, toStubSource, UnsupportedFormatError } = require('./office')
+const { DEFAULT_VAULT_ROOT, pagesPath, nestPath, TYPE_DIRS } = require('./paths')
 
 const VALID_TYPES = new Set(Object.keys(TYPE_DIRS))
 
-// The coop subdirs "Hatch sources" scans, in order. eggs/ is a manual
-// drop-box (any file type); journals/ and pages/ are Logseq's own markdown,
-// read in place; whiteboards/ holds Logseq's .edn boards, turned into an
-// outline page (deterministic) with an LLM-written Context section on top —
-// see hatchWhiteboard.
-const SOURCE_ROOTS = ['eggs', 'journals', 'pages', 'whiteboards']
+// The coop subdirs "Hatch sources" scans, in order. pages/ is the unified
+// source folder — Logseq's own markdown notes live here, and Office/PDF
+// dropped here are converted to Markdown siblings at hatch time (see
+// prepareSources). journals/ is Logseq's dated daily notes, read in place;
+// whiteboards/ holds Logseq's .edn boards, turned into an outline page
+// (deterministic) with an LLM-written Context section on top — see
+// hatchWhiteboard.
+const SOURCE_ROOTS = ['pages', 'journals', 'whiteboards']
 // Backstop only: a file this large can't fit the model's context window in
 // one piece, so it's skipped and reported rather than burning a slow, doomed
 // call. Everything short of this is sent whole (chunking large-but-viable
@@ -60,11 +62,11 @@ function humanizeFilename (filePath) {
   return base.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-/** Copies sourcePath into coop/eggs/ unless it's already there; returns the eggs/-relative path used from then on. */
-function ensureInEggs (sourcePath, vaultRoot) {
-  const eggsDir = eggsPath(vaultRoot)
-  fs.mkdirSync(eggsDir, { recursive: true })
-  const targetPath = path.join(eggsDir, path.basename(sourcePath))
+/** Copies sourcePath into coop/pages/ unless it's already there; returns the pages/-relative path used from then on. */
+function ensureInSources (sourcePath, vaultRoot) {
+  const sourcesDir = pagesPath(vaultRoot)
+  fs.mkdirSync(sourcesDir, { recursive: true })
+  const targetPath = path.join(sourcesDir, path.basename(sourcePath))
   if (path.resolve(sourcePath) !== path.resolve(targetPath)) {
     fs.copyFileSync(sourcePath, targetPath)
   }
@@ -97,35 +99,35 @@ function planCandidates (candidates, vaultRoot, { sourceRelPath = null } = {}) {
 
 /**
  * Steps 1-3 of the Hatch workflow: (optionally) copy the source into
- * coop/eggs/, ask the LLM which pages it likely touches, and resolve
+ * coop/pages/, ask the LLM which pages it likely touches, and resolve
  * create-vs-update for each — without writing anything to coop/nest/ yet.
  * The caller is expected to show `plan` to a human and confirm before
  * calling commitHatchPlan().
  *
- * copyToEggs defaults true (the single-file CLI / "add this document" path).
+ * copyToSources defaults true (the single-file CLI / "add this document" path).
  * "Hatch sources" passes false for journals/ and pages/ files — they're
- * already in the coop and copying them into eggs/ would just duplicate them.
+ * already in the coop and copying them into pages/ would just duplicate them.
  *
  * combined (default true) proposes the pages AND drafts each body in one LLM
  * call (proposeAndDraftPages) — plan entries then carry `body`, and
  * commitHatchPlan skips the per-page generate call. combined:false is the
  * classic path: propose only, one generate call per page at commit time.
  *
- * @returns {{sourceTitle: string, sourceContent: string, eggsFilePath: string, plan: Array}}
+ * @returns {{sourceTitle: string, sourceContent: string, sourceFilePath: string, plan: Array}}
  */
-async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { copyToEggs = true, combined = true } = {}) {
-  const eggsFilePath = copyToEggs ? ensureInEggs(sourcePath, vaultRoot) : path.resolve(sourcePath)
-  const sourceContent = fs.readFileSync(eggsFilePath, 'utf8')
-  const sourceTitle = humanizeFilename(eggsFilePath)
+async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { copyToSources = true, combined = true } = {}) {
+  const sourceFilePath = copyToSources ? ensureInSources(sourcePath, vaultRoot) : path.resolve(sourcePath)
+  const sourceContent = fs.readFileSync(sourceFilePath, 'utf8')
+  const sourceTitle = humanizeFilename(sourceFilePath)
 
-  // An Office-converted sibling (report.docx -> report.docx.md) carries the
+  // An Office-converted sibling (report.docx -> report.md) carries the
   // original file's name in its own frontmatter (`source:`, written by
   // lib/office.js "so a hatched page can be traced back") — read it through,
   // so the trace names the .docx, not just the .md we generated from it.
   let sourceOriginal = null
   try {
-    const eggMeta = matter(sourceContent).data
-    if (eggMeta && typeof eggMeta.source === 'string' && eggMeta.source.trim()) sourceOriginal = eggMeta.source.trim()
+    const sourceMeta = matter(sourceContent).data
+    if (sourceMeta && typeof sourceMeta.source === 'string' && sourceMeta.source.trim()) sourceOriginal = sourceMeta.source.trim()
   } catch { /* not frontmatter'd — fine */ }
 
   const proposed = combined
@@ -139,7 +141,7 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
   // type:'source' page but nothing enforced it, so a plan could hatch a whole
   // document with nothing linking back to it. Synthesize the hub into the
   // plan HERE — the human reviewing the plan sees it and can deselect it.
-  const sourceRelPath = path.relative(vaultRoot, eggsFilePath).split(path.sep).join('/')
+  const sourceRelPath = path.relative(vaultRoot, sourceFilePath).split(path.sep).join('/')
   if (!candidates.some((c) => c.type === 'source')) {
     const hash = hashContent(sourceContent)
     candidates.push({
@@ -152,7 +154,7 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
   }
   const plan = planCandidates(candidates, vaultRoot, { sourceRelPath })
 
-  return { sourceTitle, sourceContent, eggsFilePath, sourceRelPath, sourceOriginal, plan }
+  return { sourceTitle, sourceContent, sourceFilePath, sourceRelPath, sourceOriginal, plan }
 }
 
 /**
@@ -164,7 +166,7 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
  * existing page content so the write is a delta, not a restatement (#114).
  *
  * Provenance (kip-app#113): `sourceRelPath` (coop-relative path of the
- * document, e.g. `eggs/report.md`) and `sourceHash` (its sha1) are written
+ * document, e.g. `pages/report.md`) and `sourceHash` (its sha1) are written
  * onto every page this hatch touches — frontmatter `source:`/`source_hatched:`
  * on all of them, plus a `## Source` section at the top of every
  * `type: 'source'` page on create. When the plan proposes no source page at
@@ -350,47 +352,60 @@ function meaningfulTextLength (raw) {
 }
 
 /**
- * Turn every Office / PDF file dropped into eggs/ into a Markdown sibling
- * (scripts/lib/office.js) so the normal source scan can read it. Idempotent —
- * an up-to-date `<stem>.md` is left alone. Best-effort per file: a conversion
- * failure is collected, not thrown.
+ * Prepare the unified source folder (pages/) for the source scan: turn every
+ * dropped Office / PDF file into a Markdown sibling (scripts/lib/office.js)
+ * so the normal scan can read it, and turn anything Kip can't convert into a
+ * reference-only `.md` stub so it still gets a traceable page (instead of
+ * being silently skipped). Idempotent — an up-to-date `<stem>.md` is left
+ * alone. Best-effort per file: a failure is collected, not thrown.
  *
  * Runs before every hatch entry point (hatchAllSources, proposeNextPending,
  * pendingSourcesSummary) so a `.docx` synced in through Dropbox, or added by
  * `office-extract.js`, or dropped in the app all end up hatched the same way.
  *
- * @returns {{converted: Array<{source, kind}>, failed: Array<{source, error}>}}
+ * @returns {{converted: Array<{source, kind}>, stubbed: Array<{source}>, failed: Array<{source, error}>}}
  */
-async function convertPendingOfficeSources (vaultRoot = DEFAULT_VAULT_ROOT) {
-  const eggsDir = eggsPath(vaultRoot)
-  if (!fs.existsSync(eggsDir)) return { converted: [], failed: [] }
+async function prepareSources (vaultRoot = DEFAULT_VAULT_ROOT) {
+  const sourcesDir = pagesPath(vaultRoot)
+  if (!fs.existsSync(sourcesDir)) return { converted: [], stubbed: [], failed: [] }
 
   const converted = []
+  const stubbed = []
   const failed = []
-  for (const entry of fs.readdirSync(eggsDir, { withFileTypes: true })) {
-    if (!entry.isFile() || entry.name.startsWith('.') || !isOfficeFile(entry.name)) continue
-    const absPath = path.join(eggsDir, entry.name)
+  for (const entry of fs.readdirSync(sourcesDir, { withFileTypes: true })) {
+    if (!entry.isFile() || entry.name.startsWith('.') || entry.name.endsWith('.md')) continue
+    const absPath = path.join(sourcesDir, entry.name)
+    const target = path.join(sourcesDir, markdownNameFor(entry.name))
     try {
-      const r = await convertOfficeFile(absPath, path.join(eggsDir, markdownNameFor(entry.name)))
+      const r = await convertOfficeFile(absPath, target)
       if (!r.skipped) converted.push({ source: entry.name, kind: r.kind })
     } catch (err) {
-      failed.push({ source: entry.name, error: (err && err.message) || String(err) })
+      if (err instanceof UnsupportedFormatError) {
+        // Unreadable format → a reference-only stub, not a silent skip. Idempotent
+        // like conversion: leave an up-to-date stub alone.
+        try {
+          if (fs.statSync(target).mtimeMs >= fs.statSync(absPath).mtimeMs) continue
+        } catch { /* no stub yet — write one */ }
+        fs.writeFileSync(target, toStubSource(entry.name, (err && err.message) || undefined))
+        stubbed.push({ source: entry.name })
+      } else {
+        failed.push({ source: entry.name, error: (err && err.message) || String(err) })
+      }
     }
   }
-  return { converted, failed }
+  return { converted, stubbed, failed }
 }
 
 /**
  * The deterministic half of "Hatch sources": scans the coop's source dirs
- * (eggs/, journals/, pages/, whiteboards/) and buckets every file. No LLM,
- * no writes.
+ * (pages/, journals/, whiteboards/) and buckets every file. No LLM, no writes.
  *
  * `pending` = new OR content-changed since last hatch (sha1 vs
  * hatched_sources); `kind` is the dir, or 'whiteboard' for a .edn board.
- * Skipped, and reported separately: dotfiles, non-.md files outside eggs/
- * and whiteboards/, near-empty files, and files over MAX_SOURCE_BYTES (a
- * ~1 MB context-window backstop — whiteboards are exempt, they become a
- * tiny outline).
+ * Skipped, and reported separately: dotfiles, non-.md files (they're turned
+ * into .md siblings by prepareSources() first), near-empty files, and files
+ * over MAX_SOURCE_BYTES (a ~1 MB context-window backstop — whiteboards are
+ * exempt, they become a tiny outline).
  *
  * @returns {{pending: Array<{relPath, absPath, kind, bytes, status: 'new'|'changed'}>,
  *            oversized: Array<{relPath, bytes}>,
@@ -412,11 +427,7 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isFile() || entry.name.startsWith('.')) continue
       const name = entry.name.toLowerCase()
-      if (board ? !name.endsWith('.edn') : (root !== 'eggs' && !name.endsWith('.md'))) continue
-      // An Office/PDF file in eggs/ is a *source for* conversion, not a source
-      // to hatch — convertPendingOfficeSources() turns it into a .md sibling
-      // that this scan then picks up on its own. See hatch-all.js / the app.
-      if (root === 'eggs' && isOfficeFile(name)) continue
+      if (board ? !name.endsWith('.edn') : !name.endsWith('.md')) continue
 
       const absPath = path.join(dir, entry.name)
       const relPath = `${root}/${entry.name}`
@@ -443,7 +454,7 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
 
       // status splits the vault-Lint "un-ingested raw" check into its two
       // cases (kip-app#113): a brand-new source vs one hatched before and
-      // edited since — an "immutable" egg edited in place is a different
+      // edited since — an "immutable" source edited in place is a different
       // signal from a fresh drop, and re-hatching it re-appends the whole
       // document, so the preview/groom should say which is which.
       pending.push({ relPath, absPath, kind: board ? 'whiteboard' : root, bytes, status: priorHash === undefined ? 'new' : 'changed' })
@@ -464,7 +475,7 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
  * edited since hatch" instead of blurring edits into new drops.
  */
 async function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {}) {
-  const conv = await convertPendingOfficeSources(vaultRoot)
+  const conv = await prepareSources(vaultRoot)
   const { pending, oversized, empty } = collectPendingSources(vaultRoot, opts)
   return {
     pending: pending.map((p) => ({ source: humanizeFilename(p.absPath), kind: p.kind, kb: Math.round(p.bytes / 1024), status: p.status })),
@@ -504,7 +515,7 @@ async function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {})
  */
 async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
   { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, onProgress = () => {}, combined = true } = {}) {
-  const conversion = await convertPendingOfficeSources(vaultRoot)
+  const conversion = await prepareSources(vaultRoot)
   const { pending, oversized, empty } = collectPendingSources(vaultRoot, { roots })
   const batch = pending.slice(0, limit)
 
@@ -527,7 +538,7 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
         continue
       }
 
-      const proposal = await proposeHatchPlan(file.absPath, vaultRoot, { copyToEggs: file.kind === 'eggs', combined })
+      const proposal = await proposeHatchPlan(file.absPath, vaultRoot, { copyToSources: false, combined })
       if (proposal.plan.length === 0) {
         failed.push({ source, error: 'no usable pages proposed (often a transient LLM formatting issue — re-run to retry this file)', ms: Date.now() - startedAt })
       } else {
@@ -578,7 +589,7 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
  */
 async function proposeNextPending (vaultRoot = DEFAULT_VAULT_ROOT,
   { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, skip = 0, combined = true } = {}) {
-  await convertPendingOfficeSources(vaultRoot)
+  await prepareSources(vaultRoot)
   const { pending } = collectPendingSources(vaultRoot, { roots })
   const capped = pending.slice(0, limit)
   const file = capped[skip]
@@ -596,7 +607,7 @@ async function proposeNextPending (vaultRoot = DEFAULT_VAULT_ROOT,
     return { source, relPath: file.relPath, kind: 'whiteboard', whiteboard: true, remaining }
   }
 
-  const p = await proposeHatchPlan(file.absPath, vaultRoot, { copyToEggs: file.kind === 'eggs', combined })
+  const p = await proposeHatchPlan(file.absPath, vaultRoot, { copyToSources: false, combined })
   fs.writeFileSync(planFile, JSON.stringify({
     relPath: file.relPath, kind: file.kind, hash,
     sourceTitle: p.sourceTitle, sourceContent: p.sourceContent, sourceOriginal: p.sourceOriginal, plan: p.plan, at: Date.now()
@@ -657,13 +668,13 @@ module.exports = {
   commitHatchPlan,
   proposeNextPending,
   commitReviewedPlan,
-  ensureInEggs,
+  ensureInSources,
   planCandidates,
   humanizeFilename,
   meaningfulTextLength,
   mapLimit,
   collectPendingSources,
-  convertPendingOfficeSources,
+  prepareSources,
   pendingSourcesSummary,
   hatchAllSources,
   hatchWhiteboard,

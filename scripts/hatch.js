@@ -3,7 +3,7 @@
 // scripts/lib/hatch.js's proposeHatchPlan()/commitHatchPlan(): argv
 // parsing, printing, and the interactive confirm-before-writing prompt. No
 // workflow logic lives here; see scripts/lib/hatch.js for
-// copy-to-eggs -> propose -> plan -> generate -> write.
+// copy-to-pages -> propose -> plan -> generate -> write.
 //
 // Usage: node scripts/hatch.js <path-to-source> [--classic]
 //   --classic (or KIP_HATCH_CLASSIC=1): old path — one propose call plus one
@@ -61,7 +61,7 @@ async function main () {
 
   console.error(describeProvider())
 
-  const { sourceTitle, sourceContent, eggsFilePath, plan } = await proposeHatchPlan(sourceArg, vaultRoot, { combined })
+  const { sourceTitle, sourceContent, sourceFilePath, plan } = await proposeHatchPlan(sourceArg, vaultRoot, { combined })
   if (plan.length === 0) {
     console.log('The LLM proposed no usable candidate pages for this source. Nothing to do.')
     return
@@ -84,7 +84,7 @@ async function main () {
     plan,
     sourceTitle,
     sourceContent,
-    sourceRelPath: path.relative(vaultRoot, eggsFilePath).split(path.sep).join('/'),
+    sourceRelPath: path.relative(vaultRoot, sourceFilePath).split(path.sep).join('/'),
     sourceHash: hashContent(sourceContent)
   }, vaultRoot)
 

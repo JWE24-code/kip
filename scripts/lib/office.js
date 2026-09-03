@@ -4,7 +4,7 @@
 // the LLM as "text" they're noise that costs thousands of tokens and produces
 // nothing. This module turns each into compact Markdown — headings, lists and
 // tables for Word; one table per sheet for spreadsheets; per-slide text for
-// decks; the text layer for PDFs — so the same eggs/ → Hatch pipeline works.
+// decks; the text layer for PDFs — so the same pages/ → Hatch pipeline works.
 //
 // extractToMarkdown(absPath, opts) -> { markdown, kind, warnings }
 //   kind:      'docx' | 'xlsx' | 'pptx' | 'pdf' | 'csv'
@@ -240,7 +240,7 @@ function markdownNameFor (filename) {
 }
 
 /**
- * The full Markdown document written into eggs/ for a converted file: YAML
+ * The full Markdown document written into pages/ for a converted file: YAML
  * front-matter recording the origin (so a hatched page can be traced back),
  * then the body. `srcName` is the original file's basename.
  */
@@ -257,6 +257,28 @@ function toHatchSource (srcName, { markdown, kind, warnings = [] }) {
   }
   fm.push('---', '')
   return fm.join('\n') + markdown + '\n'
+}
+
+/**
+ * The Markdown document written for a file Kip can't convert: a reference-only
+ * stub naming the original, so the file still gets a traceable page instead of
+ * being silently dropped. `srcName` is the original file's basename, `note`
+ * is an optional one-line reason (e.g. the UnsupportedFormatError hint).
+ */
+function toStubSource (srcName, note) {
+  const fm = [
+    '---',
+    `source: ${JSON.stringify(srcName)}`,
+    'source_format: binary',
+    `converted: ${JSON.stringify(new Date().toISOString().slice(0, 10))}`
+  ]
+  if (note) {
+    fm.push('conversion_notes:')
+    fm.push(`  - ${JSON.stringify(note)}`)
+  }
+  fm.push('---', '')
+  const body = `## Source\n\n- Original file: \`${srcName}\`\n- No extractable text for this format. Reference only.\n`
+  return fm.join('\n') + body
 }
 
 /**
@@ -282,6 +304,7 @@ module.exports = {
   extractToMarkdown,
   convertFile,
   toHatchSource,
+  toStubSource,
   isSupported,
   markdownNameFor,
   SUPPORTED_EXTS,

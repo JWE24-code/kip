@@ -3,7 +3,7 @@ name: xlsx-csv
 description: Read and summarize a spreadsheet (.xlsx, .xls or .csv) that lives in the coop.
 when_to_use: >
   The question is about tabular data in a file — a CSV or spreadsheet path, column
-  totals or averages, row counts, "what's in eggs/data.csv", "summarize the budget sheet".
+  totals or averages, row counts, "what's in pages/data.csv", "summarize the budget sheet".
 entry: run.js
 network: false
 timeout: 30
