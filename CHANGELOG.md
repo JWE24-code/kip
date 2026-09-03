@@ -9,6 +9,26 @@ The retrieval layer (this repo) and the desktop app
 
 ## [Unreleased]
 
+## [0.4.8] — 2026-09-03
+
+### The retrieval layer (`scripts/`)
+
+- **Hatch stops re-hatching already-hatched sources** — idempotency is now
+  keyed on the synced nest (a source's trace hub in `nest/sources/`), not the
+  device-local `.roost/meta.db` hash cache. A Dropbox-synced, already-hatched
+  file is recognized and skipped instead of being re-hatched (and colliding
+  with the synced pages). Re-hatch is opt-in via `hatch-all.js --force`.
+- **`migrate-eggs-to-pages.js` rewrites `source:` frontmatter** — a migrated
+  source's trace hub keeps pointing at its document, so it isn't re-hatched at
+  its new location.
+- **Reminders accept an explicit title / date / source** — `reminders.js add`
+  takes `--title`/`--when`/`--event-at`/`--source`, so the tasks panel can
+  project a due-dated todo into the reminder engine with a structured title +
+  date instead of round-tripping through the natural-language parser.
+- **The generated catalog is named "The Nest"** — `nest/index.md` now writes
+  `title:: The Nest`, so it no longer claims the `index` page name and collides
+  with a `pages/index.md` note.
+
 ## [0.4.7] — 2026-09-03
 
 ### The retrieval layer (`scripts/`)
