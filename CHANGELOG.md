@@ -9,6 +9,8 @@ The retrieval layer (this repo) and the desktop app
 
 ## [Unreleased]
 
+## [0.4.5] — 2026-09-03
+
 ### The retrieval layer (`scripts/`)
 
 - **Peck can file an answer back into the nest** (kip-app#112) — a settled
