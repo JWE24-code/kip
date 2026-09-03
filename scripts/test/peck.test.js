@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { extractCitedSlugs, fileAnswerToNest, askQuestion, peckTurn, classifyPeckInput } = require('../lib/peck')
+const { extractCitedSlugs, fileAnswerToNest, askQuestion, peckTurn, classifyPeckInput, stripSources, humanizeSlug } = require('../lib/peck')
 const { captureFacts, answerQuestionWithSkills } = require('../lib/prompts')
 const { getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
@@ -70,6 +70,39 @@ function writePage (root, dir, slug, { type, tags = [], body = '' }) {
   const frontmatter = ['---', `type: ${type}`, 'created: 2026-01-01', 'updated: 2026-01-01', `tags: [${tags.join(', ')}]`, '---', ''].join('\n')
   fs.writeFileSync(path.join(root, 'nest', dir, `${slug}.md`), frontmatter + body + '\n')
 }
+
+test('stripSources cuts the "Sources:" footer', () => {
+  assert.equal(
+    stripSources('Keep a consistent bedtime.\n\nSources:\n- [[sleep-hygiene]]'),
+    'Keep a consistent bedtime.'
+  )
+  assert.equal(stripSources('No footer here.'), 'No footer here.')
+})
+
+test('humanizeSlug turns hyphens into spaces', () => {
+  assert.equal(humanizeSlug('sleep-hygiene'), 'sleep hygiene')
+  assert.equal(humanizeSlug('acme-corp'), 'acme corp')
+})
+
+test('peckTurn — clean prose + a sources list (Sources footer stripped)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'notes on sleep' })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({
+    keyTerms: '{"terms":["sleep"]}',
+    answer: 'Keep a consistent bedtime and avoid screens before bed.\n\nSources:\n- [[sleep]]'
+  })
+  try {
+    const r = await peckTurn('what about sleep?', { vaultRoot: root })
+    assert.equal(r.intent, 'question')
+    assert.equal(r.answer, 'Keep a consistent bedtime and avoid screens before bed.')
+    assert.deepEqual(r.sources, [{ slug: 'sleep', title: 'sleep' }])
+    assert.deepEqual(r.citedSlugs, ['sleep'])
+  } finally { s.restore() }
+})
 
 test('extractCitedSlugs', () => {
   const candidates = ['sleep-hygiene', 'dr-smith', 'morning-routine']
