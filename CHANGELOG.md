@@ -9,6 +9,22 @@ The retrieval layer (this repo) and the desktop app
 
 ## [Unreleased]
 
+## [0.4.7] — 2026-09-03
+
+### The retrieval layer (`scripts/`)
+
+- **One source folder** — `eggs/` is retired; `pages/` is now the single place
+  you drop sources (Logseq's own notes directory, plus anything you add).
+  Office/PDF files dropped there are converted to Markdown siblings at hatch
+  time.
+- **Reference stubs for unreadable files** — a file Kip can't convert (a
+  `.zip`, a scanned PDF, a legacy format) now gets a reference-only `.md` stub
+  (`source_format: binary`) so it still has a traceable page in the nest,
+  instead of being silently skipped.
+- **Migration helper** — `scripts/migrate-eggs-to-pages.js` moves an existing
+  graph's `eggs/*` into `pages/*`, de-dupes byte-identical copies, and rewrites
+  the hatch-tracking table so nothing re-hatches.
+
 ## [0.4.6] — 2026-09-03
 
 ### The retrieval layer (`scripts/`)
