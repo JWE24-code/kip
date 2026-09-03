@@ -6,7 +6,7 @@ const path = require('node:path')
 
 const {
   discoverSkills, describeSkills, runSkill, loadSkillsConfig, saveSkillsConfig,
-  setSkillEnabled, setSkillApproval, loadSearchSettings, saveSearchSettings, parseSkillCall, scrubInput
+  setSkillEnabled, setSkillApproval, loadSearchSettings, saveSearchSettings, parseSkillCall, parseSkillCalls, scrubInput
 } = require('../lib/skills')
 const telemetry = require('../lib/telemetry')
 
@@ -226,6 +226,24 @@ test('parseSkillCall: clean, fenced, amid prose, absent, malformed', () => {
   assert.deepEqual(
     parseSkillCall('<use_skill name="thing">not json</use_skill>'),
     { name: 'thing', input: null }
+  )
+})
+
+test('parseSkillCalls: returns every tag in order; empty when none', () => {
+  assert.deepEqual(
+    parseSkillCalls('<use_skill name="a">{"x":1}</use_skill>\n<use_skill name="b">{"y":2}</use_skill>'),
+    [{ name: 'a', input: { x: 1 } }, { name: 'b', input: { y: 2 } }]
+  )
+  assert.deepEqual(
+    parseSkillCalls('first <use_skill name="a">{}</use_skill>, then <use_skill name="b">{"q":"z"}</use_skill> done'),
+    [{ name: 'a', input: {} }, { name: 'b', input: { q: 'z' } }]
+  )
+  assert.deepEqual(parseSkillCalls('just a plain answer with [[a-slug]]'), [])
+  assert.deepEqual(parseSkillCalls(''), [])
+  // a malformed second tag still yields a { input: null } entry, not a drop
+  assert.deepEqual(
+    parseSkillCalls('<use_skill name="a">{"x":1}</use_skill><use_skill name="b">not json</use_skill>'),
+    [{ name: 'a', input: { x: 1 } }, { name: 'b', input: null }]
   )
 })
 
