@@ -35,7 +35,7 @@ test('parseWebSearchOutput: junk returns null', () => {
   assert.equal(parseWebSearchOutput(''), null)
 })
 
-test('buildWebSource: one search → a hatchable eggs doc', () => {
+test('buildWebSource: one search → a hatchable source doc', () => {
   const now = new Date('2026-08-31T10:00:00Z')
   const src = buildWebSource('How do mRNA vaccines work?', [parseWebSearchOutput(OUTPUT)], { now })
   assert.equal(src.filename, 'web-search-2026-08-31-how-do-mrna-vaccines-work.md')

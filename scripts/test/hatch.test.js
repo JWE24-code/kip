@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { planCandidates, ensureInEggs, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, pendingSourcesSummary } = require('../lib/hatch')
+const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, pendingSourcesSummary, prepareSources } = require('../lib/hatch')
 const { recordHatchedSource, getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
 const { proposeAndDraftPages } = require('../lib/prompts')
@@ -25,7 +25,7 @@ function stubFetch (respond) {
 
 function makeTempVault () {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-hatch-test-'))
-  for (const dir of ['nest/entities', 'nest/concepts', 'nest/sources', 'eggs', 'journals', 'pages', 'whiteboards', 'clucks', '.roost']) {
+  for (const dir of ['nest/entities', 'nest/concepts', 'nest/sources', 'pages', 'journals', 'whiteboards', 'clucks', '.roost']) {
     fs.mkdirSync(path.join(root, dir), { recursive: true })
   }
   return root
@@ -47,27 +47,27 @@ test('humanizeFilename', () => {
   assert.equal(humanizeFilename('some-journal_export.md'), 'Some Journal Export')
 })
 
-test('ensureInEggs', async (t) => {
+test('ensureInSources', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
-  await t.test('copies an external file into coop/eggs/', () => {
+  await t.test('copies an external file into coop/pages/', () => {
     const externalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hatch-src-'))
     const externalFile = path.join(externalDir, 'clipping.md')
     fs.writeFileSync(externalFile, 'some source content')
 
-    const result = ensureInEggs(externalFile, root)
-    assert.equal(result, path.join(root, 'eggs', 'clipping.md'))
+    const result = ensureInSources(externalFile, root)
+    assert.equal(result, path.join(root, 'pages', 'clipping.md'))
     assert.equal(fs.readFileSync(result, 'utf8'), 'some source content')
 
     fs.rmSync(externalDir, { recursive: true, force: true })
   })
 
-  await t.test('does not error when the source is already inside coop/eggs/', () => {
-    const alreadyInEggs = path.join(root, 'eggs', 'already-there.md')
-    fs.writeFileSync(alreadyInEggs, 'already here')
-    const result = ensureInEggs(alreadyInEggs, root)
-    assert.equal(result, alreadyInEggs)
+  await t.test('does not error when the source is already inside coop/pages/', () => {
+    const alreadyInSources = path.join(root, 'pages', 'already-there.md')
+    fs.writeFileSync(alreadyInSources, 'already here')
+    const result = ensureInSources(alreadyInSources, root)
+    assert.equal(result, alreadyInSources)
     assert.equal(fs.readFileSync(result, 'utf8'), 'already here')
   })
 })
@@ -93,33 +93,33 @@ test('meaningfulTextLength ignores frontmatter and list/markdown punctuation', (
   assert.ok(meaningfulTextLength('- a real sentence with some words in it') > 20)
 })
 
-test('collectPendingSources: buckets eggs/journals/pages by new-or-changed, size, and emptiness', async (t) => {
+test('collectPendingSources: buckets pages/journals by new-or-changed, size, and emptiness', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
-  fs.writeFileSync(path.join(root, 'eggs', 'clipping.md'), 'a source document with real content')
+  fs.writeFileSync(path.join(root, 'pages', 'clipping.md'), 'a source document with real content')
   fs.writeFileSync(path.join(root, 'journals', '2026_08_26.md'), '- had a meeting about the roadmap today')
   fs.writeFileSync(path.join(root, 'pages', 'Some Note.md'), '- a page with some genuine notes on it')
   fs.writeFileSync(path.join(root, 'pages', 'stub.md'), '- ') // near-empty — skipped
   fs.writeFileSync(path.join(root, 'pages', 'huge.md'), 'x'.repeat(1024 * 1024 + 1)) // over the ~1 MB backstop — skipped
-  fs.writeFileSync(path.join(root, 'pages', 'notes.txt'), 'not markdown, outside eggs/ — ignored')
+  fs.writeFileSync(path.join(root, 'pages', 'notes.txt'), 'not markdown — skipped by the scan (prepareSources turns it into a stub in the full flow)')
   fs.writeFileSync(path.join(root, 'journals', '.DS_Store'), '') // dotfile — ignored
 
   let { pending, oversized, empty } = collectPendingSources(root)
-  assert.deepEqual(pending.map((p) => p.relPath), ['eggs/clipping.md', 'journals/2026_08_26.md', 'pages/Some Note.md'])
+  assert.deepEqual(pending.map((p) => p.relPath), ['journals/2026_08_26.md', 'pages/clipping.md', 'pages/Some Note.md'])
   assert.deepEqual(oversized.map((o) => o.relPath), ['pages/huge.md'])
   assert.deepEqual(empty, ['pages/stub.md'])
 
   // Record one as hatched at its current content -> it drops out of pending.
   const { hashContent } = require('../lib/roost')
-  recordHatchedSource('eggs/clipping.md', hashContent(fs.readFileSync(path.join(root, 'eggs', 'clipping.md'), 'utf8')), root)
+  recordHatchedSource('pages/clipping.md', hashContent(fs.readFileSync(path.join(root, 'pages', 'clipping.md'), 'utf8')), root)
   ;({ pending } = collectPendingSources(root))
   assert.deepEqual(pending.map((p) => p.relPath), ['journals/2026_08_26.md', 'pages/Some Note.md'])
 
   // Change its content -> it comes back as pending.
-  fs.writeFileSync(path.join(root, 'eggs', 'clipping.md'), 'a source document with real content, now extended')
+  fs.writeFileSync(path.join(root, 'pages', 'clipping.md'), 'a source document with real content, now extended')
   ;({ pending } = collectPendingSources(root))
-  assert.ok(pending.map((p) => p.relPath).includes('eggs/clipping.md'))
+  assert.ok(pending.map((p) => p.relPath).includes('pages/clipping.md'))
 })
 
 test('collectPendingSources: no source dirs -> everything empty', () => {
@@ -129,6 +129,65 @@ test('collectPendingSources: no source dirs -> everything empty', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('prepareSources: unsupported formats become a reference-only .md stub (idempotent)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  fs.writeFileSync(path.join(root, 'pages', 'archive.zip'), 'PK\u0003\u0004 some binary bytes')
+
+  const first = await prepareSources(root)
+  assert.equal(first.converted.length, 0)
+  assert.equal(first.failed.length, 0)
+  assert.deepEqual(first.stubbed.map((s) => s.source), ['archive.zip'])
+
+  const stub = fs.readFileSync(path.join(root, 'pages', 'archive.md'), 'utf8')
+  assert.match(stub, /source: "archive\.zip"/)
+  assert.match(stub, /source_format: binary/)
+  assert.match(stub, /## Source\n\n- Original file: `archive\.zip`/)
+  assert.match(stub, /No extractable text for this format/)
+
+  // a second run must not re-stub: the up-to-date .md is left alone
+  const second = await prepareSources(root)
+  assert.deepEqual(second.stubbed, [])
+  assert.equal(second.converted.length, 0)
+  assert.equal(second.failed.length, 0)
+})
+
+test('migrate-eggs-to-pages: moves files, dedupes identical copies, rewrites hatched_sources', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'eggs'), { recursive: true })
+  const { migrate } = require('../migrate-eggs-to-pages')
+  const { hashContent } = require('../lib/roost')
+
+  // a source that was already hatched (has a hatched_sources row)
+  fs.writeFileSync(path.join(root, 'eggs', 'clipping.md'), 'a source with content')
+  recordHatchedSource('eggs/clipping.md', hashContent('a source with content'), root)
+
+  // an identical duplicate already in pages/
+  fs.writeFileSync(path.join(root, 'pages', 'dup.md'), 'duplicate content')
+  fs.writeFileSync(path.join(root, 'eggs', 'dup.md'), 'duplicate content')
+
+  // a name collision with different content
+  fs.writeFileSync(path.join(root, 'pages', 'conflict.md'), 'pages version')
+  fs.writeFileSync(path.join(root, 'eggs', 'conflict.md'), 'eggs version')
+
+  const result = migrate(root)
+  assert.deepEqual(result.moved, ['clipping.md'])
+  assert.deepEqual(result.deduped, ['dup.md'])
+  assert.deepEqual(result.conflicts, [{ from: 'conflict.md', to: 'conflict-egg.md' }])
+
+  assert.ok(fs.existsSync(path.join(root, 'pages', 'clipping.md')))
+  assert.ok(!fs.existsSync(path.join(root, 'eggs')), 'eggs/ removed once empty')
+  assert.equal(fs.readFileSync(path.join(root, 'pages', 'conflict.md'), 'utf8'), 'pages version')
+  assert.equal(fs.readFileSync(path.join(root, 'pages', 'conflict-egg.md'), 'utf8'), 'eggs version')
+
+  // hatched_sources path moved with the file → not re-hatched
+  const { hatchedSourceHashes } = require('../lib/roost')
+  assert.ok(hatchedSourceHashes(root).has('pages/clipping.md'))
+  assert.ok(!hatchedSourceHashes(root).has('eggs/clipping.md'))
 })
 
 test('commitHatchPlan: regenIndex:false skips the index.md rewrite (batch callers regen once)', async (t) => {
@@ -234,7 +293,7 @@ test('hatchAllSources — combined mode makes one LLM call per file and drafts b
   rebuildRoost(root)
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
 
-  fs.writeFileSync(path.join(root, 'eggs', 'clinic-visit.md'),
+  fs.writeFileSync(path.join(root, 'pages', 'clinic-visit.md'),
     'Saw Dr. Alvarez on 2026-08-20 about sleep. Resting heart rate is trending down.')
 
   const { calls, restore } = stubFetch(() => JSON.stringify({
@@ -262,7 +321,7 @@ test('hatchAllSources — classic mode makes one propose call plus one generate 
   rebuildRoost(root)
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
 
-  fs.writeFileSync(path.join(root, 'eggs', 'note.md'), 'Bought a Gaggia Classic espresso machine. It works well.')
+  fs.writeFileSync(path.join(root, 'pages', 'note.md'), 'Bought a Gaggia Classic espresso machine. It works well.')
 
   const kinds = []
   const { restore } = stubFetch((body) => {
@@ -294,7 +353,7 @@ test('combined-path update is regenerated against the existing page, not restate
   rebuildRoost(root)
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
 
-  fs.writeFileSync(path.join(root, 'eggs', 'sleep-log.md'), 'This month sleep dropped to 6h a night on average.')
+  fs.writeFileSync(path.join(root, 'pages', 'sleep-log.md'), 'This month sleep dropped to 6h a night on average.')
 
   const seen = []
   const { restore } = stubFetch((body) => {
@@ -336,14 +395,14 @@ test('#114 does not touch source pages: a re-hatched source hub still uses its d
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   rebuildRoost(root)
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
-  fs.writeFileSync(path.join(root, 'eggs', 'report.md'), 'First version of the quarterly report.')
+  fs.writeFileSync(path.join(root, 'pages', 'report.md'), 'First version of the quarterly report.')
 
   const gen = () => JSON.stringify({ pages: [{ title: 'Report', type: 'source', tags: [], summary: 's', body: 'Report hub. Links [[q3-numbers]].' }] })
   let s = stubFetch(gen)
   try { await hatchAllSources(root, { limit: 1 }) } finally { s.restore() }
 
   // edit the source and re-hatch — the hub resolves to action=update
-  fs.writeFileSync(path.join(root, 'eggs', 'report.md'), 'Second version of the quarterly report, now with more detail.')
+  fs.writeFileSync(path.join(root, 'pages', 'report.md'), 'Second version of the quarterly report, now with more detail.')
   const kinds = []
   s = stubFetch((body) => {
     const sys = body.messages.map((m) => m.content).join('\n')
@@ -362,7 +421,7 @@ test('review mode: proposeNextPending stashes a plan and writes nothing; commitR
   rebuildRoost(root)
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
 
-  fs.writeFileSync(path.join(root, 'eggs', 'clinic-visit.md'),
+  fs.writeFileSync(path.join(root, 'pages', 'clinic-visit.md'),
     'Saw Dr. Alvarez on 2026-08-20 about sleep. Resting heart rate is trending down.')
 
   const { calls, restore } = stubFetch(() => JSON.stringify({
@@ -402,7 +461,7 @@ test('review mode: commitReviewedPlan with an empty keep list still records the 
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   rebuildRoost(root)
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
-  fs.writeFileSync(path.join(root, 'eggs', 'skip-me.md'), 'A short note that the user decides not to hatch after all.')
+  fs.writeFileSync(path.join(root, 'pages', 'skip-me.md'), 'A short note that the user decides not to hatch after all.')
 
   const { restore } = stubFetch(() => JSON.stringify({
     pages: [{ title: 'Skip Me', type: 'source', tags: [], summary: 's', body: 'Body.' }]
@@ -471,7 +530,7 @@ test('source lineage: ## Source block + frontmatter provenance + synthesized hub
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
 
   // The stub proposes NO type:'source' page — the hub must be synthesized.
-  fs.writeFileSync(path.join(root, 'eggs', 'sleep-study.md'),
+  fs.writeFileSync(path.join(root, 'pages', 'sleep-study.md'),
     'Slept 6.2h on average this week. Caffeine after 15:00 correlates with worse deep sleep.')
   const { restore } = stubFetch(() => JSON.stringify({
     pages: [
@@ -498,19 +557,19 @@ test('source lineage: ## Source block + frontmatter provenance + synthesized hub
     assert.equal(conceptRow.summary, 'Weekly sleep numbers', 'concept summary intact')
 
     const hubRaw = fs.readFileSync(path.join(root, hub.path), 'utf8')
-    assert.match(hubRaw, /## Source\n\n- Source file: `eggs\/sleep-study\.md`/)
+    assert.match(hubRaw, /## Source\n\n- Source file: `pages\/sleep-study\.md`/)
     assert.match(hubRaw, /- Content hash at hatch: `[0-9a-f]{12}…`/)
     assert.match(hubRaw, /type: source/)
     assert.match(hubRaw, /source_hatched: '?\d{4}-\d{2}-\d{2}'?/)
 
     const conceptRaw = fs.readFileSync(path.join(root, 'nest', 'concepts', 'sleep-study.md'), 'utf8')
     assert.doesNotMatch(conceptRaw, /## Source/, 'no ## Source section on non-source pages')
-    assert.match(conceptRaw, /source: eggs\/sleep-study\.md/, 'but frontmatter provenance on all pages')
+    assert.match(conceptRaw, /source: pages\/sleep-study\.md/, 'but frontmatter provenance on all pages')
 
     // rebuild-roost must keep the LLM summary now that it lives in frontmatter
     const { rebuildRoost: rebuild } = require('../rebuild-roost')
     rebuild(root)
-    assert.match(getPage('sleep-study-source', root).summary, /Hatched from eggs\/sleep-study\.md/,
+    assert.match(getPage('sleep-study-source', root).summary, /Hatched from pages\/sleep-study\.md/,
       'frontmatter summary survives a rebuild instead of degrading to the first paragraph')
     assert.equal(getPage('sleep-study', root).summary, 'Weekly sleep numbers',
       'and the concept keeps its own summary through a rebuild too')
@@ -523,20 +582,20 @@ test('collectPendingSources: status splits new drops from edited-since-hatch sou
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
-  fs.writeFileSync(path.join(root, 'eggs', 'fresh.md'), 'A brand new drop of source content here.')
-  fs.writeFileSync(path.join(root, 'eggs', 'edited.md'), 'An egg that was hatched and then edited in place.')
+  fs.writeFileSync(path.join(root, 'pages', 'fresh.md'), 'A brand new drop of source content here.')
+  fs.writeFileSync(path.join(root, 'pages', 'edited.md'), 'A source that was hatched and then edited in place.')
   const { recordHatchedSource, hashContent } = require('../lib/roost')
-  recordHatchedSource('eggs/edited.md', hashContent(fs.readFileSync(path.join(root, 'eggs', 'edited.md'), 'utf8')), root)
+  recordHatchedSource('pages/edited.md', hashContent(fs.readFileSync(path.join(root, 'pages', 'edited.md'), 'utf8')), root)
 
   let { pending } = collectPendingSources(root)
   const byPath = new Map(pending.map((p) => [p.relPath, p.status]))
-  assert.equal(byPath.get('eggs/fresh.md'), 'new')
+  assert.equal(byPath.get('pages/fresh.md'), 'new')
   // edited.md matches its recorded hash -> not pending at all
-  assert.equal(byPath.get('eggs/edited.md'), undefined)
+  assert.equal(byPath.get('pages/edited.md'), undefined)
 
-  fs.writeFileSync(path.join(root, 'eggs', 'edited.md'), 'An egg that was hatched and then edited in place — twice now.')
+  fs.writeFileSync(path.join(root, 'pages', 'edited.md'), 'A source that was hatched and then edited in place — twice now.')
   ;({ pending } = collectPendingSources(root))
-  const edited = pending.find((p) => p.relPath === 'eggs/edited.md')
+  const edited = pending.find((p) => p.relPath === 'pages/edited.md')
   assert.equal(edited.status, 'changed', 'same path, different hash -> changed, not new')
 })
 
@@ -544,13 +603,13 @@ test('pendingSourcesSummary surfaces changedCount (kip-app#113)', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
-  fs.writeFileSync(path.join(root, 'eggs', 'a.md'), 'First source with enough prose to pass the empty gate easily.')
-  fs.writeFileSync(path.join(root, 'eggs', 'b.md'), 'Second source, also hatched before, also with prose.')
+  fs.writeFileSync(path.join(root, 'pages', 'a.md'), 'First source with enough prose to pass the empty gate easily.')
+  fs.writeFileSync(path.join(root, 'pages', 'b.md'), 'Second source, also hatched before, also with prose.')
   const { recordHatchedSource, hashContent } = require('../lib/roost')
-  recordHatchedSource('eggs/a.md', hashContent(fs.readFileSync(path.join(root, 'eggs', 'a.md'), 'utf8')), root)
-  recordHatchedSource('eggs/b.md', hashContent(fs.readFileSync(path.join(root, 'eggs', 'b.md'), 'utf8')), root)
-  fs.writeFileSync(path.join(root, 'eggs', 'a.md'), 'First source edited after its hatch, with enough prose still.')
-  fs.writeFileSync(path.join(root, 'eggs', 'new.md'), 'A brand-new third drop with plenty of prose in it.')
+  recordHatchedSource('pages/a.md', hashContent(fs.readFileSync(path.join(root, 'pages', 'a.md'), 'utf8')), root)
+  recordHatchedSource('pages/b.md', hashContent(fs.readFileSync(path.join(root, 'pages', 'b.md'), 'utf8')), root)
+  fs.writeFileSync(path.join(root, 'pages', 'a.md'), 'First source edited after its hatch, with enough prose still.')
+  fs.writeFileSync(path.join(root, 'pages', 'new.md'), 'A brand-new third drop with plenty of prose in it.')
 
   const summary = await pendingSourcesSummary(root)
   assert.equal(summary.changedCount, 1)
@@ -562,27 +621,27 @@ test('recordHatchedSource prunes the orphan row left by a renamed source (kip-ap
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
-  fs.writeFileSync(path.join(root, 'eggs', 'report-v1.md'), 'Version one of a report.')
+  fs.writeFileSync(path.join(root, 'pages', 'report-v1.md'), 'Version one of a report.')
   const { hashContent } = require('../lib/roost')
-  recordHatchedSource('eggs/report-v1.md', hashContent('Version one of a report.'), root)
+  recordHatchedSource('pages/report-v1.md', hashContent('Version one of a report.'), root)
 
   // The user renames per GETTING-STARTED's versioning guidance: new file, old one gone.
-  fs.rmSync(path.join(root, 'eggs', 'report-v1.md'))
+  fs.rmSync(path.join(root, 'pages', 'report-v1.md'))
   // The prune has a 48h grace period (a minutes-old missing file is a sync
   // race, not a rename) — backdate the row past it.
   const { openDb } = require('../lib/db')
   const db = openDb(root)
   try {
-    db.prepare("UPDATE hatched_sources SET hatched = ? WHERE path = 'eggs/report-v1.md'")
+    db.prepare("UPDATE hatched_sources SET hatched = ? WHERE path = 'pages/report-v1.md'")
       .run(new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString())
   } finally {
     db.close()
   }
-  recordHatchedSource('eggs/report-v2.md', hashContent('Version two of a report.'), root)
+  recordHatchedSource('pages/report-v2.md', hashContent('Version two of a report.'), root)
   const { hatchedSourceHashes } = require('../lib/roost')
   const hashes = hatchedSourceHashes(root)
-  assert.ok(hashes.has('eggs/report-v2.md'))
-  assert.ok(!hashes.has('eggs/report-v1.md'), 'old row pruned: file gone, its directory still there')
+  assert.ok(hashes.has('pages/report-v2.md'))
+  assert.ok(!hashes.has('pages/report-v1.md'), 'old row pruned: file gone, its directory still there')
 
   // A missing *directory* means "maybe not synced yet" — the row must stay.
   recordHatchedSource('dropbox/report-v2.md', hashContent('Version two of a report.'), root)

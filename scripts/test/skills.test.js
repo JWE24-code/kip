@@ -13,7 +13,7 @@ const telemetry = require('../lib/telemetry')
 function makeTempCoop () {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-skills-test-'))
   fs.mkdirSync(path.join(root, '.henhouse', 'skills'), { recursive: true })
-  fs.mkdirSync(path.join(root, 'eggs'), { recursive: true })
+  fs.mkdirSync(path.join(root, 'pages'), { recursive: true })
   return root
 }
 
@@ -269,10 +269,10 @@ test('loadSkillsConfig: safe default on a missing/broken file', (t) => {
 test('xlsx-csv skill: summarizes a CSV', async (t) => {
   const root = makeTempCoop()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  fs.writeFileSync(path.join(root, 'eggs', 'data.csv'), 'name,score\na,10\nb,20\n')
+  fs.writeFileSync(path.join(root, 'pages', 'data.csv'), 'name,score\na,10\nb,20\n')
 
   const skill = discoverSkills(root).find((s) => s.name === 'xlsx-csv')
-  const res = await runSkill(skill, { file: 'eggs/data.csv', operation: 'summarize' }, root)
+  const res = await runSkill(skill, { file: 'pages/data.csv', operation: 'summarize' }, root)
 
   assert.equal(res.ok, true, res.error || '')
   assert.match(res.output, /2 rows/)

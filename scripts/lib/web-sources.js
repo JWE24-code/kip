@@ -1,7 +1,7 @@
 // Turns a Peck turn's web-search results into a hatchable source doc
 // (kip-app#81). When Peck runs the `web-search` skill to answer a question,
 // the results otherwise vanish with the turn; this lets the app offer to save
-// them into eggs/ so they become reference material in the nest.
+// them into pages/ so they become reference material in the nest.
 //
 // v1 saves the result list (title / url / snippet). Fetching the full text of
 // each page is a follow-up.

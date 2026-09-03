@@ -10,7 +10,7 @@ const skillCache = require('../lib/skill-cache')
 function makeTempCoop () {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-skill-cache-test-'))
   fs.mkdirSync(path.join(root, '.henhouse', 'skills'), { recursive: true })
-  fs.mkdirSync(path.join(root, 'eggs'), { recursive: true })
+  fs.mkdirSync(path.join(root, 'pages'), { recursive: true })
   return root
 }
 

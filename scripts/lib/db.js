@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS log (
   pages_touched TEXT NOT NULL DEFAULT '[]'
 );
 
--- Tracks which source files (eggs/, journals/, pages/) have been hatched and
+-- Tracks which source files (pages/, journals/) have been hatched and
 -- at what content, so "Hatch sources" can re-hatch only what's new or
 -- changed. path is coop-relative, forward-slashed ("journals/2026_08_26.md").
 CREATE TABLE IF NOT EXISTS hatched_sources (
