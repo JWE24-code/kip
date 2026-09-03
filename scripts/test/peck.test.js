@@ -9,6 +9,7 @@ const { extractCitedSlugs, fileAnswerToNest, askQuestion, peckTurn, classifyPeck
 const { captureFacts, answerQuestionWithSkills } = require('../lib/prompts')
 const { getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
+const telemetry = require('../lib/telemetry')
 
 /** Route a mocked local-provider chat completion by a distinctive phrase in the system prompt. */
 function stubPeckFetch (routes) {
@@ -131,7 +132,7 @@ test('askQuestion', async (t) => {
 
   await t.test('returns empty result with no writes when nothing matches', async () => {
     const result = await askQuestion('anything', { vaultRoot: root })
-    assert.deepEqual(result, { answer: null, citedSlugs: [], candidateSlugs: [], steps: [], costUsd: null })
+    assert.deepEqual(result, { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] })
     assert.equal(fs.existsSync(path.join(root, 'clucks')), true)
     assert.deepEqual(fs.readdirSync(path.join(root, 'clucks')), [], 'a fruitless peck should not be logged, matching the original peck.js behavior')
   })
@@ -783,7 +784,7 @@ test('peckTurn — a question carries the managed backend callId (null for other
   } finally { s.restore() }
 })
 
-test('peckTurn — sums the metered costUsd across the turn (null for non-kip)', async (t) => {
+test('peckTurn — cost stays in telemetry, never on the turn result (kip#43)', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'notes on sleep' })
@@ -792,6 +793,7 @@ test('peckTurn — sums the metered costUsd across the turn (null for non-kip)',
   const original = global.fetch
   t.after(() => { global.fetch = original })
 
+  telemetry.reset()
   // kip connector: key-terms costs 0.0001, the answer 0.0023
   saveLLMConfig({ provider: 'kip', providers: { kip: { apiKey: 'kip_x', baseUrl: 'http://lan.test:3000' } } }, root)
   global.fetch = async (url, init) => {
@@ -805,15 +807,10 @@ test('peckTurn — sums the metered costUsd across the turn (null for non-kip)',
     }
   }
   const r = await peckTurn('what about sleep?', { vaultRoot: root })
-  assert.equal(r.costUsd, 0.0024, 'key-terms + answer cost summed for the turn')
+  assert.equal('costUsd' in r, false, 'cost is never surfaced on the turn result')
 
-  // a plain provider: costUsd null (never guessed)
-  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
-  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], rest.' })
-  try {
-    const r2 = await peckTurn('what about sleep?', { vaultRoot: root })
-    assert.equal(r2.costUsd, null)
-  } finally { s.restore() }
+  // ...but it IS recorded internally, for optimization only.
+  assert.equal(telemetry.summary().costUsd, 0.0024, 'key-terms + answer cost summed in telemetry')
 })
 
 test('peckTurn — a regenerate (arenaCompareToCallId) routes the answer through the arena', async (t) => {
