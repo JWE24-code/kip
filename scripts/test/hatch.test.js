@@ -287,6 +287,50 @@ test('hatchAllSources — classic mode makes one propose call plus one generate 
   }
 })
 
+test('combined-path update is regenerated against the existing page, not restated (#114)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  writePage(root, 'concepts', 'sleep-quality', { type: 'concept', tags: ['health'], body: 'Original notes: sleeping about 8h a night.' })
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  fs.writeFileSync(path.join(root, 'eggs', 'sleep-log.md'), 'This month sleep dropped to 6h a night on average.')
+
+  const seen = []
+  const { restore } = stubFetch((body) => {
+    const sys = body.messages.map((m) => m.content).join('\n')
+    if (/in a single step/.test(sys)) {
+      seen.push('draft')
+      return JSON.stringify({ pages: [
+        { title: 'sleep quality', type: 'concept', tags: ['health'], summary: 's', body: 'A full restatement of everything about the user\'s sleep, now 6h.' },
+        { title: 'Sleep Log', type: 'source', tags: [], summary: 's', body: 'Log notes. See [[sleep-quality]].' }
+      ] })
+    }
+    if (/extending an existing wiki page/.test(sys)) {
+      seen.push('update-generate')
+      assert.match(sys, /Original notes: sleeping about 8h a night\./, 'the update call is given the existing page body')
+      return 'Sleep dropped to ~6h/night this month, down from the ~8h noted earlier.'
+    }
+    seen.push('unexpected')
+    return 'x'
+  })
+
+  try {
+    const summary = await hatchAllSources(root, { limit: 1 })
+    assert.equal(summary.failed.length, 0)
+    // one combined draft + one existing-content-aware regenerate for the
+    // update; the pure-create source hub keeps its drafted body (no 2nd call).
+    assert.deepEqual(seen.sort(), ['draft', 'update-generate'])
+
+    const md = fs.readFileSync(path.join(root, 'nest', 'concepts', 'sleep-quality.md'), 'utf8')
+    assert.match(md, /_Update \d{4}-\d{2}-\d{2}:_/, 'appended as a dated delta')
+    assert.match(md, /down from the ~8h/, 'the delta body is written')
+    assert.doesNotMatch(md, /A full restatement/, 'the source-only combined draft is not used for the update')
+  } finally {
+    restore()
+  }
+})
+
 test('review mode: proposeNextPending stashes a plan and writes nothing; commitReviewedPlan honours keepSlugs', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

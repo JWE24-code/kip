@@ -7,6 +7,40 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Peck can file an answer back into the nest** (kip-app#112) — a settled
+  answer that came from your notes (not a web search, and with at least one
+  candidate page) can be kept as a `concept` page tagged `from-peck` via a new
+  `chat.js --file-answer` entrypoint. Hardening: the derived slug is capped
+  (long / CJK questions can't blow filename limits), an existing page's index
+  summary is left intact on update, and the `from-peck` marker survives an
+  update. Every question turn from the app now also writes exactly one `peck`
+  activity row, matching the CLI — asked-but-never-kept questions are visible
+  in the Coop activity view.
+- **Hatch updates are deltas, not restatements** (kip-app#114) — on the
+  default combined hatch path a page resolved to `update` was appended with a
+  body the model drafted without ever seeing that page, manufacturing exactly
+  the redundancy and superseded-claim issues groom reports later.
+  `commitHatchPlan` now makes one existing-content-aware `generatePageContent`
+  call for every update (combined path or classic), the way the classic path
+  already did — the write references or contrasts with the prior content
+  instead of restating it. Pure creates still cost one LLM call per file.
+- **Peck names disagreements instead of picking a side** (kip-app#116) — the
+  answer prompt (plain and skills-loop) now has an explicit rule: when the
+  cited pages disagree on a date, a value or a claim, say so and cite both
+  rather than returning one side as settled fact.
+- **Groom's findings reach Peck at answer time** (kip-app#116) — every groom
+  run now writes a compact `.roost/lint.json` (slug → findings). A Peck answer
+  intersects it with the pages it cited and returns `lintWarnings`, surfaced
+  in the CLI and the app panel, so an answer drawn from a page groom flagged
+  as orphaned / contradicted / a near-duplicate says so. Groom's stored
+  contradiction findings for the pages in play are also fed into the answer
+  prompt as a short "known disagreements" block. Strictly additive — Peck
+  never writes lint state, and a clean answer adds no LLM call.
+
 ## [0.4.3] — 2026-08-31
 
 ### The retrieval layer (`scripts/`)

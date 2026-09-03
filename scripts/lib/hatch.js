@@ -158,9 +158,10 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
 /**
  * Steps 5-6: writes each planned page via resolvePage(), syncs meta.db, and
  * logs the hatch. Call only after a human has confirmed the plan from
- * proposeHatchPlan(). Bodies drafted by the combined path (candidate.body)
- * are used as-is; any candidate without one gets a generatePageContent()
- * call here (the classic path).
+ * proposeHatchPlan(). A combined-path body (candidate.body) is used as-is for
+ * a pure create; an `update` — combined path or classic — gets a
+ * generatePageContent() call with the existing page content so the write is a
+ * delta, not a restatement (#114).
  *
  * Provenance (kip-app#113): `sourceRelPath` (coop-relative path of the
  * document, e.g. `eggs/report.md`) and `sourceHash` (its sha1) are written
@@ -184,11 +185,19 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
 async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPath = null, sourceHash = null, sourceOriginal = null }, vaultRoot = DEFAULT_VAULT_ROOT, { regenIndex = true } = {}) {
   const allSlugs = plan.map((p) => p.slug)
 
-  // Resolve every page's body up front, in parallel (capped). Combined-path
-  // candidates already carry a drafted body; classic-path ones get one
-  // generate call each here (independent + read-only). Writes stay sequential.
+  // Resolve every page's body up front, in parallel (capped). Writes stay
+  // sequential.
+  //
+  // A pure create on the combined path uses its drafted body as-is (one LLM
+  // call for the whole file). An `update` always gets an existing-content-aware
+  // generate call — the combined draft was written from the source alone,
+  // never seeing the page it's extending, so on the default path updates came
+  // out as parallel restatements rather than deltas (#114). This is the one
+  // extra call the classic path already made for updates; updates are
+  // typically 0-2 per source, so the one-call-per-file cost still mostly holds.
   const bodies = await mapLimit(plan, GENERATE_CONCURRENCY, (candidate) => {
-    if (typeof candidate.body === 'string' && candidate.body.trim()) return candidate.body.trim()
+    const draft = typeof candidate.body === 'string' && candidate.body.trim() ? candidate.body.trim() : null
+    if (draft && candidate.action !== 'update') return draft
 
     let existingContent = null
     if (candidate.action === 'update') {
@@ -198,6 +207,9 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPat
         existingContent = matter(raw).content.trim()
       }
     }
+    // Combined-path update but the page has vanished from disk/index — the
+    // drafted body is better than a source-only regenerate with no delta.
+    if (draft && !existingContent) return draft
     return generatePageContent({
       title: candidate.title,
       type: candidate.type,
