@@ -173,6 +173,9 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label,
     const result = await spec.complete(resolved, call, ctx)
     const callId = (result && result.callId) || null
     const arenaId = (result && result.arenaId) || null
+    // Only the managed Kip backend meters cost; every other provider leaves it
+    // null (the client never guesses price — kip#43).
+    const costUsd = (result && typeof result.costUsd === 'number') ? result.costUsd : null
 
     const usage = extractUsage(result.raw)
     const reasoning = extractReasoning(result.raw)
@@ -184,6 +187,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label,
       model: realModel,
       callId,
       arenaId,
+      costUsd,
       ms: Date.now() - started,
       ok: true,
       systemChars: (system || '').length,
@@ -197,7 +201,7 @@ async function callLLM ({ system, prompt, json = false, maxTokens = 4096, label,
       responseText: result.text,
       reasoning
     })
-    return { ...result, callId, arenaId }
+    return { ...result, callId, arenaId, costUsd }
   } catch (err) {
     telemetry.record({
       ...common,

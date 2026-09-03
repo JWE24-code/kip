@@ -130,7 +130,7 @@ test('askQuestion', async (t) => {
 
   await t.test('returns empty result with no writes when nothing matches', async () => {
     const result = await askQuestion('anything', { vaultRoot: root })
-    assert.deepEqual(result, { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] })
+    assert.deepEqual(result, { answer: null, citedSlugs: [], candidateSlugs: [], steps: [], costUsd: null })
     assert.equal(fs.existsSync(path.join(root, 'clucks')), true)
     assert.deepEqual(fs.readdirSync(path.join(root, 'clucks')), [], 'a fruitless peck should not be logged, matching the original peck.js behavior')
   })
@@ -751,6 +751,39 @@ test('peckTurn — a question carries the managed backend callId (null for other
   try {
     const r2 = await peckTurn('what about sleep?', { vaultRoot: root })
     assert.equal(r2.callId, null)
+  } finally { s.restore() }
+})
+
+test('peckTurn — sums the metered costUsd across the turn (null for non-kip)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'notes on sleep' })
+  rebuildRoost(root)
+
+  const original = global.fetch
+  t.after(() => { global.fetch = original })
+
+  // kip connector: key-terms costs 0.0001, the answer 0.0023
+  saveLLMConfig({ provider: 'kip', providers: { kip: { apiKey: 'kip_x', baseUrl: 'http://lan.test:3000' } } }, root)
+  global.fetch = async (url, init) => {
+    const sys = JSON.parse(init.body).messages.map((m) => m.content).join('\n')
+    const isTerms = /key search terms/.test(sys)
+    const content = isTerms ? '{"terms":["sleep"]}' : 'Per [[sleep]], rest.'
+    return {
+      ok: true, status: 200,
+      headers: new Headers({ 'x-kip-call-id': isTerms ? 'call_terms' : 'call_answer', 'x-kip-cost-usd': isTerms ? '0.0001' : '0.0023' }),
+      json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] })
+    }
+  }
+  const r = await peckTurn('what about sleep?', { vaultRoot: root })
+  assert.equal(r.costUsd, 0.0024, 'key-terms + answer cost summed for the turn')
+
+  // a plain provider: costUsd null (never guessed)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], rest.' })
+  try {
+    const r2 = await peckTurn('what about sleep?', { vaultRoot: root })
+    assert.equal(r2.costUsd, null)
   } finally { s.restore() }
 })
 

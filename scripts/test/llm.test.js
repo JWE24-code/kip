@@ -434,16 +434,33 @@ test('callLLM: "kip" provider routes through the managed backend with routing he
   await withEnv({ PROVIDER: 'kip', KIP_API_KEY: 'kip_env', KIP_BASE_URL: 'http://lan.test:8080' }, async () => {
     const { impl, getLastCall } = fakeFetch(
       { model: 'claude-sonnet-4-6', choices: [{ message: { content: 'from kip' } }] },
-      { resHeaders: { 'x-kip-call-id': 'call_xyz' } })
+      { resHeaders: { 'x-kip-call-id': 'call_xyz', 'x-kip-cost-usd': '0.0005' } })
     const result = await callLLM({ system: 's', prompt: 'p', label: 'peck:answer' }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
     assert.equal(result.text, 'from kip')
     assert.equal(result.callId, 'call_xyz', 'callId passed through from the kip connector')
+    assert.equal(result.costUsd, 0.0005, 'costUsd passed through from the kip connector')
     assert.equal(getLastCall().url, 'http://lan.test:8080/v1/chat/completions')
     assert.equal(getLastCall().init.headers.Authorization, 'Bearer kip_env')
     assert.equal(getLastCall().init.headers['X-Kip-Workload'], 'peck:answer')
     assert.equal(getLastCall().init.headers['X-Kip-Phase'], 'peck')
     assert.equal(JSON.parse(getLastCall().init.body).model, 'auto')
   })
+})
+
+test('callLLM: records costUsd (null for non-kip providers, number for kip)', async () => {
+  telemetry.reset()
+  await withEnv({ PROVIDER: 'anthropic' }, async () => {
+    const { FakeAnthropic } = fakeAnthropicClient('hi')
+    await callLLM({ system: 's', prompt: 'p', label: 't' }, { AnthropicClient: FakeAnthropic, vaultRoot: EMPTY_VAULT })
+  })
+  assert.equal(telemetry.entries()[0].costUsd, null, 'non-managed provider -> costUsd null')
+
+  telemetry.reset()
+  await withEnv({ PROVIDER: 'kip', KIP_API_KEY: 'k', KIP_BASE_URL: 'http://lan.test:8080' }, async () => {
+    const { impl } = fakeFetch({ model: 'm', choices: [{ message: { content: 'x' } }] }, { resHeaders: { 'x-kip-cost-usd': '0.0012' } })
+    await callLLM({ system: 's', prompt: 'p', label: 't2' }, { fetchImpl: impl, vaultRoot: EMPTY_VAULT })
+  })
+  assert.equal(telemetry.entries()[0].costUsd, 0.0012, 'managed backend -> costUsd recorded')
 })
 
 test('callLLM: arena regen threads arenaId + B\'s callId through and records them', async () => {

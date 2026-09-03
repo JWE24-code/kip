@@ -96,6 +96,11 @@ function num (x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : 0
 }
 
+/** Round a USD sum to 8 decimals (0.01 micro-cent) — avoids float-noise in JSON. */
+function roundUsd (x) {
+  return Math.round(x * 1e8) / 1e8
+}
+
 /** Content-free aggregate of every recorded call this run. */
 function summary () {
   const byPhase = {}
@@ -104,24 +109,28 @@ function summary () {
   let failedCalls = 0
   let input = 0
   let output = 0
+  let costUsd = 0
 
   for (const e of records) {
     wallLlmMs += num(e.ms)
     input += num(e.inputTokens)
     output += num(e.outputTokens)
+    costUsd += num(e.costUsd)
     if (e.ok) okCalls++
     else failedCalls++
 
     const p = byPhase[e.phase] ||
-      (byPhase[e.phase] = { calls: 0, ms: 0, avgMs: 0, inputTokens: 0, outputTokens: 0, failures: 0 })
+      (byPhase[e.phase] = { calls: 0, ms: 0, avgMs: 0, inputTokens: 0, outputTokens: 0, failures: 0, costUsd: 0 })
     p.calls++
     p.ms += num(e.ms)
     p.inputTokens += num(e.inputTokens)
     p.outputTokens += num(e.outputTokens)
+    p.costUsd += num(e.costUsd)
     if (!e.ok) p.failures++
   }
   for (const p of Object.values(byPhase)) {
     p.avgMs = p.calls ? Math.round(p.ms / p.calls) : 0
+    p.costUsd = roundUsd(p.costUsd)
   }
 
   const slowestCalls = [...records]
@@ -141,6 +150,7 @@ function summary () {
     failedCalls,
     wallLlmMs,
     tokens: { input, output },
+    costUsd: roundUsd(costUsd),
     byPhase,
     slowestCalls
   }
