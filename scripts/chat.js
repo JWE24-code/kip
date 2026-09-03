@@ -7,8 +7,12 @@
 //
 // Prints the peckTurn() result as JSON to stdout; the provider banner goes to
 // stderr so stdout stays pure JSON for the caller.
-//   { intent: "question",  answer, citedSlugs, candidateSlugs, steps, callId, arenaId }
+//   { intent: "question",  answer, references, citedSlugs, candidateSlugs, steps, callId, arenaId }
 //   { intent: "statement", learned, note, pages?, candidateSlugs }
+//
+// `answer` is clean prose (no [[wikilinks]]); `references` is the source list
+// it leaned on, as [{ slug, title }] in citation order. `citedSlugs` is the
+// same set as bare slugs.
 //
 // callId / arenaId are the managed backend's ids for the answer call (both
 // null on any other provider). arenaId is set only for a --arena-compare-to

@@ -171,6 +171,20 @@ function extractCitedSlugs (answerText, candidateSlugs) {
   return candidateSlugs.filter((slug) => linked.has(slug))
 }
 
+/** Removes the "Sources:" footer the answer model emits (epic #38 — clean
+ *  prose + a references list, instead of inline [[slugs]]). Returns the prose
+ *  with the footer cut; the raw text is unchanged when there's no footer. */
+function stripSources (answerText) {
+  const text = String(answerText || '')
+  const m = text.match(/^Sources:\s*$/m)
+  return (m && m.index !== undefined ? text.slice(0, m.index) : text).trim()
+}
+
+/** A human-readable title from a slug: "sleep-hygiene" -> "sleep hygiene". */
+function humanizeSlug (slug) {
+  return String(slug).replace(/-+/g, ' ').trim()
+}
+
 /** Groom's findings map (.roost/lint.json, written by every groom run,
  *  kip-app#116). Read-only: Peck consults it, never writes it. Returns {} when
  *  the file is absent or unparseable — a nest that has never been groomed just
@@ -341,6 +355,8 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // groom's findings for the pages this answer actually leaned on (kip-app#116)
   const lintWarnings = lintWarningsFor(vaultRoot, citedSlugs)
   if (fileToNest && answer && !webbed) {
+    // File the raw answer (with its "Sources:" footer) so the nest page keeps
+    // its [[slug]] backlinks; the displayed answer below is clean prose.
     await fileAnswerToNest(question, answer, candidateSlugs, vaultRoot)
   }
   // The managed backend's ids for the answer call, so the app can attach a
@@ -352,7 +368,8 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // If this turn ran web-search, offer its results as a hatchable source
   // (kip-app#81) — the app shows a "save these" affordance on the answer.
   const webSource = buildWebSource(question, webSearches);
-  return { answer, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
+  const references = citedSlugs.map((slug) => ({ slug, title: humanizeSlug(slug) }))
+  return { answer: answer ? stripSources(answer) : answer, references, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
 }
 
 /**
@@ -465,9 +482,9 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  * filed); a statement is always filed — that's the point.
  *
  * @returns {{intent: 'question'|'statement'|'reminder', ...}}
- *   question:  { answer: string|null, citedSlugs, candidateSlugs, lintWarnings, steps }
+ *   question:  { answer: string|null, references, citedSlugs, candidateSlugs, lintWarnings, steps }
  *   statement: { learned: boolean, note: string, pages?: [{action,slug,path}], candidateSlugs }
- *   reminder:  { answer: string|null, citedSlugs, candidateSlugs, lintWarnings, steps } — same
+ *   reminder:  { answer: string|null, references, citedSlugs, candidateSlugs, lintWarnings, steps } — same
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */
@@ -500,4 +517,4 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
   return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream })) }
 }
 
-module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, lintWarningsFor, knownConflictsFor }
+module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, stripSources, humanizeSlug, lintWarningsFor, knownConflictsFor }

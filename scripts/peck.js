@@ -75,6 +75,15 @@ async function main () {
   }
   console.log(`\n${result.answer}\n`)
 
+  // References the answer leaned on (epic #38 — clean prose + a source list).
+  if ((result.references || []).length) {
+    console.log('References:')
+    for (const ref of result.references) {
+      console.log(`  - ${ref.title} ([[${ref.slug}]])`)
+    }
+    console.log('')
+  }
+
   // groom's findings for the pages this answer cited (kip-app#116)
   for (const w of result.lintWarnings || []) {
     console.log(`  ⚠ [[${w.slug}]] — ${w.note}`)

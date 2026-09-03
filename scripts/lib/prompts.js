@@ -71,6 +71,12 @@ function isNoAnswer (text) {
   return NO_ANSWER_RE.test(String(text || ''))
 }
 
+// How nest answers cite sources: clean prose with no [[wikilinks]] in the body,
+// then a "Sources:" footer listing the slugs actually used. The client strips
+// the footer for display and turns the slugs into a references list; the raw
+// text is still filed to the nest so Logseq keeps its backlinks.
+const SOURCES_FOOTER_INSTRUCTION = `Write your answer as clean, readable prose — do NOT put any [[wikilinks]] in the body of the answer. After the prose, add a line that reads exactly "Sources:" and then one line per page you actually used, each as [[exact-page-slug]] (using the exact slug from the "### Page: <slug>" heading).`
+
 const ANSWER_SYSTEM_PROMPT = `You are answering a question from a personal wiki — a second brain for journaling, goals, and health tracking. You are given the full text of the wiki pages retrieved as candidates for this question.
 
 Answer using ONLY the information in these pages — do not use outside knowledge, and do not speculate beyond what's written.
@@ -81,9 +87,9 @@ Do not guess, apologise, or explain — just the token. (Something else will tak
 
 If a "Conversation so far" section is present, it is only there to tell you what a follow-up question refers to — it is NOT a source, so never cite it or treat it as fact.
 
-Cite every claim back to the specific page it came from using Logseq's wikilink syntax: [[exact-page-slug]], using the exact slug shown in each "### Page: <slug>" heading. Prefer citing inline, next to the claim it supports, over a single list of links at the end.
+${SOURCES_FOOTER_INSTRUCTION}
 
-If the pages disagree — different dates, different values, or conflicting claims — do not silently pick one: say there is a disagreement, give both sides (with their dates or sources if the pages show them), and cite both. Your citation must not make a contested claim look settled.`
+If the pages disagree — different dates, different values, or conflicting claims — do not silently pick one: say there is a disagreement, give both sides (with their dates or sources if the pages show them), and list both pages under Sources. Your answer must not make a contested claim look settled.`
 
 const WEB_ANSWER_SYSTEM_PROMPT = `The user asked their personal notes a question, but the notes didn't contain the answer, so a web search was run. You are given the search results.
 
@@ -166,11 +172,11 @@ To run skills, make your ENTIRE reply exactly one or more <use_skill> tags and n
 <use_skill name="skill-name">{ "param": "value" }</use_skill>
 When you need several skills whose results don't depend on each other, request them all in ONE reply — they run in parallel. Then stop. You'll get the outputs back and can run another skill or write your answer.
 
-When you can answer, write it as normal prose with NO tag. Cite a wiki-page claim with [[exact-page-slug]] (the slug shown in each "### Page: <slug>" heading). Attribute a skill-derived fact inline as "(via skill-name)".
+When you can answer, write it as clean, readable prose with NO tag and no [[wikilinks]] in the body. Attribute a skill-derived fact inline as "(via skill-name)". After the prose, add a line that reads exactly "Sources:" and then one line per wiki page you used, each as [[exact-page-slug]] (the slug shown in each "### Page: <slug>" heading).
 
 Rules:
 - At most ${MAX_SKILL_ITERATIONS} skill calls. Prefer the wiki pages — only run a skill when they can't answer.
-- If two wiki pages disagree — different dates, values, or claims — don't silently pick one: name the disagreement, give both sides, and cite both.
+- If two wiki pages disagree — different dates, values, or claims — don't silently pick one: name the disagreement, give both sides, and list both pages under Sources.
 - Some skills produce a file (a document, a deck) instead of an answer. When one does, its result is the path it wrote; give that exact path to the user (e.g. "Saved to exports/report.docx") rather than describing the contents.
 - If a skill errors or returns nothing useful, don't retry it more than once; answer with what you have and note what was missing.`
 
