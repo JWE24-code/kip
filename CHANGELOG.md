@@ -9,6 +9,12 @@ The retrieval layer (this repo) and the desktop app
 
 ## [Unreleased]
 
+## [0.4.9] — 2026-09-03
+
+### The retrieval layer (`scripts/`)
+
+- No retrieval-layer changes — app-only release (settings cleanup).
+
 ## [0.4.8] — 2026-09-03
 
 ### The retrieval layer (`scripts/`)
