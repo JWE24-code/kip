@@ -75,6 +75,12 @@ async function main () {
   }
   console.log(`\n${result.answer}\n`)
 
+  // groom's findings for the pages this answer cited (kip-app#116)
+  for (const w of result.lintWarnings || []) {
+    console.log(`  ⚠ [[${w.slug}]] — ${w.note}`)
+  }
+  if ((result.lintWarnings || []).length) console.log('')
+
   if (result.candidateSlugs.length === 0) {
     // nothing to file an answer against, and nothing to log
     return

@@ -287,6 +287,75 @@ test('hatchAllSources — classic mode makes one propose call plus one generate 
   }
 })
 
+test('combined-path update is regenerated against the existing page, not restated (#114)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  writePage(root, 'concepts', 'sleep-quality', { type: 'concept', tags: ['health'], body: 'Original notes: sleeping about 8h a night.' })
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  fs.writeFileSync(path.join(root, 'eggs', 'sleep-log.md'), 'This month sleep dropped to 6h a night on average.')
+
+  const seen = []
+  const { restore } = stubFetch((body) => {
+    const sys = body.messages.map((m) => m.content).join('\n')
+    if (/in a single step/.test(sys)) {
+      seen.push('draft')
+      return JSON.stringify({ pages: [
+        { title: 'sleep quality', type: 'concept', tags: ['health'], summary: 's', body: 'A full restatement of everything about the user\'s sleep, now 6h.' },
+        { title: 'Sleep Log', type: 'source', tags: [], summary: 's', body: 'Log notes. See [[sleep-quality]].' }
+      ] })
+    }
+    if (/extending an existing wiki page/.test(sys)) {
+      seen.push('update-generate')
+      assert.match(sys, /Original notes: sleeping about 8h a night\./, 'the update call is given the existing page body')
+      return 'Sleep dropped to ~6h/night this month, down from the ~8h noted earlier.'
+    }
+    seen.push('unexpected')
+    return 'x'
+  })
+
+  try {
+    const summary = await hatchAllSources(root, { limit: 1 })
+    assert.equal(summary.failed.length, 0)
+    // one combined draft + one existing-content-aware regenerate for the
+    // update; the pure-create source hub keeps its drafted body (no 2nd call).
+    assert.deepEqual(seen.sort(), ['draft', 'update-generate'])
+
+    const md = fs.readFileSync(path.join(root, 'nest', 'concepts', 'sleep-quality.md'), 'utf8')
+    assert.match(md, /_Update \d{4}-\d{2}-\d{2}:_/, 'appended as a dated delta')
+    assert.match(md, /down from the ~8h/, 'the delta body is written')
+    assert.doesNotMatch(md, /A full restatement/, 'the source-only combined draft is not used for the update')
+  } finally {
+    restore()
+  }
+})
+
+test('#114 does not touch source pages: a re-hatched source hub still uses its drafted body', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  fs.writeFileSync(path.join(root, 'eggs', 'report.md'), 'First version of the quarterly report.')
+
+  const gen = () => JSON.stringify({ pages: [{ title: 'Report', type: 'source', tags: [], summary: 's', body: 'Report hub. Links [[q3-numbers]].' }] })
+  let s = stubFetch(gen)
+  try { await hatchAllSources(root, { limit: 1 }) } finally { s.restore() }
+
+  // edit the source and re-hatch — the hub resolves to action=update
+  fs.writeFileSync(path.join(root, 'eggs', 'report.md'), 'Second version of the quarterly report, now with more detail.')
+  const kinds = []
+  s = stubFetch((body) => {
+    const sys = body.messages.map((m) => m.content).join('\n')
+    kinds.push(/in a single step/.test(sys) ? 'draft' : /extending an existing wiki page/.test(sys) ? 'generate-update' : 'other')
+    return gen()
+  })
+  try {
+    await hatchAllSources(root, { limit: 1 })
+    assert.deepEqual(kinds, ['draft'], 'no existing-content generate call for a source-type update')
+  } finally { s.restore() }
+})
+
 test('review mode: proposeNextPending stashes a plan and writes nothing; commitReviewedPlan honours keepSlugs', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

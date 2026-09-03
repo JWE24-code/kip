@@ -805,3 +805,91 @@ test('fileAnswerToNest hardening for the app file-back (kip-app#112)', async (t)
     assert.equal(afterCount, beforeCount, 'no additional peck row')
   })
 })
+
+test('groom findings at answer time (kip-app#116)', async (t) => {
+  const { lintWarningsFor, knownConflictsFor } = require('../lib/peck')
+
+  const writeLint = (root, findings) => fs.writeFileSync(
+    path.join(root, '.roost', 'lint.json'),
+    JSON.stringify({ generated: new Date().toISOString(), deep: false, findings }))
+
+  await t.test('lintWarningsFor / knownConflictsFor read .roost/lint.json without writing it', () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+    // no file yet -> no warnings, no throw
+    assert.deepEqual(lintWarningsFor(root, ['a']), [])
+
+    writeLint(root, {
+      'sleep-hygiene': [{ kind: 'orphan', note: 'nothing links to this page' }],
+      'salary-2025': [{ kind: 'contradiction', note: '90k vs 110k', slugs: ['salary-2025', 'salary-2026'] }],
+      'salary-2026': [{ kind: 'contradiction', note: '90k vs 110k', slugs: ['salary-2025', 'salary-2026'] }]
+    })
+    const before = fs.readFileSync(path.join(root, '.roost', 'lint.json'), 'utf8')
+
+    assert.deepEqual(lintWarningsFor(root, ['sleep-hygiene', 'unflagged']),
+      [{ slug: 'sleep-hygiene', kind: 'orphan', note: 'nothing links to this page' }])
+    assert.deepEqual(lintWarningsFor(root, ['unflagged']), [])
+
+    // both sides of the contradiction in play -> one conflict; only one -> none
+    assert.deepEqual(knownConflictsFor(root, ['salary-2025', 'salary-2026']),
+      [{ slugs: ['salary-2025', 'salary-2026'], note: '90k vs 110k' }])
+    assert.deepEqual(knownConflictsFor(root, ['salary-2025', 'something-else']), [])
+
+    assert.equal(fs.readFileSync(path.join(root, '.roost', 'lint.json'), 'utf8'), before, 'lint.json untouched')
+  })
+
+  await t.test('an answer that cites a flagged page returns a lintWarning; a clean cite returns none', async () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', tags: ['health'], body: 'Consistent bedtime, no screens.' })
+    rebuildRoost(root)
+    saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+    writeLint(root, { 'sleep-hygiene': [{ kind: 'orphan', note: 'nothing links to this page' }] })
+    const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep-hygiene]], keep a consistent bedtime.' })
+    try {
+      const result = await askQuestion('what about sleep?', { vaultRoot: root, fileToNest: false })
+      assert.deepEqual(result.lintWarnings, [{ slug: 'sleep-hygiene', kind: 'orphan', note: 'nothing links to this page' }])
+    } finally { s.restore() }
+
+    // same nest, lint.json now flags a page this answer does NOT cite
+    writeLint(root, { 'some-other-page': [{ kind: 'orphan', note: 'nothing links to this page' }] })
+    const s2 = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep-hygiene]], keep a consistent bedtime.' })
+    try {
+      const result = await askQuestion('what about sleep?', { vaultRoot: root, fileToNest: false })
+      assert.deepEqual(result.lintWarnings, [])
+    } finally { s2.restore() }
+  })
+
+  await t.test('a groom contradiction between two candidate pages is injected into the answer prompt; no extra LLM call', async () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'salary-2025', { type: 'concept', tags: ['work'], body: 'Salary was 90k in 2025.' })
+    writePage(root, 'concepts', 'salary-2026', { type: 'concept', tags: ['work'], body: 'Salary is 110k in 2026.' })
+    rebuildRoost(root)
+    saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+    // baseline: no lint.json — count the calls a turn makes
+    const base = stubPeckFetch({ keyTerms: '{"terms":["salary"]}', answer: 'Per [[salary-2025]] and [[salary-2026]].' })
+    let baseCalls
+    try {
+      await askQuestion('what is my salary?', { vaultRoot: root, fileToNest: false })
+      baseCalls = base.calls.length
+    } finally { base.restore() }
+
+    writeLint(root, {
+      'salary-2025': [{ kind: 'contradiction', note: '2025 says 90k, 2026 says 110k', slugs: ['salary-2025', 'salary-2026'] }],
+      'salary-2026': [{ kind: 'contradiction', note: '2025 says 90k, 2026 says 110k', slugs: ['salary-2025', 'salary-2026'] }]
+    })
+    const s = stubPeckFetch({ keyTerms: '{"terms":["salary"]}', answer: 'Per [[salary-2025]] and [[salary-2026]].' })
+    try {
+      await askQuestion('what is my salary?', { vaultRoot: root, fileToNest: false })
+      const answerCall = s.calls.find((sys) => /You are answering a question from a personal wiki/.test(sys))
+      assert.match(answerCall, /Known disagreements in your nest/)
+      assert.match(answerCall, /\[\[salary-2025\]\] vs \[\[salary-2026\]\]/)
+      assert.match(answerCall, /2025 says 90k, 2026 says 110k/)
+      assert.equal(s.calls.length, baseCalls, 'reading lint.json adds no LLM round-trip')
+    } finally { s.restore() }
+  })
+})
