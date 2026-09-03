@@ -25,6 +25,7 @@ const matter = require('gray-matter')
 
 const { DEFAULT_VAULT_ROOT, skillsPath, skillsConfigPath, exportsPath } = require('./paths')
 const telemetry = require('./telemetry')
+const skillCache = require('./skill-cache')
 
 const BUILTIN_SKILLS_DIR = path.join(__dirname, '..', 'skills')
 const SKILL_TIMEOUT_MS = 60_000
@@ -159,6 +160,13 @@ function readManifest (dir, source) {
     ? Math.min(timeoutSec * 1000, SKILL_TIMEOUT_MAX_MS)
     : SKILL_TIMEOUT_MS
 
+  // cache_ttl (seconds) opts this skill's results into the short-TTL cache
+  // (skill-cache.js). 0 / absent = never cached — the default, because a
+  // skill may be non-deterministic or produce a file on disk (a stale cached
+  // path would be wrong). Only read-only, idempotent skills set this.
+  const cacheTtlSec = Number(data.cache_ttl)
+  const cacheTtlMs = Number.isFinite(cacheTtlSec) && cacheTtlSec > 0 ? cacheTtlSec * 1000 : 0
+
   return {
     name,
     description: data.description.trim(),
@@ -174,7 +182,8 @@ function readManifest (dir, source) {
     source,
     dir,
     entryPath,
-    timeoutMs
+    timeoutMs,
+    cacheTtlMs
   }
 }
 
@@ -336,6 +345,23 @@ function runSkill (skill, input, vaultRoot = DEFAULT_VAULT_ROOT, { timeoutMs, ou
     record(skill, input, r)
     return Promise.resolve(r)
   }
+
+  // Short-TTL cache (epic #32): a skill that opted in (cache_ttl) and was run
+  // with the same input moments ago returns its stored result instead of
+  // re-spawning. Never cached: secrets in the input, a disabled cache, or a
+  // skill that didn't declare cache_ttl.
+  const cacheable = skill.cacheTtlMs > 0 &&
+    process.env.KIP_SKILL_CACHE !== '0' &&
+    !skillCache.hasSecretish(input)
+  if (cacheable) {
+    const cached = skillCache.get(skill, input, { ttl: skill.cacheTtlMs, vaultRoot })
+    if (cached) {
+      const r = { ...cached, ms: 0, timedOut: false, cached: true }
+      record(skill, input, r)
+      return Promise.resolve(r)
+    }
+  }
+
   const env = {
     ...process.env,
     NODE_NO_WARNINGS: '1', // skill deps (docx, pptx-automizer) trip Node's localStorage ExperimentalWarning on v26
@@ -352,7 +378,13 @@ function runSkill (skill, input, vaultRoot = DEFAULT_VAULT_ROOT, { timeoutMs, ou
 
   return new Promise((resolve) => {
     let done = false
-    const finish = (r) => { if (!done) { done = true; record(skill, input, r); resolve(r) } }
+    const finish = (r) => {
+      if (done) return
+      done = true
+      record(skill, input, r)
+      if (r.ok && cacheable) skillCache.put(skill, input, r, { ttl: skill.cacheTtlMs, vaultRoot })
+      resolve(r)
+    }
 
     execFileFn(process.execPath, [skill.entryPath], { cwd: skill.dir, env, timeout, maxBuffer, windowsHide: true },
       (err, stdout, stderr) => {
@@ -379,6 +411,7 @@ function record (skill, input, r) {
     ok: r.ok,
     skill: skill.name,
     timedOut: r.timedOut || undefined,
+    cached: r.cached === true ? true : undefined,
     outputChars: (r.output || '').length,
     error: r.error || undefined,
     system: JSON.stringify(scrubInput(input)),
