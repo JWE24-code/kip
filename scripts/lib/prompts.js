@@ -194,14 +194,103 @@ function formatSkillsBlock (skills) {
 }
 
 /**
- * The skills tool loop: answer the question, but let the model call skills
- * first. Returns { answer, steps: [{skill, input, ok, ms, outputPreview}] }.
- * Independent skill calls are dispatched concurrently — the model may ask for
- * several skills in one turn, and they run in parallel before one synthesis
- * step. The iteration budget is unchanged: each skill call (valid or not)
- * spends one of MAX_SKILL_ITERATIONS, so a batch costs what its calls cost.
- * With no skills it's just answerQuestion(). Any unexpected throw is the
- * caller's (peck.js's) to catch and downgrade.
+ * Upfront skill planning (epic #37): one cheap call that decides the minimal
+ * set of skill calls before any of them run — instead of the model discovering
+ * them one ReAct turn at a time. The plan is best-effort advice; the loop
+ * still adapts when the plan misses something.
+ */
+const PLAN_SKILLS_SYSTEM_PROMPT = `You are planning which skills a personal-wiki question needs, before answering it. You are given the question, the wiki pages already retrieved as candidates, and the available skills.
+
+Plan the MINIMAL set of skill calls — usually none (the pages already answer it), or one or two when the pages can't. Only include a skill you are confident is needed, and include each skill at most once.
+
+Respond with a JSON object of exactly this shape: {"calls": [{"name": "skill-name", "input": { ... }}, ...]}. Use {} for a call that needs no parameters. If no skill is needed, respond {"calls": []}.`
+
+/** A single cheap JSON call: the minimal skill calls for `question`. Returns
+ *  [{name, input}] (input null when the params weren't a JSON object), or []
+ *  on a plan of "no skills needed" or any parse failure (the loop adapts). */
+async function planSkillCalls (question, pages, skills, vaultRoot, { history = [], knownConflicts = [] } = {}) {
+  const convo = formatConversation(history)
+  const conflicts = formatKnownConflicts(knownConflicts)
+  const prompt = `${formatPagesForPrompt(pages)}\n\n---\n\n${formatSkillsBlock(skills)}\n\n---\n\n` +
+    (conflicts ? `${conflicts}\n\n---\n\n` : '') +
+    (convo ? `${convo}\n\n---\n\n` : '') +
+    `Question: ${question}`
+  const { text } = await callLLM({ system: PLAN_SKILLS_SYSTEM_PROMPT, prompt, json: true, maxTokens: 1024, label: 'peck:plan' }, { vaultRoot })
+  try {
+    const parsed = JSON.parse(text)
+    if (!Array.isArray(parsed.calls)) return []
+    return parsed.calls
+      .filter((c) => c && typeof c.name === 'string')
+      .map((c) => ({ name: c.name, input: c.input && typeof c.input === 'object' ? c.input : null }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Runs one batch of skill calls concurrently and appends their results to the
+ * transcript / steps / webSearches. Mutates `steps` and `webSearches`; returns
+ * the updated `{ transcript, skillsRun }`. Shared by the plan phase and the
+ * adaptation loop, so a planned batch and an adapt batch behave identically.
+ */
+async function runSkillBatch (calls, { byName, skills, vaultRoot, runSkillFn, transcript, steps, webSearches, skillsRun, maxSkills }) {
+  const admitted = []
+  for (const c of calls) {
+    if (skillsRun >= maxSkills) break
+    skillsRun++
+    admitted.push(c)
+  }
+
+  const toRun = []
+  for (const call of admitted) {
+    const skill = byName.get(call.name)
+    if (!skill) {
+      steps.push({ skill: call.name, input: call.input, ok: false, ms: 0, outputPreview: 'no such skill' })
+      transcript += `\n\n<skill_result name="${call.name}" ok="false">\nERROR: no such skill. Available: ${skills.map((s) => s.name).join(', ')}.\n</skill_result>\nCall a real skill or answer now.`
+      continue
+    }
+    if (call.input === null) {
+      steps.push({ skill: skill.name, input: null, ok: false, ms: 0, outputPreview: 'bad parameters' })
+      transcript += `\n\n<skill_result name="${skill.name}" ok="false">\nERROR: your parameters were not valid JSON. Retry with a JSON object, or answer directly.\n</skill_result>`
+      continue
+    }
+    toRun.push({ skill, input: call.input })
+  }
+
+  const results = await Promise.all(toRun.map((t) => runSkillFn(t.skill, t.input, vaultRoot)))
+
+  for (let i = 0; i < toRun.length; i++) {
+    const { skill, input } = toRun[i]
+    const res = results[i]
+    steps.push({
+      skill: skill.name,
+      input: scrubInput(input),
+      ok: res.ok,
+      ms: res.ms,
+      cached: res.cached === true ? true : undefined,
+      outputPreview: (res.output || res.error || '').replace(/\s+/g, ' ').trim().slice(0, 500)
+    })
+    // Any skill whose output is a web-search result list (the built-in
+    // web-search, or a user's own) — capture it as a savable source (kip-app#81).
+    if (res.ok) {
+      const parsed = parseWebSearchOutput(res.output)
+      if (parsed && parsed.results.length) webSearches.push(parsed)
+    }
+    const body = res.ok ? String(res.output || '').slice(0, 6000) : `ERROR: ${res.error}`
+    transcript += `\n\n<skill_result name="${skill.name}" ok="${res.ok}">\n${body}\n</skill_result>\nCall another skill or write your final answer now.`
+  }
+
+  return { transcript, skillsRun }
+}
+
+/**
+ * The skills tool loop: plan the minimal skill set up front (epic #37), run it
+ * in parallel, then answer — while still allowing one further skill batch if
+ * the results demand it. Returns { answer, steps: [{skill, input, ok, ms,
+ * outputPreview}] }. Independent calls run concurrently (Promise.all). The
+ * iteration budget is unchanged: each skill call (valid or not) spends one of
+ * MAX_SKILL_ITERATIONS. With no skills it's just answerQuestion(). Any
+ * unexpected throw is the caller's (peck.js's) to catch and downgrade.
  */
 async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill, history = [], onStream = null, knownConflicts = [] } = {}) {
   if (!skills || !skills.length) {
@@ -220,6 +309,19 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
   const webSearches = []   // parsed results of every web-search run this turn (kip-app#81)
 
   let skillsRun = 0
+
+  // Phase 0 — plan the minimal skill set (one cheap call), then run it up
+  // front. Best-effort: a plan failure or an empty plan just falls through to
+  // the loop, which can still discover + run skills as before.
+  try {
+    const planned = await planSkillCalls(question, pages, skills, vaultRoot, { history, knownConflicts })
+    if (planned.length) {
+      ;({ transcript, skillsRun } = await runSkillBatch(planned, { byName, skills, vaultRoot, runSkillFn, transcript, steps, webSearches, skillsRun, maxSkills: MAX_SKILL_ITERATIONS }))
+    }
+  } catch (err) {
+    console.error(`Warning: skill planning failed (${err.message}); answering without a plan.`)
+  }
+
   let turn = 0
   for (;;) {
     // Stream every turn: a turn is either one-or-more <use_skill> tags or the
@@ -241,59 +343,7 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
       return { answer: text, steps, webSearches }
     }
 
-    // Budget: every requested skill spends one iteration, batch or not. A
-    // batch that would overshoot is truncated to what's left.
-    const admitted = []
-    for (const c of calls) {
-      if (skillsRun >= MAX_SKILL_ITERATIONS) break
-      skillsRun++
-      admitted.push(c)
-    }
-
-    // Resolve each admitted call up front: unknown name / unparseable JSON
-    // become the same corrective blocks as before; the valid ones are queued
-    // to run concurrently.
-    const toRun = []
-    for (const call of admitted) {
-      const skill = byName.get(call.name)
-      if (!skill) {
-        steps.push({ skill: call.name, input: call.input, ok: false, ms: 0, outputPreview: 'no such skill' })
-        transcript += `\n\n<skill_result name="${call.name}" ok="false">\nERROR: no such skill. Available: ${skills.map((s) => s.name).join(', ')}.\n</skill_result>\nCall a real skill or answer now.`
-        continue
-      }
-      if (call.input === null) {
-        steps.push({ skill: skill.name, input: null, ok: false, ms: 0, outputPreview: 'bad parameters' })
-        transcript += `\n\n<skill_result name="${skill.name}" ok="false">\nERROR: your parameters were not valid JSON. Retry with a JSON object, or answer directly.\n</skill_result>`
-        continue
-      }
-      toRun.push({ skill, input: call.input })
-    }
-
-    // Independent calls run in parallel — same total spend, a fraction of the
-    // wall-clock latency. Promise.all preserves order, so transcript + steps
-    // come back in the model's original order.
-    const results = await Promise.all(toRun.map((t) => runSkillFn(t.skill, t.input, vaultRoot)))
-
-    for (let i = 0; i < toRun.length; i++) {
-      const { skill, input } = toRun[i]
-      const res = results[i]
-      steps.push({
-        skill: skill.name,
-        input: scrubInput(input),
-        ok: res.ok,
-        ms: res.ms,
-        cached: res.cached === true ? true : undefined,
-        outputPreview: (res.output || res.error || '').replace(/\s+/g, ' ').trim().slice(0, 500)
-      })
-      // Any skill whose output is a web-search result list (the built-in
-      // web-search, or a user's own) — capture it as a savable source (kip-app#81).
-      if (res.ok) {
-        const parsed = parseWebSearchOutput(res.output)
-        if (parsed && parsed.results.length) webSearches.push(parsed)
-      }
-      const body = res.ok ? String(res.output || '').slice(0, 6000) : `ERROR: ${res.error}`
-      transcript += `\n\n<skill_result name="${skill.name}" ok="${res.ok}">\n${body}\n</skill_result>\nCall another skill or write your final answer now.`
-    }
+    ;({ transcript, skillsRun } = await runSkillBatch(calls, { byName, skills, vaultRoot, runSkillFn, transcript, steps, webSearches, skillsRun, maxSkills: MAX_SKILL_ITERATIONS }))
 
     // Budget exhausted and the model still wanted a tool — force a final answer
     if (skillsRun >= MAX_SKILL_ITERATIONS) {
@@ -636,6 +686,7 @@ module.exports = {
   formatConversation,
   generateMeetingPrep,
   answerQuestionWithSkills,
+  planSkillCalls,
   formatSkillsBlock,
   formatKnownConflicts,
   MAX_SKILL_ITERATIONS,
