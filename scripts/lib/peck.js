@@ -377,7 +377,7 @@ async function webFallback (question, vaultRoot, { history = [], onStream = null
   }
 
   const preview = ((res && (res.output || res.error)) || '').replace(/\s+/g, ' ').trim().slice(0, 200)
-  const step = { skill: 'web-search', input: { query: question }, ok: !!(res && res.ok), ms: (res && res.ms) || 0, outputPreview: preview }
+  const step = { skill: 'web-search', input: { query: question }, ok: !!(res && res.ok), ms: (res && res.ms) || 0, cached: !!(res && res.cached), outputPreview: preview }
   const parsed = res && res.ok ? parseWebSearchOutput(res.output) : null
   if (!parsed || !parsed.results.length) return { answer: null, webSearches: [], steps: [step] }
 

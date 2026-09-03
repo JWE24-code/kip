@@ -71,7 +71,7 @@ async function main () {
   }
 
   for (const s of result.steps || []) {
-    console.error(`  · ${s.ok ? 'ran' : 'failed'} ${s.skill} (${(s.ms / 1000).toFixed(1)}s)`)
+    console.error(`  · ${s.cached ? 'cached' : (s.ok ? 'ran' : 'failed')} ${s.skill} (${(s.ms / 1000).toFixed(1)}s)`)
   }
   console.log(`\n${result.answer}\n`)
 

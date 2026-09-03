@@ -282,6 +282,7 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
         input: scrubInput(input),
         ok: res.ok,
         ms: res.ms,
+        cached: res.cached === true ? true : undefined,
         outputPreview: (res.output || res.error || '').replace(/\s+/g, ' ').trim().slice(0, 500)
       })
       // Any skill whose output is a web-search result list (the built-in

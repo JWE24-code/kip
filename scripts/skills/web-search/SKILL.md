@@ -8,6 +8,7 @@ when_to_use: >
 entry: run.js
 network: true
 timeout: 25
+cache_ttl: 60
 parameters:
   - { name: query, type: string, required: true, description: "The search query." }
   - { name: count, type: number, required: false, description: "How many results to return (default 5, max 10)." }
