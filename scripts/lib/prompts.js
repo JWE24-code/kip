@@ -15,6 +15,18 @@ const { parseWebSearchOutput } = require('./web-sources')
 const HISTORY_TURN_CLIP = 700
 const HISTORY_MAX_TURNS = 6
 
+/**
+ * groom's stored contradiction findings for the pages in play (kip-app#116),
+ * rendered as a prompt block so the answer model names the disagreement rather
+ * than presenting one side as settled. `conflicts`: [{ slugs, note }] or falsy.
+ */
+function formatKnownConflicts (conflicts) {
+  if (!Array.isArray(conflicts) || !conflicts.length) return ''
+  const lines = conflicts.map((c) => `- ${(c.slugs || []).map((s) => `[[${s}]]`).join(' vs ')}: ${c.note}`)
+  return 'Known disagreements in your nest (groom flagged these — if your answer touches one, ' +
+    'say both pages disagree and cite both, do not pick a side):\n' + lines.join('\n')
+}
+
 /** history: [{ role: "user"|"assistant", text }] oldest→newest, or falsy. */
 function formatConversation (history, { heading = 'Conversation so far' } = {}) {
   if (!Array.isArray(history) || !history.length) return ''
@@ -87,9 +99,11 @@ Do not cite anything with [[wikilink]] syntax here — these are web pages, not 
  *  candidate B against an earlier answer — the regenerate free-rider
  *  (kip-app#73). `history` (optional): recent {role,text} turns for
  *  follow-up context (kip-app#82). */
-async function answerQuestion (question, pages, vaultRoot, { arena = null, history = [], onStream = null } = {}) {
+async function answerQuestion (question, pages, vaultRoot, { arena = null, history = [], onStream = null, knownConflicts = [] } = {}) {
   const convo = formatConversation(history)
+  const conflicts = formatKnownConflicts(knownConflicts)
   const prompt = `${formatPagesForPrompt(pages)}\n\n---\n\n` +
+    (conflicts ? `${conflicts}\n\n---\n\n` : '') +
     (convo ? `${convo}\n\n---\n\n` : '') +
     `Question: ${question}`
   const { text } = await callLLM({ system: ANSWER_SYSTEM_PROMPT, prompt, maxTokens: 4096, label: 'peck:answer', arena, onStream }, { vaultRoot })
@@ -185,15 +199,17 @@ function formatSkillsBlock (skills) {
  * With no skills it's just answerQuestion(). Any unexpected throw is the
  * caller's (peck.js's) to catch and downgrade.
  */
-async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill, history = [], onStream = null } = {}) {
+async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { runSkillFn = runSkill, history = [], onStream = null, knownConflicts = [] } = {}) {
   if (!skills || !skills.length) {
-    return { answer: await answerQuestion(question, pages, vaultRoot, { history, onStream }), steps: [], webSearches: [] }
+    return { answer: await answerQuestion(question, pages, vaultRoot, { history, onStream, knownConflicts }), steps: [], webSearches: [] }
   }
 
   const byName = new Map(skills.map((s) => [s.name, s]))
   const system = ANSWER_WITH_SKILLS_SYSTEM_PROMPT + formatSkillsBlock(skills)
   const convo = formatConversation(history)
+  const conflicts = formatKnownConflicts(knownConflicts)
   let transcript = `${formatPagesForPrompt(pages)}\n\n---\n\n` +
+    (conflicts ? `${conflicts}\n\n---\n\n` : '') +
     (convo ? `${convo}\n\n---\n\n` : '') +
     `Question: ${question}`
   const steps = []
@@ -262,7 +278,7 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
   }
 
   // unreachable (the turn === MAX branch returns), but be safe
-  return { answer: await answerQuestion(question, pages, vaultRoot, { history, onStream }), steps, webSearches }
+  return { answer: await answerQuestion(question, pages, vaultRoot, { history, onStream, knownConflicts }), steps, webSearches }
 }
 
 /**
@@ -591,6 +607,7 @@ module.exports = {
   generateMeetingPrep,
   answerQuestionWithSkills,
   formatSkillsBlock,
+  formatKnownConflicts,
   MAX_SKILL_ITERATIONS,
   flagContradictions,
   proposeCandidatePages,

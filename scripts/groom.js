@@ -381,6 +381,71 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
   return report
 }
 
+/**
+ * Inverts a groom report into a slug → findings map for answer-time use
+ * (kip-app#116). Peck intersects this with the pages an answer cited and warns
+ * when it drew on a page groom flagged. Every finding is `{ kind, note }`, plus
+ * `slugs` for the pairwise ones (contradiction, near-duplicate, merge). No LLM
+ * — just a re-shape of what runGroom already computed.
+ */
+function buildLintIndex (report) {
+  const idx = {}
+  const add = (slug, finding) => {
+    if (!slug) return
+    ;(idx[slug] = idx[slug] || []).push(finding)
+  }
+
+  for (const slug of report.orphans || []) {
+    add(slug, { kind: 'orphan', note: 'nothing links to this page' })
+  }
+  for (const d of report.nearDuplicates || []) {
+    add(d.slugs[0], { kind: 'near-duplicate', note: `near-duplicate slug of ${d.slugs[1]} (similarity ${d.score})`, slugs: d.slugs })
+    add(d.slugs[1], { kind: 'near-duplicate', note: `near-duplicate slug of ${d.slugs[0]} (similarity ${d.score})`, slugs: d.slugs })
+  }
+  for (const m of (report.drift && report.drift.missingFiles) || []) {
+    add(m.slug, { kind: 'drift', note: 'in the index but missing on disk — run rebuild-roost' })
+  }
+  for (const c of report.contradictions || []) {
+    for (const slug of c.slugs || []) add(slug, { kind: 'contradiction', note: c.description, slugs: c.slugs })
+  }
+  // deep-only findings
+  for (const c of report.pageCoherence || []) {
+    add(c.slug, { kind: 'coherence', note: c.issues.join(' ') || 'internal inconsistency across its _Update_ sections' })
+  }
+  for (const s of report.summaryDrift || []) {
+    add(s.slug, { kind: 'summary-drift', note: `its index summary no longer fits${s.suggested ? ` (suggested: ${s.suggested})` : ''}` })
+  }
+  for (const b of report.brokenLinks || []) {
+    add(b.slug, { kind: 'broken-link', note: `links to non-existent page(s): ${b.badTargets.join(', ')}` })
+  }
+  for (const slug of report.deadEnds || []) {
+    add(slug, { kind: 'dead-end', note: 'links out to no other page' })
+  }
+  for (const m of report.mergeCandidates || []) {
+    add(m.slugs[0], { kind: 'merge-candidate', note: `possible duplicate of ${m.slugs[1]}: ${m.reason}`, slugs: m.slugs })
+    add(m.slugs[1], { kind: 'merge-candidate', note: `possible duplicate of ${m.slugs[0]}: ${m.reason}`, slugs: m.slugs })
+  }
+  return idx
+}
+
+/**
+ * Writes <coop>/.roost/lint.json — a compact slug → findings map from the
+ * groom report, for Peck to consult at answer time (kip-app#116). Written on
+ * every run (quick and deep); a quick run carries only the deterministic
+ * findings. Returns its path.
+ */
+function writeLintJson (vaultRoot, report) {
+  const dir = path.join(vaultRoot, '.roost')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, 'lint.json')
+  fs.writeFileSync(file, JSON.stringify({
+    generated: new Date().toISOString(),
+    deep: !!report.deep,
+    findings: buildLintIndex(report)
+  }, null, 2) + '\n')
+  return file
+}
+
 /** Writes <coop>/.roost/groom-report.md — a dated checklist. Returns its path. */
 function writeGroomReport (vaultRoot, report) {
   const today = new Date().toISOString().slice(0, 10)
@@ -498,6 +563,10 @@ async function main () {
 
   const report = await runGroom(vaultRoot, { deep, onProgress })
 
+  // Answer-time lint artifact (kip-app#116) — written on every run so Peck
+  // always has the freshest findings for the pages an answer cites.
+  report.lintPath = writeLintJson(vaultRoot, report)
+
   if (deep) {
     report.reportPath = writeGroomReport(vaultRoot, report)
     reporter.flush(false)
@@ -542,5 +611,7 @@ module.exports = {
   buildEntitySourceGroups,
   buildMergePairs,
   findContradictions,
-  writeGroomReport
+  writeGroomReport,
+  buildLintIndex,
+  writeLintJson
 }

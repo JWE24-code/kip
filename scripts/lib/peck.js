@@ -171,6 +171,56 @@ function extractCitedSlugs (answerText, candidateSlugs) {
   return candidateSlugs.filter((slug) => linked.has(slug))
 }
 
+/** Groom's findings map (.roost/lint.json, written by every groom run,
+ *  kip-app#116). Read-only: Peck consults it, never writes it. Returns {} when
+ *  the file is absent or unparseable — a nest that has never been groomed just
+ *  gets no warnings. */
+function readLintIndex (vaultRoot) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(vaultRoot, '.roost', 'lint.json'), 'utf8'))
+    return parsed && typeof parsed.findings === 'object' && parsed.findings ? parsed.findings : {}
+  } catch {
+    return {}
+  }
+}
+
+/** groom findings for the pages an answer cited — [{slug, kind, note}], the
+ *  answer-time half of kip-app#116. */
+function lintWarningsFor (vaultRoot, citedSlugs) {
+  if (!citedSlugs || !citedSlugs.length) return []
+  const idx = readLintIndex(vaultRoot)
+  const out = []
+  for (const slug of citedSlugs) {
+    for (const f of idx[slug] || []) {
+      if (f && f.kind && f.note) out.push({ slug, kind: f.kind, note: f.note })
+    }
+  }
+  return out
+}
+
+/** groom's stored contradiction findings where BOTH pages are in the candidate
+ *  set — fed into the answer prompt as a "known disagreements" block so the
+ *  model doesn't present a contested claim as settled (kip-app#116). No LLM
+ *  call: this is groom's already-computed output. */
+function knownConflictsFor (vaultRoot, candidateSlugs) {
+  const inPlay = new Set(candidateSlugs)
+  if (inPlay.size < 2) return []
+  const idx = readLintIndex(vaultRoot)
+  const seen = new Set()
+  const out = []
+  for (const slug of candidateSlugs) {
+    for (const f of idx[slug] || []) {
+      if (f.kind !== 'contradiction' || !Array.isArray(f.slugs) || f.slugs.length < 2) continue
+      if (!f.slugs.every((s) => inPlay.has(s))) continue
+      const key = f.slugs.slice().sort().join('|') + '::' + f.note
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ slugs: f.slugs, note: f.note })
+    }
+  }
+  return out
+}
+
 /**
  * Writes an answer into the nest as a new/updated `concept` page (the same
  * create-vs-update resolution hatch.js uses) and logs the peck. The one
@@ -230,6 +280,13 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
 
+  // groom's stored contradictions between two of the pages in play — passed
+  // into the answer prompt so the model names the disagreement instead of
+  // picking a side (kip-app#116). Not for arena: a regenerate free-rider is
+  // "answer this again", and changing its prompt context would muddy the
+  // model-vs-model compare.
+  const knownConflicts = arena ? [] : knownConflictsFor(vaultRoot, candidateSlugs)
+
   // The skills tool loop adds a bigger system prompt and, when a skill runs,
   // extra round-trips. Only take that path — or even look for skills — when
   // one is plausibly needed; otherwise answer straight from the nest. A miss
@@ -254,14 +311,14 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
     answer = await answerQuestion(question, pages, vaultRoot, { arena, history })
   } else if (wantSkills) {
     try {
-      ({ answer, steps, webSearches } = await answerQuestionWithSkills(question, pages, skills, vaultRoot, { history, onStream }))
+      ({ answer, steps, webSearches } = await answerQuestionWithSkills(question, pages, skills, vaultRoot, { history, onStream, knownConflicts }))
     } catch (err) {
       console.error(`Warning: the skills tool loop failed (${err.message}); falling back to a plain answer.`)
-      answer = await answerQuestion(question, pages, vaultRoot, { history, onStream })
+      answer = await answerQuestion(question, pages, vaultRoot, { history, onStream, knownConflicts })
       steps = []
     }
   } else {
-    answer = await answerQuestion(question, pages, vaultRoot, { history, onStream })
+    answer = await answerQuestion(question, pages, vaultRoot, { history, onStream, knownConflicts })
   }
 
   // The nest didn't cover it → search the web and answer from that
@@ -281,6 +338,8 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   }
 
   const citedSlugs = answer ? extractCitedSlugs(answer, candidateSlugs) : []
+  // groom's findings for the pages this answer actually leaned on (kip-app#116)
+  const lintWarnings = lintWarningsFor(vaultRoot, citedSlugs)
   if (fileToNest && answer && !webbed) {
     await fileAnswerToNest(question, answer, candidateSlugs, vaultRoot)
   }
@@ -293,7 +352,7 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // If this turn ran web-search, offer its results as a hatchable source
   // (kip-app#81) — the app shows a "save these" affordance on the answer.
   const webSource = buildWebSource(question, webSearches);
-  return { answer, citedSlugs, candidateSlugs, steps, callId, arenaId, webSource: webSource || null }
+  return { answer, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
 }
 
 /**
@@ -388,7 +447,7 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  * same question — routes the answer call through the managed backend's arena
  * as candidate B (the regenerate free-rider, kip-app#73).
  *
- * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], steps: Array, callId: string|null, arenaId: string|null}}
+ * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], lintWarnings: Array<{slug,kind,note}>, steps: Array, callId: string|null, arenaId: string|null}}
  */
 async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
   const candidates = await retrieveCandidates(question, vaultRoot, { history })
@@ -406,9 +465,9 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  * filed); a statement is always filed — that's the point.
  *
  * @returns {{intent: 'question'|'statement'|'reminder', ...}}
- *   question:  { answer: string|null, citedSlugs, candidateSlugs, steps }
+ *   question:  { answer: string|null, citedSlugs, candidateSlugs, lintWarnings, steps }
  *   statement: { learned: boolean, note: string, pages?: [{action,slug,path}], candidateSlugs }
- *   reminder:  { answer: string|null, citedSlugs, candidateSlugs, steps } — same
+ *   reminder:  { answer: string|null, citedSlugs, candidateSlugs, lintWarnings, steps } — same
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */
@@ -441,4 +500,4 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
   return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream })) }
 }
 
-module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs }
+module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, lintWarningsFor, knownConflictsFor }

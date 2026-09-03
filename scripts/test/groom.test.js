@@ -17,7 +17,9 @@ const {
   buildMergePairs,
   buildEntitySourceGroups,
   findContradictions,
-  writeGroomReport
+  writeGroomReport,
+  buildLintIndex,
+  writeLintJson
 } = require('../groom')
 const { reviewPageCoherence } = require('../lib/prompts')
 const { saveLLMConfig } = require('../lib/llm')
@@ -247,6 +249,71 @@ test('deep-groom prompt fns fall back to a safe default on unusable output', asy
   } finally {
     global.fetch = original
   }
+})
+
+test('buildLintIndex inverts a report into a slug → findings map (kip-app#116)', () => {
+  const report = {
+    deep: true,
+    orphans: ['lonely-page'],
+    nearDuplicates: [{ slugs: ['sleep-hygiene', 'sleep-quality'], score: 0.82 }],
+    drift: { missingFiles: [{ slug: 'ghost', path: 'nest/concepts/ghost.md' }], untrackedFiles: [] },
+    contradictions: [{ slugs: ['salary-2025', 'salary-2026'], description: 'one says 90k, the other 110k' }],
+    pageCoherence: [{ slug: 'sleep-quality', issues: ['08 section contradicts the 07 section'], consolidate: true }],
+    brokenLinks: [{ slug: 'notes', badTargets: ['no-such-page'] }],
+    deadEnds: ['notes'],
+    mergeCandidates: [{ slugs: ['dr-alvarez', 'alvarez-clinic'], reason: 'same practice' }],
+    summaryDrift: [{ slug: 'sleep-quality', current: 'x', suggested: 'sleep dropped 8h→6h' }]
+  }
+  const idx = buildLintIndex(report)
+
+  assert.deepEqual(idx['lonely-page'], [{ kind: 'orphan', note: 'nothing links to this page' }])
+  assert.equal(idx['sleep-hygiene'][0].kind, 'near-duplicate')
+  assert.deepEqual(idx['sleep-hygiene'][0].slugs, ['sleep-hygiene', 'sleep-quality'])
+  assert.equal(idx.ghost[0].kind, 'drift')
+  assert.equal(idx['salary-2025'][0].kind, 'contradiction')
+  assert.equal(idx['salary-2026'][0].note, 'one says 90k, the other 110k')
+  // sleep-quality collects several findings
+  const kinds = idx['sleep-quality'].map((f) => f.kind).sort()
+  assert.deepEqual(kinds, ['coherence', 'near-duplicate', 'summary-drift'])
+  assert.equal(idx.notes.length, 2, 'broken-link + dead-end')
+  assert.equal(idx['dr-alvarez'][0].kind, 'merge-candidate')
+
+  // a clean report yields an empty index
+  assert.deepEqual(buildLintIndex({ orphans: [], nearDuplicates: [], drift: { missingFiles: [] }, contradictions: [] }), {})
+})
+
+test('writeLintJson writes .roost/lint.json with generated/deep/findings (kip-app#116)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  const p = writeLintJson(root, { deep: false, orphans: ['x'], nearDuplicates: [], drift: { missingFiles: [] }, contradictions: [] })
+  assert.equal(p, path.join(root, '.roost', 'lint.json'))
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'))
+  assert.equal(parsed.deep, false)
+  assert.match(parsed.generated, /^\d{4}-\d{2}-\d{2}T/)
+  assert.deepEqual(parsed.findings.x, [{ kind: 'orphan', note: 'nothing links to this page' }])
+})
+
+test('groom main() writes lint.json on a quick run (kip-app#116)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', tags: ['health'], body: 'Sleep hygiene notes.' })
+  writePage(root, 'concepts', 'sleep-quality', { type: 'concept', tags: ['health'], body: 'Links [[sleep-hygiene]].' })
+  rebuildRoost(root)
+
+  // No LLM provider configured -> groom's quick contradiction pass is caught
+  // and skipped; the deterministic checks and the lint write still run.
+  const { execFileSync } = require('node:child_process')
+  execFileSync(process.execPath, [path.join(__dirname, '..', 'groom.js'), '--json'], {
+    env: { ...process.env, KIP_COOP_ROOT: root }, encoding: 'utf8'
+  })
+
+  const lintPath = path.join(root, '.roost', 'lint.json')
+  assert.ok(fs.existsSync(lintPath), 'quick groom writes .roost/lint.json')
+  const parsed = JSON.parse(fs.readFileSync(lintPath, 'utf8'))
+  assert.equal(parsed.deep, false)
+  assert.ok('sleep-quality' in parsed.findings, 'orphan sleep-quality is in the lint index')
 })
 
 test('runGroom end-to-end with an injected contradiction stub', async (t) => {
