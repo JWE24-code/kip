@@ -129,6 +129,7 @@ test('rebuildRoost + searchPages + findSimilarSlug + clucks', async (t) => {
   await t.test('regenerateIndexMd writes a readable, grouped index', () => {
     regenerateIndexMd(root)
     const contents = fs.readFileSync(path.join(root, 'nest', 'index.md'), 'utf8')
+    assert.ok(contents.includes('title:: The Nest'))
     assert.ok(contents.includes('## Concepts'))
     assert.ok(contents.includes('Sleep Hygiene'))
     assert.ok(contents.includes('## Entities'))
