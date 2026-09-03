@@ -75,10 +75,10 @@ async function main () {
   }
   console.log(`\n${result.answer}\n`)
 
-  // References the answer leaned on (epic #38 — clean prose + a source list).
-  if ((result.references || []).length) {
+  // Sources the answer leaned on (epic #38 — clean prose + a source list).
+  if ((result.sources || []).length) {
     console.log('References:')
-    for (const ref of result.references) {
+    for (const ref of result.sources) {
       console.log(`  - ${ref.title} ([[${ref.slug}]])`)
     }
     console.log('')

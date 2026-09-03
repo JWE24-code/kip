@@ -172,7 +172,7 @@ function extractCitedSlugs (answerText, candidateSlugs) {
 }
 
 /** Removes the "Sources:" footer the answer model emits (epic #38 — clean
- *  prose + a references list, instead of inline [[slugs]]). Returns the prose
+ *  prose + a sources list, instead of inline [[slugs]]). Returns the prose
  *  with the footer cut; the raw text is unchanged when there's no footer. */
 function stripSources (answerText) {
   const text = String(answerText || '')
@@ -368,8 +368,8 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // If this turn ran web-search, offer its results as a hatchable source
   // (kip-app#81) — the app shows a "save these" affordance on the answer.
   const webSource = buildWebSource(question, webSearches);
-  const references = citedSlugs.map((slug) => ({ slug, title: humanizeSlug(slug) }))
-  return { answer: answer ? stripSources(answer) : answer, references, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
+  const sources = citedSlugs.map((slug) => ({ slug, title: humanizeSlug(slug) }))
+  return { answer: answer ? stripSources(answer) : answer, sources, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
 }
 
 /**
@@ -482,9 +482,9 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  * filed); a statement is always filed — that's the point.
  *
  * @returns {{intent: 'question'|'statement'|'reminder', ...}}
- *   question:  { answer: string|null, references, citedSlugs, candidateSlugs, lintWarnings, steps }
+ *   question:  { answer: string|null, sources, citedSlugs, candidateSlugs, lintWarnings, steps }
  *   statement: { learned: boolean, note: string, pages?: [{action,slug,path}], candidateSlugs }
- *   reminder:  { answer: string|null, references, citedSlugs, candidateSlugs, lintWarnings, steps } — same
+ *   reminder:  { answer: string|null, sources, citedSlugs, candidateSlugs, lintWarnings, steps } — same
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */

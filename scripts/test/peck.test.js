@@ -84,7 +84,7 @@ test('humanizeSlug turns hyphens into spaces', () => {
   assert.equal(humanizeSlug('acme-corp'), 'acme corp')
 })
 
-test('peckTurn — clean prose + a references list (Sources footer stripped)', async (t) => {
+test('peckTurn — clean prose + a sources list (Sources footer stripped)', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
@@ -99,7 +99,7 @@ test('peckTurn — clean prose + a references list (Sources footer stripped)', a
     const r = await peckTurn('what about sleep?', { vaultRoot: root })
     assert.equal(r.intent, 'question')
     assert.equal(r.answer, 'Keep a consistent bedtime and avoid screens before bed.')
-    assert.deepEqual(r.references, [{ slug: 'sleep', title: 'sleep' }])
+    assert.deepEqual(r.sources, [{ slug: 'sleep', title: 'sleep' }])
     assert.deepEqual(r.citedSlugs, ['sleep'])
   } finally { s.restore() }
 })

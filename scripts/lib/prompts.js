@@ -73,7 +73,7 @@ function isNoAnswer (text) {
 
 // How nest answers cite sources: clean prose with no [[wikilinks]] in the body,
 // then a "Sources:" footer listing the slugs actually used. The client strips
-// the footer for display and turns the slugs into a references list; the raw
+// the footer for display and turns the slugs into a sources list; the raw
 // text is still filed to the nest so Logseq keeps its backlinks.
 const SOURCES_FOOTER_INSTRUCTION = `Write your answer as clean, readable prose — do NOT put any [[wikilinks]] in the body of the answer. After the prose, add a line that reads exactly "Sources:" and then one line per page you actually used, each as [[exact-page-slug]] (using the exact slug from the "### Page: <slug>" heading).`
 
