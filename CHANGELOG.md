@@ -23,6 +23,12 @@ The retrieval layer (this repo) and the desktop app
   `nest/` file is touched, so groom stays read-only to your notes. A filed
   Peck answer also mirrors its summary into frontmatter so `rebuild-roost`
   keeps it instead of degrading to `**Q:** …`.
+- **Answer evidence** (kip-app#117) — `peckTurn` now also returns
+  `deadCitations` (`[[links]]` in the answer that resolve to no page
+  anywhere, journal dates excluded), so the app can flag a hallucinated
+  citation instead of rendering it as a silent dead link. `fileAnswerToNest`
+  appends a `## Sources` section listing the retrieved pages the answer
+  didn't cite, so a filed answer carries its full evidence set.
 
 ## [0.4.9] — 2026-09-03
 

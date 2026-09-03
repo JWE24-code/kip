@@ -188,6 +188,22 @@ function humanizeSlug (slug) {
   return String(slug).replace(/-+/g, ' ').trim()
 }
 
+/** date-shaped ([[2026-08-26]]) is a valid Logseq journal ref, not a nest slug. */
+const DATE_SLUG_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * [[wikilink]] targets in the answer that resolve to no nest page at all
+ * (kip-app#117). extractCitedSlugs only sees hallucinations *relative to the
+ * candidate set*; a link to a slug that exists nowhere renders as a silent
+ * dead link in the app and even shadows Logseq's page/create fallback. Journal
+ * date refs are excluded.
+ */
+function deadCitationSlugs (answerText, candidateSlugs, vaultRoot) {
+  const candidates = new Set(candidateSlugs)
+  return [...new Set(extractWikilinkSlugs(answerText))]
+    .filter((s) => s && !candidates.has(s) && !DATE_SLUG_RE.test(s) && !getPage(s, vaultRoot))
+}
+
 /** Groom's findings map (.roost/lint.json, written by every groom run,
  *  kip-app#116). Read-only: Peck consults it, never writes it. Returns {} when
  *  the file is absent or unparseable — a nest that has never been groomed just
@@ -256,13 +272,22 @@ function knownConflictsFor (vaultRoot, candidateSlugs) {
 async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = DEFAULT_VAULT_ROOT, { log = true } = {}) {
   const trimmed = question.trim()
 
+  // The retrieved pages the answer did NOT cite inline — appended as a
+  // `## Sources` note so a filed answer carries its full evidence set, not
+  // just the model's picks (kip-app#117).
+  const citedInline = new Set(extractWikilinkSlugs(answer))
+  const alsoRetrieved = (candidateSlugs || []).filter((s) => !citedInline.has(s))
+  const sourcesBlock = alsoRetrieved.length
+    ? `\n\n## Sources\n\nAlso retrieved, not cited: ${alsoRetrieved.map((s) => `[[${s}]]`).join(', ')}`
+    : ''
+
   const result = resolvePage({
     type: 'concept', // a peck answer is a synthesized note; closest fit of
                       // the three page types. Existing-page updates keep
                       // whatever type the matched page already has.
     title: trimmed, // matched on the full question; the derived slug is
                     // capped by resolvePage, so old filed answers still resolve
-    body: `**Q:** ${question}\n\n${answer}`,
+    body: `**Q:** ${question}\n\n${answer}${sourcesBlock}`,
     tags: ['from-peck'],
     mergeTags: true, // survive updates onto an existing page (kip-app#113)
     vaultRoot
@@ -363,6 +388,8 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   }
 
   const citedSlugs = answer ? extractCitedSlugs(answer, candidateSlugs) : []
+  // [[links]] in the answer that point at no page anywhere (kip-app#117)
+  const deadCitations = answer ? deadCitationSlugs(answer, candidateSlugs, vaultRoot) : []
   // groom's findings for the pages this answer actually leaned on (kip-app#116)
   const lintWarnings = lintWarningsFor(vaultRoot, citedSlugs)
   if (fileToNest && answer && !webbed) {
@@ -380,7 +407,7 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // (kip-app#81) — the app shows a "save these" affordance on the answer.
   const webSource = buildWebSource(question, webSearches);
   const sources = citedSlugs.map((slug) => ({ slug, title: humanizeSlug(slug) }))
-  return { answer: answer ? stripSources(answer) : answer, sources, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
+  return { answer: answer ? stripSources(answer) : answer, sources, citedSlugs, candidateSlugs, deadCitations, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
 }
 
 /**
@@ -475,7 +502,7 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  * same question — routes the answer call through the managed backend's arena
  * as candidate B (the regenerate free-rider, kip-app#73).
  *
- * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], lintWarnings: Array<{slug,kind,note}>, steps: Array, callId: string|null, arenaId: string|null}}
+ * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], lintWarnings: Array<{slug,kind,note}>, deadCitations: string[], steps: Array, callId: string|null, arenaId: string|null}}
  */
 async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
   const candidates = await retrieveCandidates(question, vaultRoot, { history })
@@ -493,9 +520,9 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  * filed); a statement is always filed — that's the point.
  *
  * @returns {{intent: 'question'|'statement'|'reminder', ...}}
- *   question:  { answer: string|null, sources, citedSlugs, candidateSlugs, lintWarnings, steps }
+ *   question:  { answer: string|null, sources, citedSlugs, candidateSlugs, deadCitations, lintWarnings, steps }
  *   statement: { learned: boolean, note: string, pages?: [{action,slug,path}], candidateSlugs }
- *   reminder:  { answer: string|null, sources, citedSlugs, candidateSlugs, lintWarnings, steps } — same
+ *   reminder:  { answer: string|null, sources, citedSlugs, candidateSlugs, deadCitations, lintWarnings, steps } — same
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */
@@ -528,4 +555,4 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
   return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream })) }
 }
 
-module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, stripSources, humanizeSlug, lintWarningsFor, knownConflictsFor }
+module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, stripSources, humanizeSlug, deadCitationSlugs, lintWarningsFor, knownConflictsFor }
