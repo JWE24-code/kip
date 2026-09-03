@@ -20,6 +20,7 @@ function stubPeckFetch (routes) {
     calls.push(sys)
     let content = '{}'
     if (/key search terms/.test(sys)) content = routes.keyTerms || '{"terms": []}'
+    else if (/planning which skills/.test(sys)) content = routes.plan || '{"calls": []}'
     else if (/told their personal wiki a fact/.test(sys)) content = routes.capture
     else if (routes.answerFn) content = routes.answerFn(sys, calls.length)
     else content = routes.answer || 'an answer'
@@ -448,7 +449,7 @@ test('peckTurn — the model batches two skills in one turn; both run, one answe
   } finally { s.restore() }
 })
 
-test('answerQuestionWithSkills — independent skills in one turn are dispatched concurrently', async (t) => {
+test('answerQuestionWithSkills — the plan drives a concurrent batch up front', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
@@ -460,10 +461,11 @@ test('answerQuestionWithSkills — independent skills in one turn are dispatched
 
   let calls = 0
   const original = global.fetch
-  global.fetch = async () => {
+  global.fetch = async (_url, init) => {
     calls++
-    const content = calls === 1
-      ? '<use_skill name="alpha">{}</use_skill>\n<use_skill name="beta">{}</use_skill>'
+    const sys = JSON.parse(init.body).messages.map((m) => m.content).join('\n')
+    const content = /planning which skills/.test(sys)
+      ? '{"calls":[{"name":"alpha","input":{}},{"name":"beta","input":{}}]}'
       : 'alpha + beta done'
     return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }) }
   }
@@ -482,13 +484,13 @@ test('answerQuestionWithSkills — independent skills in one turn are dispatched
 
   const resultP = answerQuestionWithSkills('q', [], skills, root, { runSkillFn })
 
-  // Yield until the model's batch turn resolves and the concurrent dispatch runs.
+  // Yield until the plan runs and the planned batch dispatches.
   for (let i = 0; i < 10 && invoked.length < 2; i++) {
     await new Promise((r) => setImmediate(r))
   }
 
-  // Both skills were dispatched even though neither has resolved yet — that's
-  // the concurrency guarantee (a serial loop would have awaited alpha first).
+  // Both planned skills were dispatched even though neither has resolved yet —
+  // that's the concurrency guarantee (a serial loop would await alpha first).
   assert.deepEqual(invoked.slice().sort(), ['alpha', 'beta'])
 
   resolveAlpha()
@@ -496,6 +498,33 @@ test('answerQuestionWithSkills — independent skills in one turn are dispatched
   const result = await resultP
   assert.equal(result.answer, 'alpha + beta done')
   assert.deepEqual(result.steps.map((s) => [s.skill, s.ok]), [['alpha', true], ['beta', true]])
+})
+
+test('answerQuestionWithSkills — an empty plan falls back to discovery in the loop', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const skills = [{ name: 'alpha', description: 'fixture alpha', parameters: [], instructions: '' }]
+
+  let calls = 0
+  const original = global.fetch
+  global.fetch = async (_url, init) => {
+    calls++
+    const sys = JSON.parse(init.body).messages.map((m) => m.content).join('\n')
+    let content
+    if (/planning which skills/.test(sys)) content = '{"calls": []}'          // planner says no skills
+    else if (!/<skill_result/.test(sys)) content = '<use_skill name="alpha">{}</use_skill>' // adapts anyway
+    else content = 'used alpha'
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }) }
+  }
+  t.after(() => { global.fetch = original })
+
+  const result = await answerQuestionWithSkills('q', [], skills, root, {
+    runSkillFn: async () => ({ ok: true, output: 'A', error: null, ms: 1 })
+  })
+  assert.equal(result.answer, 'used alpha')
+  assert.deepEqual(result.steps.map((s) => [s.skill, s.ok]), [['alpha', true]], 'the loop still adapted after an empty plan')
 })
 
 test('peckTurn — a web-search run comes back as a hatchable webSource (kip-app#81)', async (t) => {
