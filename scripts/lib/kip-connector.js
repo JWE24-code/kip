@@ -104,12 +104,22 @@ async function postJson (url, apiKey, body, headers, doFetch, signal) {
 const header = (res, name) =>
   (res && res.headers && typeof res.headers.get === 'function' && res.headers.get(name)) || null
 
+const numOrNull = (v) => {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** The backend meters each call and returns its USD cost in X-Kip-Cost-Usd. */
+const costHeader = (res) => numOrNull(header(res, 'x-kip-cost-usd'))
+
 async function post (baseUrl, apiKey, body, headers, doFetch, signal) {
   const url = `${baseUrl.replace(/\/+$/, '')}/v1/chat/completions`
   const res = await postJson(url, apiKey, body, headers, doFetch, signal)
   // The backend tags every completion with a call id; every later preference
   // signal (rating / behaviour / arena verdict) references it. See kip-app#73.
-  return { data: await res.json(), callId: header(res, 'x-kip-call-id') }
+  // It also returns the metered USD cost for internal telemetry (kip#43).
+  return { data: await res.json(), callId: header(res, 'x-kip-call-id'), costUsd: costHeader(res) }
 }
 
 /** POST {baseUrl}/v1/arena/completions — runs B (and A, unless compare_to_call_id
@@ -159,27 +169,28 @@ async function callBackend (resolved, call, ctx) {
       text: String(completionText(b)).trim(),
       raw: b,
       callId: b.kip_call_id || null,
-      arenaId: arenaId || null
+      arenaId: arenaId || null,
+      costUsd: numOrNull(b.cost_usd)
     }
   }
 
-  let data, callId
+  let data, callId, costUsd
   if (call.json) {
     try {
-      ({ data, callId } = await post(baseUrl, resolved.apiKey, { ...base, response_format: { type: 'json_object' } }, routingHeaders, doFetch, signal))
+      ({ data, callId, costUsd } = await post(baseUrl, resolved.apiKey, { ...base, response_format: { type: 'json_object' } }, routingHeaders, doFetch, signal))
     } catch (err) {
       // a routing/plan/auth error is real — only retry a plain 400 (upstream
       // rejected response_format), matching the OpenAI-compatible path.
       if (err.status !== 400) throw err
       const sys = call.system ? `${call.system}\n\n${JSON_MODE_INSTRUCTION}` : JSON_MODE_INSTRUCTION
-      ;({ data, callId } = await post(baseUrl, resolved.apiKey, { ...base, messages: buildMessages(sys, call.prompt) }, routingHeaders, doFetch, signal))
+      ;({ data, callId, costUsd } = await post(baseUrl, resolved.apiKey, { ...base, messages: buildMessages(sys, call.prompt) }, routingHeaders, doFetch, signal))
     }
   } else {
-    ({ data, callId } = await post(baseUrl, resolved.apiKey, base, routingHeaders, doFetch, signal))
+    ({ data, callId, costUsd } = await post(baseUrl, resolved.apiKey, base, routingHeaders, doFetch, signal))
   }
 
   const raw = completionText(data)
-  return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data, callId: callId || null, arenaId: null }
+  return { text: call.json ? stripCodeFences(raw) : String(raw).trim(), raw: data, callId: callId || null, arenaId: null, costUsd: costUsd || null }
 }
 
 /** GET {baseUrl}/v1/usage — auth-only, not routed, not plan-checked. The

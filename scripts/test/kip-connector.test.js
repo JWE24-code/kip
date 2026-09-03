@@ -75,6 +75,25 @@ test('complete: returns the X-Kip-Call-Id header as callId', async () => {
   assert.equal(res.callId, 'call_abc123')
 })
 
+test('complete: returns the X-Kip-Cost-Usd header as costUsd', async () => {
+  const { impl } = fakeFetch(reply('hi'), { resHeaders: { 'x-kip-cost-usd': '0.00042' } })
+  const res = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
+  assert.equal(res.costUsd, 0.00042)
+})
+
+test('complete: no cost header -> costUsd null', async () => {
+  const { impl } = fakeFetch(reply('hi'))
+  const res = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10 }, { fetch: impl })
+  assert.equal(res.costUsd, null)
+})
+
+test('complete arena: reads b.cost_usd', async () => {
+  const arenaBody = { arena_id: 'a9', origin: 'regen', b: { ...reply('x'), kip_call_id: 'call_B', cost_usd: 0.0007 } }
+  const { impl } = fakeFetch(arenaBody)
+  const res = await kip.complete(RESOLVED, { prompt: 'q', maxTokens: 10, arena: { compareToCallId: 'call_A' } }, { fetch: impl })
+  assert.equal(res.costUsd, 0.0007)
+})
+
 test('complete json:true: callId survives the prompt-and-strip 400 retry', async () => {
   const impl = async (_url, init) => {
     const body = JSON.parse(init.body)

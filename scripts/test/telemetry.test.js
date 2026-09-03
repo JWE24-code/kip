@@ -26,6 +26,21 @@ test('telemetry', async (t) => {
     assert.equal(s.byPhase['hatch:propose'].calls, 1)
   })
 
+  await t.test('summary aggregates costUsd per phase and as a total (content-free)', () => {
+    telemetry.record({ label: 'peck:key-terms', ms: 1, ok: true, costUsd: 0.0001 })
+    telemetry.record({ label: 'peck:answer', ms: 1, ok: true, costUsd: 0.0023 })
+    telemetry.record({ label: 'peck:answer:web', ms: 1, ok: true, costUsd: 0.0012 })
+    telemetry.record({ label: 'skill:web-search', ms: 1, ok: true }) // no costUsd — not an LLM call
+
+    const s = telemetry.summary()
+    assert.equal(s.costUsd, 0.0036)
+    assert.equal(s.byPhase['peck:key-terms'].costUsd, 0.0001)
+    assert.equal(s.byPhase['peck:answer'].costUsd, 0.0023)
+    assert.equal(s.byPhase['peck:answer:web'].costUsd, 0.0012)
+    assert.equal(s.byPhase.skill.costUsd, 0)
+    assert.equal(JSON.stringify(s).includes('SECRET'), false)
+  })
+
   await t.test('slowestCalls is ms-desc, capped at 5, and content-free', () => {
     for (const ms of [50, 900, 200, 700, 10, 400]) {
       telemetry.record({ label: 'x', ms, ok: true, prompt: 'SECRET', responseText: 'SECRET' })

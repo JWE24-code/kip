@@ -352,7 +352,8 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // If this turn ran web-search, offer its results as a hatchable source
   // (kip-app#81) — the app shows a "save these" affordance on the answer.
   const webSource = buildWebSource(question, webSearches);
-  return { answer, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null }
+  const costUsd = turnCostSince(telemetryStart)
+  return { answer, citedSlugs, candidateSlugs, lintWarnings, steps, callId, arenaId, webSource: webSource || null, costUsd }
 }
 
 /**
@@ -403,6 +404,23 @@ function answerCallSince (startIdx) {
   return { callId: null, arenaId: null }
 }
 
+/** Sum of metered USD cost across telemetry entries at/after `startIdx`.
+ *  Non-Kip providers leave costUsd null, so with no metered call this is
+ *  null (not 0) — the client never guesses price (kip#43). */
+function turnCostSince (startIdx) {
+  const es = telemetry.entries()
+  let total = 0
+  let any = false
+  for (let i = startIdx; i < es.length; i++) {
+    const c = es[i].costUsd
+    if (typeof c === 'number' && Number.isFinite(c)) {
+      total += c
+      any = true
+    }
+  }
+  return any ? Math.round(total * 1e8) / 1e8 : null
+}
+
 /**
  * Writes the pages captureFacts() proposed for a told fact — same
  * create-vs-update resolution Hatch uses (resolvePage -> findSimilarSlug),
@@ -450,13 +468,15 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], lintWarnings: Array<{slug,kind,note}>, steps: Array, callId: string|null, arenaId: string|null}}
  */
 async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
+  const turnStart = telemetry.entries().length
   const candidates = await retrieveCandidates(question, vaultRoot, { history })
   if (candidates.length === 0 && !anySkills(vaultRoot)) {
-    return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
+    return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [], costUsd: turnCostSince(turnStart) }
   }
   const pages = readPageBodies(vaultRoot, candidates)
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history, onStream })
+  const result = await answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history, onStream })
+  return { ...result, costUsd: turnCostSince(turnStart) }
 }
 
 /**
@@ -472,11 +492,12 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  *              confirmation is in `answer`.
  */
 async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
+  const turnStart = telemetry.entries().length
   // An upcoming event the user wants reminding about ("I have a meeting Friday
   // at 15h", "remind me to …") — route to the skills path (the `reminders`
   // skill creates it), NOT fact-capture, which would file it as a nest page.
   if (looksLikeReminder(input)) {
-    return { intent: 'reminder', ...(await answerFromPages(input, [], { fileToNest: false, vaultRoot })) }
+    return { intent: 'reminder', ...(await answerFromPages(input, [], { fileToNest: false, vaultRoot })), costUsd: turnCostSince(turnStart) }
   }
 
   const candidates = await retrieveCandidates(input, vaultRoot, { history })
@@ -488,16 +509,17 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
     const results = capture.learned ? fileCapturedFacts(capture.pages, vaultRoot) : []
     const touched = [...new Set(results.map((r) => r.slug))]
     appendLog('told', input, touched, vaultRoot)
+    const costUsd = turnCostSince(turnStart)
     return results.length
-      ? { intent: 'statement', learned: true, note: capture.note, pages: results, candidateSlugs }
-      : { intent: 'statement', learned: false, note: capture.note || 'Nothing new to record.', candidateSlugs }
+      ? { intent: 'statement', learned: true, note: capture.note, pages: results, candidateSlugs, costUsd }
+      : { intent: 'statement', learned: false, note: capture.note || 'Nothing new to record.', candidateSlugs, costUsd }
   }
 
   if (pages.length === 0 && !anySkills(vaultRoot)) {
-    return { intent: 'question', answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
+    return { intent: 'question', answer: null, citedSlugs: [], candidateSlugs: [], steps: [], costUsd: turnCostSince(turnStart) }
   }
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream })) }
+  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream })), costUsd: turnCostSince(turnStart) }
 }
 
 module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, lintWarningsFor, knownConflictsFor }
