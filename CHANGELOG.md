@@ -2,12 +2,37 @@
 
 All notable changes to Kip. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions track
-`app/src/main/frontend/version.cljs`.
+`src/main/frontend/version.cljs` (in kip-app).
 
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
 ## [Unreleased]
+
+## [0.4.6] — 2026-09-03
+
+### The retrieval layer (`scripts/`)
+
+- **Cleaner Peck answers with a source list** — answers no longer weave
+  `[[page]]` wikilinks into the prose. The answer model writes clean prose and
+  a trailing `Sources:` footer; the client turns that into a `sources` list
+  (`[{ slug, title }]`) returned next to the answer, and the raw answer is
+  still filed to the nest so its backlinks survive.
+- **Faster, more predictable skill loop** — an upfront planning step
+  (`peck:plan`, one cheap call) decides the minimal skill set before any skill
+  runs, then runs that batch in parallel and synthesises. The common case is
+  planned-and-done; the loop still adapts when the results demand another
+  call.
+- **Skill calls run in parallel** — independent skills a model asks for in one
+  turn are now dispatched concurrently instead of one after the other.
+- **Short-TTL skill result cache** — a read-only skill re-asked for the same
+  input within a short window returns its cached output instead of re-running.
+  Opt-in per skill via `cache_ttl` (the bundled web-search defaults to 60s;
+  `KIP_SKILL_CACHE=0` disables it).
+- **Per-call cost telemetry (internal)** — the managed backend returns each
+  call's metered cost (`X-Kip-Cost-Usd`) and the client records it in
+  telemetry (per-phase and per-turn totals). Strictly internal — never shown
+  in the answer or the UI.
 
 ## [0.4.5] — 2026-09-03
 
