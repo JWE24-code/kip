@@ -253,6 +253,19 @@ test('CLI: cancel', async (t) => {
   assert.equal(JSON.parse(r.stdout).canceled, true)
 })
 
+test('CLI: add with explicit --title/--event-at/--source (todo projection)', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const r = await cli(root, ['add', '--title', 'follow up with Sam',
+    '--event-at', '2026-09-05T07:00:00.000Z', '--source', 'todo', '--lead', '0', '--json'])
+  const reminder = JSON.parse(r.stdout).reminder
+  assert.equal(reminder.title, 'follow up with Sam')
+  assert.equal(reminder.eventAt, '2026-09-05T07:00:00.000Z')
+  assert.equal(reminder.leadMin, 0)
+  assert.equal(reminder.source, 'todo')
+  assert.equal(reminder.status, 'pending')
+})
+
 test('CLI: --silent add, then mute/unmute', async (t) => {
   const root = makeCoop()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

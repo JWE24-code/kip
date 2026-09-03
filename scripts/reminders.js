@@ -34,7 +34,8 @@ const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const argv = process.argv.slice(2)
 const has = (f) => argv.includes(f)
 const flagVal = (f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : undefined }
-const positionals = argv.filter((a, i) => !a.startsWith('--') && argv[i - 1] !== '--lead')
+const VALUE_FLAGS = new Set(['--lead', '--title', '--when', '--event-at', '--source'])
+const positionals = argv.filter((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(argv[i - 1]))
 const asJson = has('--json')
 const RELATED_LIMIT = 6
 
@@ -103,9 +104,18 @@ async function main () {
 
   if (cmd === 'add') {
     const text = positionals.slice(1).join(' ').trim()
-    if (!text) { console.error('usage: reminders.js add "<what and when>" [--lead 60] [--silent]'); process.exitCode = 1; return }
+    const title = flagVal('--title')
+    const eventAt = flagVal('--event-at')
+    const when = flagVal('--when')
+    const source = flagVal('--source') || 'cli'
+    if (!text && !title && !eventAt && !when) { console.error('usage: reminders.js add "<what and when>" [--lead 60] [--silent]'); process.exitCode = 1; return }
     const row = addReminder(DEFAULT_VAULT_ROOT, {
-      text, lead: flagVal('--lead'), source: 'cli',
+      text,
+      ...(title ? { title } : {}),
+      ...(when ? { when } : {}),
+      ...(eventAt ? { eventAt } : {}),
+      lead: flagVal('--lead'),
+      source,
       ...(has('--silent') ? { sound: false } : {})
     })
     out({ reminder: row }, describeReminder(row))
