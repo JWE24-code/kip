@@ -5,7 +5,7 @@
 // / summary / link / merge checks). All actual API calls go through callLLM()
 // in scripts/lib/llm.js — nothing here is provider-specific.
 const { callLLM } = require('./llm')
-const { runSkill, parseSkillCall, scrubInput } = require('./skills')
+const { runSkill, parseSkillCalls, scrubInput } = require('./skills')
 const { parseWebSearchOutput } = require('./web-sources')
 
 // --- conversation context (kip-app#82) --------------------------------------
@@ -162,9 +162,9 @@ const ANSWER_WITH_SKILLS_SYSTEM_PROMPT = `You are answering a question from a pe
 
 Answer using the wiki pages AND any skill results you gather. Do not speculate beyond what you're given.
 
-To run a skill, make your ENTIRE reply exactly this and nothing else:
+To run skills, make your ENTIRE reply exactly one or more <use_skill> tags and nothing else:
 <use_skill name="skill-name">{ "param": "value" }</use_skill>
-Then stop. You'll get the skill's output back and can run another skill or write your answer.
+When you need several skills whose results don't depend on each other, request them all in ONE reply — they run in parallel. Then stop. You'll get the outputs back and can run another skill or write your answer.
 
 When you can answer, write it as normal prose with NO tag. Cite a wiki-page claim with [[exact-page-slug]] (the slug shown in each "### Page: <slug>" heading). Attribute a skill-derived fact inline as "(via skill-name)".
 
@@ -196,6 +196,10 @@ function formatSkillsBlock (skills) {
 /**
  * The skills tool loop: answer the question, but let the model call skills
  * first. Returns { answer, steps: [{skill, input, ok, ms, outputPreview}] }.
+ * Independent skill calls are dispatched concurrently — the model may ask for
+ * several skills in one turn, and they run in parallel before one synthesis
+ * step. The iteration budget is unchanged: each skill call (valid or not)
+ * spends one of MAX_SKILL_ITERATIONS, so a batch costs what its calls cost.
  * With no skills it's just answerQuestion(). Any unexpected throw is the
  * caller's (peck.js's) to catch and downgrade.
  */
@@ -215,11 +219,13 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
   const steps = []
   const webSearches = []   // parsed results of every web-search run this turn (kip-app#81)
 
-  for (let turn = 0; turn <= MAX_SKILL_ITERATIONS; turn++) {
-    // Stream every turn: a turn is either a <use_skill> tag or the final
-    // prose. The consumer keys off the `first` flag to reset its buffer each
-    // turn and suppresses anything that still looks like a partial skill tag,
-    // so a tool-call turn shows nothing and the answer turn streams clean.
+  let skillsRun = 0
+  let turn = 0
+  for (;;) {
+    // Stream every turn: a turn is either one-or-more <use_skill> tags or the
+    // final prose. The consumer keys off the `first` flag to reset its buffer
+    // each turn and suppresses anything that still looks like a partial skill
+    // tag, so a tool-call turn shows nothing and the answer turn streams clean.
     const { text, raw } = await callLLM({
       system,
       prompt: transcript,
@@ -228,15 +234,68 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
       onStream
     }, { vaultRoot })
 
-    const call = parseSkillCall(text)
+    const calls = parseSkillCalls(text)
     // No <use_skill> tag (⇒ text is the final answer), or the model was cut
     // off (⇒ answer with what came back rather than loop on a partial tag).
-    if (!call || responseWasTruncated(raw)) {
+    if (!calls.length || responseWasTruncated(raw)) {
       return { answer: text, steps, webSearches }
     }
 
-    // model still wants a tool on the last allowed turn — force a final answer
-    if (turn === MAX_SKILL_ITERATIONS) {
+    // Budget: every requested skill spends one iteration, batch or not. A
+    // batch that would overshoot is truncated to what's left.
+    const admitted = []
+    for (const c of calls) {
+      if (skillsRun >= MAX_SKILL_ITERATIONS) break
+      skillsRun++
+      admitted.push(c)
+    }
+
+    // Resolve each admitted call up front: unknown name / unparseable JSON
+    // become the same corrective blocks as before; the valid ones are queued
+    // to run concurrently.
+    const toRun = []
+    for (const call of admitted) {
+      const skill = byName.get(call.name)
+      if (!skill) {
+        steps.push({ skill: call.name, input: call.input, ok: false, ms: 0, outputPreview: 'no such skill' })
+        transcript += `\n\n<skill_result name="${call.name}" ok="false">\nERROR: no such skill. Available: ${skills.map((s) => s.name).join(', ')}.\n</skill_result>\nCall a real skill or answer now.`
+        continue
+      }
+      if (call.input === null) {
+        steps.push({ skill: skill.name, input: null, ok: false, ms: 0, outputPreview: 'bad parameters' })
+        transcript += `\n\n<skill_result name="${skill.name}" ok="false">\nERROR: your parameters were not valid JSON. Retry with a JSON object, or answer directly.\n</skill_result>`
+        continue
+      }
+      toRun.push({ skill, input: call.input })
+    }
+
+    // Independent calls run in parallel — same total spend, a fraction of the
+    // wall-clock latency. Promise.all preserves order, so transcript + steps
+    // come back in the model's original order.
+    const results = await Promise.all(toRun.map((t) => runSkillFn(t.skill, t.input, vaultRoot)))
+
+    for (let i = 0; i < toRun.length; i++) {
+      const { skill, input } = toRun[i]
+      const res = results[i]
+      steps.push({
+        skill: skill.name,
+        input: scrubInput(input),
+        ok: res.ok,
+        ms: res.ms,
+        outputPreview: (res.output || res.error || '').replace(/\s+/g, ' ').trim().slice(0, 500)
+      })
+      // Any skill whose output is a web-search result list (the built-in
+      // web-search, or a user's own) — capture it as a savable source (kip-app#81).
+      if (res.ok) {
+        const parsed = parseWebSearchOutput(res.output)
+        if (parsed && parsed.results.length) webSearches.push(parsed)
+      }
+      const body = res.ok ? String(res.output || '').slice(0, 6000) : `ERROR: ${res.error}`
+      transcript += `\n\n<skill_result name="${skill.name}" ok="${res.ok}">\n${body}\n</skill_result>\nCall another skill or write your final answer now.`
+    }
+
+    // Budget exhausted and the model still wanted a tool — force a final answer
+    if (skillsRun >= MAX_SKILL_ITERATIONS) {
       const { text: final } = await callLLM({
         system: ANSWER_SYSTEM_PROMPT,
         prompt: `${transcript}\n\nAnswer the question now with what you have.`,
@@ -247,38 +306,8 @@ async function answerQuestionWithSkills (question, pages, skills, vaultRoot, { r
       return { answer: final, steps, webSearches }
     }
 
-    const skill = byName.get(call.name)
-    if (!skill) {
-      steps.push({ skill: call.name, input: call.input, ok: false, ms: 0, outputPreview: 'no such skill' })
-      transcript += `\n\n<skill_result name="${call.name}" ok="false">\nERROR: no such skill. Available: ${skills.map((s) => s.name).join(', ')}.\n</skill_result>\nCall a real skill or answer now.`
-      continue
-    }
-    if (call.input === null) {
-      steps.push({ skill: skill.name, input: null, ok: false, ms: 0, outputPreview: 'bad parameters' })
-      transcript += `\n\n<skill_result name="${skill.name}" ok="false">\nERROR: your parameters were not valid JSON. Retry with a JSON object, or answer directly.\n</skill_result>`
-      continue
-    }
-
-    const res = await runSkillFn(skill, call.input, vaultRoot)
-    steps.push({
-      skill: skill.name,
-      input: scrubInput(call.input),
-      ok: res.ok,
-      ms: res.ms,
-      outputPreview: (res.output || res.error || '').replace(/\s+/g, ' ').trim().slice(0, 500)
-    })
-    // Any skill whose output is a web-search result list (the built-in
-    // web-search, or a user's own) — capture it as a savable source (kip-app#81).
-    if (res.ok) {
-      const parsed = parseWebSearchOutput(res.output)
-      if (parsed && parsed.results.length) webSearches.push(parsed)
-    }
-    const body = res.ok ? String(res.output || '').slice(0, 6000) : `ERROR: ${res.error}`
-    transcript += `\n\n<skill_result name="${skill.name}" ok="${res.ok}">\n${body}\n</skill_result>\nCall another skill or write your final answer now.`
+    turn++
   }
-
-  // unreachable (the turn === MAX branch returns), but be safe
-  return { answer: await answerQuestion(question, pages, vaultRoot, { history, onStream, knownConflicts }), steps, webSearches }
 }
 
 /**

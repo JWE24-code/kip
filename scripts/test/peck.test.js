@@ -6,7 +6,7 @@ const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
 const { extractCitedSlugs, fileAnswerToNest, askQuestion, peckTurn, classifyPeckInput } = require('../lib/peck')
-const { captureFacts } = require('../lib/prompts')
+const { captureFacts, answerQuestionWithSkills } = require('../lib/prompts')
 const { getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
 
@@ -417,6 +417,85 @@ test('peckTurn — the model calls a skill, then answers with its output', async
     assert.deepEqual(r.citedSlugs, ['q3'])
     assert.ok(s.calls.some((c) => /<skill_result name="echo"/.test(c)), 'the follow-up turn saw the skill result')
   } finally { s.restore() }
+})
+
+test('peckTurn — the model batches two skills in one turn; both run, one answer', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'q3', { type: 'concept', tags: ['work'], body: 'Q3 numbers live in two sheets.' })
+  rebuildRoost(root)
+  writeFixtureSkill(root, 'alpha', 'console.log("ALPHA: 42")')
+  writeFixtureSkill(root, 'beta', 'console.log("BETA: 30")')
+
+  const s = stubPeckFetch({
+    keyTerms: '{"terms": ["q3"]}',
+    answerFn: (sys) => {
+      const hasAlpha = /<skill_result name="alpha"/.test(sys)
+      const hasBeta = /<skill_result name="beta"/.test(sys)
+      if (!hasAlpha && !hasBeta) {
+        return '<use_skill name="alpha">{}</use_skill>\n<use_skill name="beta">{}</use_skill>'
+      }
+      return 'Per [[q3]], alpha is 42 and beta is 30 (via alpha, beta).'
+    }
+  })
+  try {
+    const r = await peckTurn('what were the Q3 numbers?', { vaultRoot: root })
+    assert.equal(r.intent, 'question')
+    assert.deepEqual(r.steps.map((x) => [x.skill, x.ok]), [['alpha', true], ['beta', true]])
+    assert.match(r.answer, /42/)
+    assert.match(r.answer, /30/)
+  } finally { s.restore() }
+})
+
+test('answerQuestionWithSkills — independent skills in one turn are dispatched concurrently', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const skills = [
+    { name: 'alpha', description: 'fixture alpha', parameters: [], instructions: '' },
+    { name: 'beta', description: 'fixture beta', parameters: [], instructions: '' }
+  ]
+
+  let calls = 0
+  const original = global.fetch
+  global.fetch = async () => {
+    calls++
+    const content = calls === 1
+      ? '<use_skill name="alpha">{}</use_skill>\n<use_skill name="beta">{}</use_skill>'
+      : 'alpha + beta done'
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }) }
+  }
+  t.after(() => { global.fetch = original })
+
+  const invoked = []
+  let resolveAlpha, resolveBeta
+  const gateAlpha = new Promise((r) => { resolveAlpha = r })
+  const gateBeta = new Promise((r) => { resolveBeta = r })
+  const runSkillFn = (skill) => {
+    invoked.push(skill.name)
+    return skill.name === 'alpha'
+      ? gateAlpha.then(() => ({ ok: true, output: 'A', error: null, ms: 1 }))
+      : gateBeta.then(() => ({ ok: true, output: 'B', error: null, ms: 1 }))
+  }
+
+  const resultP = answerQuestionWithSkills('q', [], skills, root, { runSkillFn })
+
+  // Yield until the model's batch turn resolves and the concurrent dispatch runs.
+  for (let i = 0; i < 10 && invoked.length < 2; i++) {
+    await new Promise((r) => setImmediate(r))
+  }
+
+  // Both skills were dispatched even though neither has resolved yet — that's
+  // the concurrency guarantee (a serial loop would have awaited alpha first).
+  assert.deepEqual(invoked.slice().sort(), ['alpha', 'beta'])
+
+  resolveAlpha()
+  resolveBeta()
+  const result = await resultP
+  assert.equal(result.answer, 'alpha + beta done')
+  assert.deepEqual(result.steps.map((s) => [s.skill, s.ok]), [['alpha', true], ['beta', true]])
 })
 
 test('peckTurn — a web-search run comes back as a hatchable webSource (kip-app#81)', async (t) => {

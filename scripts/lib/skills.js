@@ -391,6 +391,7 @@ function record (skill, input, r) {
 // ---------------------------------------------------------------------------
 
 const USE_SKILL_RE = /<use_skill\s+name\s*=\s*["']([a-z0-9][a-z0-9-]*)["']\s*>([\s\S]*?)<\/use_skill>/i
+const USE_SKILL_RE_GLOBAL = /<use_skill\s+name\s*=\s*["']([a-z0-9][a-z0-9-]*)["']\s*>([\s\S]*?)<\/use_skill>/gi
 
 /** First balanced {...} object in `s`, as text, or null. */
 function firstJsonObject (s) {
@@ -404,6 +405,23 @@ function firstJsonObject (s) {
   return null
 }
 
+/** Decodes one already-matched <use_skill> body into a call, tolerant of
+ *  ``` fences. Returns { name, input: {} } for an empty body, and
+ *  { name, input: null } when the args weren't usable JSON (⇒ the caller
+ *  feeds back a corrective). */
+function decodeSkillCall (name, body) {
+  let b = String(body || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+  if (!b) return { name, input: {} }
+  try {
+    return { name, input: JSON.parse(b) }
+  } catch { /* fall through to a recovery attempt */ }
+  const obj = firstJsonObject(b)
+  if (obj) {
+    try { return { name, input: JSON.parse(obj) } } catch { /* give up */ }
+  }
+  return { name, input: null }
+}
+
 /**
  * Pulls a skill call out of a model response. Tolerant of ``` fences and
  * surrounding prose. Returns null when there's no <use_skill> tag (⇒ the text
@@ -413,17 +431,21 @@ function firstJsonObject (s) {
 function parseSkillCall (text) {
   const m = String(text || '').match(USE_SKILL_RE)
   if (!m) return null
-  const name = m[1]
-  let body = m[2].trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
-  if (!body) return { name, input: {} }
-  try {
-    return { name, input: JSON.parse(body) }
-  } catch { /* fall through to a recovery attempt */ }
-  const obj = firstJsonObject(body)
-  if (obj) {
-    try { return { name, input: JSON.parse(obj) } } catch { /* give up */ }
+  return decodeSkillCall(m[1], m[2])
+}
+
+/**
+ * Every <use_skill> tag in a model response, in order. [] when there is none
+ * (⇒ the text is the final answer). Each entry is the same shape as
+ * parseSkillCall's result. A response that asks for several independent skills
+ * at once is a batch the caller can run concurrently.
+ */
+function parseSkillCalls (text) {
+  const out = []
+  for (const m of String(text || '').matchAll(USE_SKILL_RE_GLOBAL)) {
+    out.push(decodeSkillCall(m[1], m[2]))
   }
-  return { name, input: null }
+  return out
 }
 
 module.exports = {
@@ -438,6 +460,7 @@ module.exports = {
   saveSearchSettings,
   SEARCH_BACKENDS,
   parseSkillCall,
+  parseSkillCalls,
   scrubInput,
   SKILL_TIMEOUT_MS,
   OUTPUT_CAP_BYTES
