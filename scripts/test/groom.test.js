@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
+const { getPage } = require('../lib/roost')
 const {
   runGroom,
   findOrphans,
@@ -219,7 +220,13 @@ test('runGroom --deep runs the extra checks via injected stubs and writeGroomRep
 
   assert.equal(report.deep, true)
   assert.ok(report.pageCoherence.some((c) => c.slug === 'sleep'))
-  assert.ok(report.summaryDrift.some((s) => s.slug === 'sleep'))
+  // summary drift is now applied to the index, not just reported (kip-app#115)
+  const drift = report.summaryDrift.find((s) => s.slug === 'sleep')
+  assert.ok(drift && drift.applied, 'the improved summary was persisted')
+  assert.equal(getPage('sleep', root).summary, 'Sleep tracking; average dropped from 8h to 6h over summer 2026')
+  // ...and an applied drift is not re-surfaced as an outstanding lint finding
+  const lint = require('../groom').buildLintIndex(report)
+  assert.ok(!(lint.sleep || []).some((f) => f.kind === 'summary-drift'))
   assert.ok(report.mergeCandidates.length >= 1)
   assert.ok(report.brokenLinks.some((b) => b.badTargets.includes('ghost-page')))
   assert.ok(Array.isArray(report.deadEnds))

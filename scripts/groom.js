@@ -19,7 +19,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const { openDb } = require('./lib/db')
-const { appendLog, slugSimilarity, extractWikilinkSlugs, SIMILARITY_THRESHOLD } = require('./lib/roost')
+const { appendLog, setPageSummary, slugSimilarity, extractWikilinkSlugs, SIMILARITY_THRESHOLD } = require('./lib/roost')
 const { DEFAULT_VAULT_ROOT, nestPath, TYPE_DIRS } = require('./lib/paths')
 const {
   flagContradictions, reviewPageCoherence, checkSummaryAccuracy, confirmMissingLinks, checkPagesSameSubject
@@ -344,11 +344,18 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
     if (r.issues.length || r.consolidate) report.pageCoherence.push({ slug: p.slug, issues: r.issues, consolidate: r.consolidate })
   }
 
+  // Summary drift: the deep pass computes a better one-liner than hatch wrote.
+  // Persist it to the index (meta.db `pages.summary`, kip-app#115) instead of
+  // only reporting it — the answer prompt reads that column, so a stale
+  // summary would otherwise keep misdescribing the page on every turn. This
+  // touches only the derived index, never a nest/ markdown file.
   report.summaryDrift = []
   for (const p of summaryTargets) {
     tick(`summary: ${p.slug}`)
     const r = await summaryFn(p.slug, p.summary, p.body, vaultRoot)
-    if (!r.ok) report.summaryDrift.push({ slug: p.slug, current: p.summary, suggested: r.suggested })
+    if (r.ok || !r.suggested || !r.suggested.trim()) continue
+    const applied = setPageSummary(p.slug, r.suggested.trim(), vaultRoot)
+    report.summaryDrift.push({ slug: p.slug, current: p.summary, suggested: r.suggested.trim(), applied })
   }
 
   report.missingLinks = []
@@ -413,7 +420,10 @@ function buildLintIndex (report) {
     add(c.slug, { kind: 'coherence', note: c.issues.join(' ') || 'internal inconsistency across its _Update_ sections' })
   }
   for (const s of report.summaryDrift || []) {
-    add(s.slug, { kind: 'summary-drift', note: `its index summary no longer fits${s.suggested ? ` (suggested: ${s.suggested})` : ''}` })
+    // A drift that groom just refreshed in the index (kip-app#115) is no
+    // longer an outstanding issue — only surface one it couldn't apply.
+    if (s.applied) continue
+    add(s.slug, { kind: 'summary-drift', note: `its index summary may not fit${s.suggested ? ` (suggested: ${s.suggested})` : ''}` })
   }
   for (const b of report.brokenLinks || []) {
     add(b.slug, { kind: 'broken-link', note: `links to non-existent page(s): ${b.badTargets.join(', ')}` })
@@ -452,7 +462,9 @@ function writeGroomReport (vaultRoot, report) {
   const lines = [
     `# Groom report — ${today}`,
     '',
-    '_Deep pass. Read-only — nothing here was changed. Each item is a suggestion; check it off as you handle it._',
+    '_Deep pass. Read-only for your notes — no `nest/` file was changed. ' +
+      '(The one exception: a drifted page summary is refreshed in the index — ' +
+      'see "Summary drift".) Each item is a suggestion; check it off as you handle it._',
     ''
   ]
 
@@ -466,7 +478,7 @@ function writeGroomReport (vaultRoot, report) {
   section('Page coherence', report.pageCoherence || [], (c) =>
     `**${c.slug}** — ${c.issues.join(' ')}${c.consolidate ? ' _(suggest consolidating into a current-state summary + a dated history)_' : ''}`)
   section('Summary drift', report.summaryDrift || [], (s) =>
-    `**${s.slug}** — summary "${s.current}" no longer fits. Suggested: "${s.suggested}"`)
+    `**${s.slug}** — index summary ${s.applied ? 'refreshed' : 'should be'}: "${s.suggested}" _(was "${s.current}")_`)
   section('Merge candidates', report.mergeCandidates || [], (m) =>
     `**${m.slugs[0]}** ↔ **${m.slugs[1]}** — ${m.reason}`)
   section('Missing links', report.missingLinks || [], (l) =>

@@ -9,6 +9,21 @@ The retrieval layer (this repo) and the desktop app
 
 ## [Unreleased]
 
+### The retrieval layer (`scripts/`)
+
+- **Peck uses the summary layer** (kip-app#115) — the one-line summary the
+  index already stores for every page (written at hatch, improved by a deep
+  groom) was being dropped at query time. It now rides through `readPageBody`
+  and shows as a `Summary:` line under each `### Page:` heading in the answer
+  prompt — a "what this page is" anchor for ~25 tokens, no extra LLM call.
+- **A deep groom maintains the summary index** (kip-app#115) — when the deep
+  pass computes a better one-liner than hatch wrote, it now persists it to
+  `pages.summary` (via `setPageSummary`) instead of only listing it in the
+  report; the report says "index summary refreshed". meta.db only — no
+  `nest/` file is touched, so groom stays read-only to your notes. A filed
+  Peck answer also mirrors its summary into frontmatter so `rebuild-roost`
+  keeps it instead of degrading to `**Q:** …`.
+
 ## [0.4.9] — 2026-09-03
 
 ### The retrieval layer (`scripts/`)
