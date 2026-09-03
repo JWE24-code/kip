@@ -69,6 +69,29 @@ function findSourceHubByPath (source, vaultRoot = DEFAULT_VAULT_ROOT) {
 }
 
 /**
+ * The set of coop-relative source paths that have already been hatched —
+ * every document whose trace hub exists in nest/sources/ with a matching
+ * `source:` frontmatter. Unlike `hatched_sources` (a .roost/meta.db cache that
+ * lives on ONE device and is not what Dropbox syncs), the nest is synced graph
+ * markdown, so this is the cross-device-authoritative "already hatched" signal:
+ * a source hatched on device A is recognized as hatched on device B after a
+ * sync, and is not re-hatched.
+ */
+function hatchedSourcePaths (vaultRoot = DEFAULT_VAULT_ROOT) {
+  const out = new Set()
+  const dir = path.join(vaultRoot, 'nest', 'sources')
+  if (!fs.existsSync(dir)) return out
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith('.md')) continue
+    try {
+      const { data } = matter(fs.readFileSync(path.join(dir, f), 'utf8'))
+      if (typeof data.source === 'string' && data.source.trim()) out.add(data.source.trim())
+    } catch { /* an unreadable page is not a hub */ }
+  }
+  return out
+}
+
+/**
  * Decides whether `title` should become a new nest page or an update to an
  * existing near-duplicate (per coop/schema.md's duplicate-prevention rule),
  * and writes the markdown file either way.
@@ -158,4 +181,4 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
   return { action: 'create', slug, path: relPath, type, tags }
 }
 
-module.exports = { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, SIMILARITY_THRESHOLD }
+module.exports = { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, hatchedSourcePaths, SIMILARITY_THRESHOLD }

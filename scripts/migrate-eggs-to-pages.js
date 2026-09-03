@@ -12,11 +12,40 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
+const matter = require('gray-matter')
 const { DEFAULT_VAULT_ROOT, pagesPath } = require('./lib/paths')
 const { openDb } = require('./lib/db')
 
 function sha1 (buf) {
   return crypto.createHash('sha1').update(buf).digest('hex')
+}
+
+/** Rewrite an old coop-relative path (`eggs/x.md`) to its new one in every
+ *  nest page's `source:` frontmatter and `Source file: \`…\`` body line, so a
+ *  trace hub keeps pointing at its document after the move. collectPendingSources
+ *  treats that frontmatter as the authoritative "already hatched" signal — a
+ *  stale `source:` would make a migrated source re-hatch at its new location.
+ */
+function rewriteNestSource (vaultRoot, fromPath, toPath) {
+  const nestDir = path.join(vaultRoot, 'nest')
+  if (!fs.existsSync(nestDir)) return
+  const stack = [nestDir]
+  while (stack.length) {
+    const dir = stack.pop()
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name)
+      if (entry.isDirectory()) { stack.push(p); continue }
+      if (!entry.name.endsWith('.md')) continue
+      try {
+        const parsed = matter(fs.readFileSync(p, 'utf8'))
+        let changed = false
+        if (parsed.data.source === fromPath) { parsed.data.source = toPath; changed = true }
+        const body = parsed.content.split(`\`${fromPath}\``).join(`\`${toPath}\``)
+        if (body !== parsed.content) changed = true
+        if (changed) fs.writeFileSync(p, matter.stringify(body, parsed.data))
+      } catch { /* an unreadable page isn't a hub */ }
+    }
+  }
 }
 
 function migrate (vaultRoot = DEFAULT_VAULT_ROOT) {
@@ -41,25 +70,28 @@ function migrate (vaultRoot = DEFAULT_VAULT_ROOT) {
       const target = path.join(sourcesDir, name)
       if (fs.existsSync(target)) {
         if (sha1(fs.readFileSync(target)) === eggHash) {
-          // Identical — the pages/ copy is canonical; drop the duplicate.
-          fs.rmSync(src)
-          deduped.push(name)
-          db.prepare('DELETE FROM hatched_sources WHERE path = ?').run(`eggs/${name}`)
-          continue
-        }
-        // Same name, different content — keep both by suffixing the egg copy.
-        const ext = path.extname(name)
-        const altName = `${path.basename(name, ext)}-egg${ext}`
-        fs.renameSync(src, path.join(sourcesDir, altName))
-        conflicts.push({ from: name, to: altName })
-        db.prepare('UPDATE hatched_sources SET path = ? WHERE path = ?').run(`pages/${altName}`, `eggs/${name}`)
+        // Identical — the pages/ copy is canonical; drop the duplicate.
+        fs.rmSync(src)
+        deduped.push(name)
+        db.prepare('DELETE FROM hatched_sources WHERE path = ?').run(`eggs/${name}`)
+        rewriteNestSource(vaultRoot, `eggs/${name}`, `pages/${name}`)
         continue
       }
-
-      fs.renameSync(src, target)
-      moved.push(name)
-      db.prepare('UPDATE hatched_sources SET path = ? WHERE path = ?').run(`pages/${name}`, `eggs/${name}`)
+      // Same name, different content — keep both by suffixing the egg copy.
+      const ext = path.extname(name)
+      const altName = `${path.basename(name, ext)}-egg${ext}`
+      fs.renameSync(src, path.join(sourcesDir, altName))
+      conflicts.push({ from: name, to: altName })
+      db.prepare('UPDATE hatched_sources SET path = ? WHERE path = ?').run(`pages/${altName}`, `eggs/${name}`)
+      rewriteNestSource(vaultRoot, `eggs/${name}`, `pages/${altName}`)
+      continue
     }
+
+    fs.renameSync(src, target)
+    moved.push(name)
+    db.prepare('UPDATE hatched_sources SET path = ? WHERE path = ?').run(`pages/${name}`, `eggs/${name}`)
+    rewriteNestSource(vaultRoot, `eggs/${name}`, `pages/${name}`)
+  }
 
     if (fs.readdirSync(eggsDir).length === 0) fs.rmdirSync(eggsDir)
   } finally {
