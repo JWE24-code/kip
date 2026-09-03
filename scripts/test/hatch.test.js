@@ -331,6 +331,31 @@ test('combined-path update is regenerated against the existing page, not restate
   }
 })
 
+test('#114 does not touch source pages: a re-hatched source hub still uses its drafted body', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  fs.writeFileSync(path.join(root, 'eggs', 'report.md'), 'First version of the quarterly report.')
+
+  const gen = () => JSON.stringify({ pages: [{ title: 'Report', type: 'source', tags: [], summary: 's', body: 'Report hub. Links [[q3-numbers]].' }] })
+  let s = stubFetch(gen)
+  try { await hatchAllSources(root, { limit: 1 }) } finally { s.restore() }
+
+  // edit the source and re-hatch — the hub resolves to action=update
+  fs.writeFileSync(path.join(root, 'eggs', 'report.md'), 'Second version of the quarterly report, now with more detail.')
+  const kinds = []
+  s = stubFetch((body) => {
+    const sys = body.messages.map((m) => m.content).join('\n')
+    kinds.push(/in a single step/.test(sys) ? 'draft' : /extending an existing wiki page/.test(sys) ? 'generate-update' : 'other')
+    return gen()
+  })
+  try {
+    await hatchAllSources(root, { limit: 1 })
+    assert.deepEqual(kinds, ['draft'], 'no existing-content generate call for a source-type update')
+  } finally { s.restore() }
+})
+
 test('review mode: proposeNextPending stashes a plan and writes nothing; commitReviewedPlan honours keepSlugs', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

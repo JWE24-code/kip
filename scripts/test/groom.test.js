@@ -302,11 +302,12 @@ test('groom main() writes lint.json on a quick run (kip-app#116)', async (t) => 
   writePage(root, 'concepts', 'sleep-quality', { type: 'concept', tags: ['health'], body: 'Links [[sleep-hygiene]].' })
   rebuildRoost(root)
 
-  // No LLM provider configured -> groom's quick contradiction pass is caught
-  // and skipped; the deterministic checks and the lint write still run.
+  // PROVIDER=local with no server -> groom's quick contradiction pass fails
+  // its connection and is caught; the deterministic checks and the lint write
+  // still run. (Forced so the test never reaches a real provider.)
   const { execFileSync } = require('node:child_process')
   execFileSync(process.execPath, [path.join(__dirname, '..', 'groom.js'), '--json'], {
-    env: { ...process.env, KIP_COOP_ROOT: root }, encoding: 'utf8'
+    env: { ...process.env, KIP_COOP_ROOT: root, PROVIDER: 'local' }, encoding: 'utf8'
   })
 
   const lintPath = path.join(root, '.roost', 'lint.json')

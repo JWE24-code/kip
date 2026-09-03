@@ -159,9 +159,9 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
  * Steps 5-6: writes each planned page via resolvePage(), syncs meta.db, and
  * logs the hatch. Call only after a human has confirmed the plan from
  * proposeHatchPlan(). A combined-path body (candidate.body) is used as-is for
- * a pure create; an `update` — combined path or classic — gets a
- * generatePageContent() call with the existing page content so the write is a
- * delta, not a restatement (#114).
+ * a pure create (and for any `source` page); an entity/concept `update` —
+ * combined path or classic — gets a generatePageContent() call with the
+ * existing page content so the write is a delta, not a restatement (#114).
  *
  * Provenance (kip-app#113): `sourceRelPath` (coop-relative path of the
  * document, e.g. `eggs/report.md`) and `sourceHash` (its sha1) are written
@@ -188,16 +188,18 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPat
   // Resolve every page's body up front, in parallel (capped). Writes stay
   // sequential.
   //
-  // A pure create on the combined path uses its drafted body as-is (one LLM
-  // call for the whole file). An `update` always gets an existing-content-aware
-  // generate call — the combined draft was written from the source alone,
-  // never seeing the page it's extending, so on the default path updates came
-  // out as parallel restatements rather than deltas (#114). This is the one
-  // extra call the classic path already made for updates; updates are
-  // typically 0-2 per source, so the one-call-per-file cost still mostly holds.
+  // A combined-path drafted body is used as-is for a pure create, and for a
+  // `source` page (its body is a stable trace pointer — file/hash/links — not
+  // accumulating knowledge). An entity/concept `update` gets an
+  // existing-content-aware generate call instead: the combined draft was
+  // written from the source alone, never seeing the page it's extending, so on
+  // the default path those updates came out as parallel restatements rather
+  // than deltas (#114). That's the one extra call the classic path already
+  // made for updates; updates are typically 0-2 per source, so the
+  // one-call-per-file cost still mostly holds.
   const bodies = await mapLimit(plan, GENERATE_CONCURRENCY, (candidate) => {
     const draft = typeof candidate.body === 'string' && candidate.body.trim() ? candidate.body.trim() : null
-    if (draft && candidate.action !== 'update') return draft
+    if (draft && (candidate.action !== 'update' || candidate.type === 'source')) return draft
 
     let existingContent = null
     if (candidate.action === 'update') {
