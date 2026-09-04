@@ -50,6 +50,14 @@ The retrieval layer (this repo) and the desktop app
   page's links are now walked, so a question answered by a page plus the page
   it links to is reachable even when the linked page shares no token with the
   question. Deterministic, bounded (10 new pages), no LLM call.
+- **Hatch and groom run in parallel** — "Hatch sources" now proposes/drafts
+  files concurrently (4 at a time) and converts dropped Office/PDF files in
+  parallel, instead of one file at a time; and the deep groom's LLM checks
+  (coherence, summary drift, section summaries, missing links, merge
+  candidates, cross-check) run concurrently (6 at a time) instead of serially.
+  Writes stay sequential, so the single-connection `meta.db` is never raced.
+  Wall-clock time drops by roughly the concurrency factor on multi-file hatches
+  and deep grooms.
 
 ## [0.4.9] — 2026-09-03
 

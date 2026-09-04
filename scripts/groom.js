@@ -25,7 +25,7 @@ const {
   flagContradictions, reviewPageCoherence, checkSummaryAccuracy, checkSectionSummaries, confirmMissingLinks, checkPagesSameSubject
 } = require('./lib/prompts')
 const { describeProvider } = require('./lib/llm')
-const { collectPendingSources } = require('./lib/hatch')
+const { collectPendingSources, mapLimit } = require('./lib/hatch')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
 const { installFeedbackPoster } = require('./lib/feedback-poster')
@@ -34,6 +34,12 @@ const MAX_CONTRADICTION_GROUP_SIZE = 6
 const DEEP_CONTRADICTION_GROUP_SIZE = 12
 const MAX_MERGE_PAIRS = 30
 const MISSING_LINK_MAX_PER_PAGE = 8
+// Max concurrent LLM calls in the deep pass. Each check (coherence, summary,
+// section summaries, missing links, merge, cross-check) is independent and
+// read-only; batching them cuts the deep pass's wall-clock time by ~this
+// factor. The only writes are quick, synchronous meta.db updates, so they stay
+// safe. Capped to stay under provider rate limits.
+const GROOM_LLM_CONCURRENCY = 6
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g
 
 function slugifyLinkTarget (text) {
@@ -339,33 +345,30 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
   let done = 0
   const tick = (current) => onProgress({ done: done++, total, current })
 
-  report.pageCoherence = []
-  for (const p of coherenceTargets) {
+  report.pageCoherence = (await mapLimit(coherenceTargets, GROOM_LLM_CONCURRENCY, async (p) => {
     tick(`coherence: ${p.slug}`)
     const r = await coherenceFn(p.slug, p.body, vaultRoot)
-    if (r.issues.length || r.consolidate) report.pageCoherence.push({ slug: p.slug, issues: r.issues, consolidate: r.consolidate })
-  }
+    return (r.issues.length || r.consolidate) ? { slug: p.slug, issues: r.issues, consolidate: r.consolidate } : null
+  })).filter(Boolean)
 
   // Summary drift: the deep pass computes a better one-liner than hatch wrote.
   // Persist it to the index (meta.db `pages.summary`, kip-app#115) instead of
   // only reporting it — the answer prompt reads that column, so a stale
   // summary would otherwise keep misdescribing the page on every turn. This
   // touches only the derived index, never a nest/ markdown file.
-  report.summaryDrift = []
-  for (const p of summaryTargets) {
+  report.summaryDrift = (await mapLimit(summaryTargets, GROOM_LLM_CONCURRENCY, async (p) => {
     tick(`summary: ${p.slug}`)
     const r = await summaryFn(p.slug, p.summary, p.body, vaultRoot)
-    if (r.ok || !r.suggested || !r.suggested.trim()) continue
+    if (r.ok || !r.suggested || !r.suggested.trim()) return null
     const applied = setPageSummary(p.slug, r.suggested.trim(), vaultRoot)
-    report.summaryDrift.push({ slug: p.slug, current: p.summary, suggested: r.suggested.trim(), applied })
-  }
+    return { slug: p.slug, current: p.summary, suggested: r.suggested.trim(), applied }
+  })).filter(Boolean)
 
   // Section-summary drift (kip-app#106): the per-section one-liners hatch wrote
   // may go stale as a page grows new _Update_ sections. Re-check each heading
   // section and persist the refreshed one-liner to the index — meta.db only,
   // never a nest/ file.
-  report.sectionSummaryDrift = []
-  for (const p of sectionTargets) {
+  report.sectionSummaryDrift = (await mapLimit(sectionTargets, GROOM_LLM_CONCURRENCY, async (p) => {
     tick(`sections: ${p.slug}`)
     const current = getPageSections(p.slug, vaultRoot)
     const byHeading = new Map(current.map((s) => [s.heading.trim().toLowerCase(), s]))
@@ -375,35 +378,34 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
     }))
     const r = await sectionSummaryFn(p.slug, sections, vaultRoot)
     const updates = (r.updates || []).filter((u) => u && typeof u.heading === 'string' && typeof u.summary === 'string' && u.summary.trim())
-    if (!updates.length) continue
+    if (!updates.length) return null
     const applied = setSectionSummaries(p.slug, updates, vaultRoot)
-    if (applied) report.sectionSummaryDrift.push({ slug: p.slug, updates })
-  }
+    return applied ? { slug: p.slug, updates } : null
+  })).filter(Boolean)
 
-  report.missingLinks = []
-  for (const c of missingCandidates) {
+  report.missingLinks = (await mapLimit(missingCandidates, GROOM_LLM_CONCURRENCY, async (c) => {
     tick(`links: ${c.slug}`)
     const page = pages.find((p) => p.slug === c.slug)
     const confirmed = await missingLinksFn(c.slug, page.body, c.candidates, vaultRoot)
-    if (confirmed.length) report.missingLinks.push({ slug: c.slug, shouldLink: confirmed })
-  }
+    return confirmed.length ? { slug: c.slug, shouldLink: confirmed } : null
+  })).filter(Boolean)
 
-  report.mergeCandidates = []
-  for (const [a, b] of mergePairs) {
+  report.mergeCandidates = (await mapLimit(mergePairs, GROOM_LLM_CONCURRENCY, async ([a, b]) => {
     tick(`merge: ${a.slug} / ${b.slug}`)
     const r = await sameSubjectFn(
       { slug: a.slug, type: a.type, body: a.body },
       { slug: b.slug, type: b.type, body: b.body }, vaultRoot)
-    if (r.same) report.mergeCandidates.push({ slugs: [a.slug, b.slug], reason: r.reason })
-  }
+    return r.same ? { slugs: [a.slug, b.slug], reason: r.reason } : null
+  })).filter(Boolean)
 
-  for (const group of xrefGroups) {
+  const xrefResults = await mapLimit(xrefGroups, GROOM_LLM_CONCURRENCY, async (group) => {
     tick(`cross-check: ${group[0].slug}`)
     try {
       const forPrompt = group.map((p) => ({ slug: p.slug, type: p.type, content: p.body }))
-      report.contradictions.push(...await flagFn(forPrompt, vaultRoot))
-    } catch { /* skip a bad group */ }
-  }
+      return await flagFn(forPrompt, vaultRoot)
+    } catch { return [] }
+  })
+  report.contradictions.push(...xrefResults.flat())
   report.contradictions = dedupeContradictions(report.contradictions)
 
   onProgress({ done: total, total, current: null })
