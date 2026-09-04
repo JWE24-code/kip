@@ -30,7 +30,7 @@
 //
 // Usage: node scripts/chat.js "your question — or a fact to remember" [--trace]
 //        [--arena-compare-to <callId>] [--history '<json>']
-//        [--file-answer '<json>']
+//        [--file-answer '<json>'] [--depth quick|full]
 //   --history: [{ "role": "user"|"assistant", "text": "…" }] oldest→newest, a
 //     short buffer of recent turns so a follow-up can resolve what it refers to.
 //   --file-answer (kip-app#112): do NOT run a turn — file an already-settled
@@ -55,7 +55,7 @@ const { installFeedbackPoster } = require('./lib/feedback-poster')
 const ROOST_DIR = path.join(DEFAULT_VAULT_ROOT, '.roost')
 const traceOn = process.argv.includes('--trace') || process.env.KIP_PECK_TRACE === '1'
 
-const VALUE_FLAGS = new Set(['--arena-compare-to', '--history', '--file-answer'])
+const VALUE_FLAGS = new Set(['--arena-compare-to', '--history', '--file-answer', '--depth'])
 
 // How often the accumulating answer is written to peck-progress.json while it
 // streams. Fast enough to read as live, slow enough not to thrash the file the
@@ -125,6 +125,11 @@ async function main () {
     } catch { /* malformed history — answer without it */ }
   }
 
+  // Answer-depth control (epic #38 track #36): 'quick' = nest-only (no skills,
+  // no web); anything else (or absent) = the full multi-source path.
+  const dIdx = args.indexOf('--depth')
+  const depth = dIdx >= 0 && args[dIdx + 1] === 'quick' ? 'quick' : null
+
   console.error(describeProvider())
 
   // No mutex here (unlike hatch-all.js): a Peck turn only reads the nest and,
@@ -160,7 +165,7 @@ async function main () {
   }
 
   try {
-    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId, history, onStream })
+    const result = await peckTurn(input, { fileToNest: false, vaultRoot: DEFAULT_VAULT_ROOT, arenaCompareToCallId, history, onStream, depth })
     reporter.setProgress({ partialAnswer: null })
     reporter.flush(false)
     // The audit row the CLI writes but the app path never did (kip-app#112):

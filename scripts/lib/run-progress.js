@@ -43,6 +43,18 @@ function createRunReporter ({ dir, progressFile, metricsFile, traceFile, traceOn
   }
 
   telemetry.onTrace((rec) => {
+    // A non-call event (e.g. the peck router decision, kip#34) — content-free
+    // by construction. Push it to the feed as-is (no call-shaped row) and, with
+    // traceOn, the trace file.
+    if (rec.type) {
+      const row = { at: rec.at, label: rec.label || rec.type, ms: 0, ok: true, inTok: 0, outTok: 0 }
+      if (rec.reason) row.preview = trim(rec.reason, 200)
+      if (traceOn && traceStream) { try { traceStream.write(JSON.stringify(rec) + '\n') } catch { /* best-effort */ } }
+      activity.push(row)
+      if (activity.length > ACTIVITY_KEEP) activity = activity.slice(-ACTIVITY_KEEP)
+      if (Date.now() - lastWrite >= THROTTLE_MS) flush(true)
+      return
+    }
     const row = {
       at: rec.at,
       phase: rec.phase,

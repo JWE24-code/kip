@@ -384,13 +384,17 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
  * can call them mid-answer — `steps` records what it ran. Skill discovery and
  * the whole tool loop are best-effort: a failure downgrades to a plain answer.
  */
-async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [], onStream = null, retrievedCount = null }) {
+async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [], onStream = null, retrievedCount = null, depth = null }) {
   // Multi-hop (kip-app#106): follow outbound [[links]] one hop so an answer
   // that spans a page and the page it links to is reachable, even when the
   // linked page shares no token with the question.
   pages = expandByOutboundLinks(pages, vaultRoot)
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
+  // "quick" depth (epic #38 track #36): nest-only — the index-first selection
+  // plus an answer from the chosen pages, no skills tool loop, no web fallback.
+  // Faster and cheaper; "full" (default) keeps today's multi-source path.
+  const quick = depth === 'quick'
 
   // groom's stored contradictions between two of the pages in play — passed
   // into the answer prompt so the model names the disagreement instead of
@@ -406,9 +410,10 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // of FTS recall hits BEFORE the index-first selection (kip-app#106): "thin
   // retrieval" is a property of the recall, not of the (possibly precise)
   // selection, so a question the model narrowed to one page doesn't spuriously
-  // trigger the skills path.
+  // trigger the skills path. `quick` depth skips it outright.
   let skills = []
-  if (!arena && mightNeedSkill(question, retrievedCount == null ? pages.length : retrievedCount)) {
+  const skillHint = !quick && !arena && mightNeedSkill(question, retrievedCount == null ? pages.length : retrievedCount)
+  if (skillHint) {
     try {
       skills = discoverSkills(vaultRoot)
     } catch (err) {
@@ -416,6 +421,22 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
     }
   }
   const wantSkills = skills.length > 0
+
+  // The router decision, debuggable in the trace (kip#34): which path this turn
+  // took and why. Content-free — no question text, no page bodies.
+  telemetry.traceEvent({
+    type: 'router',
+    label: wantSkills ? 'peck:skills' : 'peck:nest-only',
+    reason: quick
+      ? 'quick depth — skills/web skipped'
+      : arena
+        ? 'arena regenerate — skills skipped'
+        : wantSkills
+          ? `skills: ${skills.map((s) => s.name).join(', ')}`
+          : skillHint
+            ? 'no skills configured'
+            : 'retrieval not thin, no skill hint'
+  })
 
   let answer
   let steps = []
@@ -438,11 +459,12 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   }
 
   // The nest didn't cover it → search the web and answer from that
-  // (kip-app#93). Not for arena (keeps a model-vs-model compare clean), and
-  // not when a skill already web-searched this turn.
+  // (kip-app#93). Not for arena (keeps a model-vs-model compare clean), not
+  // when a skill already web-searched this turn, and not on "quick" depth
+  // (nest-only by definition).
   let webbed = false
   if (isNoAnswer(answer)) {
-    if (!arena && !webSearches.length) {
+    if (!quick && !arena && !webSearches.length) {
       const web = await webFallback(question, vaultRoot, { history, onStream })
       answer = web.answer
       webSearches = web.webSearches
@@ -570,7 +592,7 @@ function fileCapturedFacts (proposedPages, vaultRoot = DEFAULT_VAULT_ROOT) {
  *
  * @returns {{answer: string|null, citedSlugs: string[], candidateSlugs: string[], lintWarnings: Array<{slug,kind,note}>, deadCitations: string[], steps: Array, callId: string|null, arenaId: string|null}}
  */
-async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
+async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_VAULT_ROOT, arenaCompareToCallId = null, history = [], onStream = null, depth = null } = {}) {
   const candidates = await retrieveCandidates(question, vaultRoot, { history })
   if (candidates.length === 0 && !anySkills(vaultRoot)) {
     return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
@@ -578,7 +600,7 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
   const selected = await selectCandidates(question, candidates, vaultRoot, { history })
   const pages = readPageBodies(vaultRoot, selected)
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history, onStream, retrievedCount: candidates.length })
+  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history, onStream, retrievedCount: candidates.length, depth })
 }
 
 /**
@@ -593,7 +615,7 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
  *              shape as question; the `reminders` skill did the work and its
  *              confirmation is in `answer`.
  */
-async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null, history = [], onStream = null } = {}) {
+async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = false, arenaCompareToCallId = null, history = [], onStream = null, depth = null } = {}) {
   // An upcoming event the user wants reminding about ("I have a meeting Friday
   // at 15h", "remind me to …") — route to the skills path (the `reminders`
   // skill creates it), NOT fact-capture, which would file it as a nest page.
@@ -627,7 +649,7 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
     return { intent: 'question', answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream, retrievedCount: candidates.length })) }
+  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream, retrievedCount: candidates.length, depth })) }
 }
 
 module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, stripSources, humanizeSlug, deadCitationSlugs, lintWarningsFor, knownConflictsFor }

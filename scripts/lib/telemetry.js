@@ -92,6 +92,18 @@ function sendFeedback (signal) {
   } catch { /* best-effort — never let a signal break a run */ }
 }
 
+/**
+ * Emit one content-free, non-call trace event (e.g. the peck router decision,
+ * kip#34). Goes ONLY to the trace sink — never into `records`/`summary()`, so
+ * it can't skew call/token/cost aggregates. Best-effort, like sendFeedback.
+ */
+function traceEvent (event) {
+  if (!traceSink || !event) return
+  try {
+    traceSink({ ...event, at: Date.now(), type: event.type || 'event' })
+  } catch { /* best-effort — never let a trace event break a run */ }
+}
+
 function num (x) {
   return typeof x === 'number' && Number.isFinite(x) ? x : 0
 }
@@ -161,4 +173,4 @@ function entries () {
   return records.map((e) => ({ ...e }))
 }
 
-module.exports = { reset, withPhase, record, onTrace, onFeedback, sendFeedback, currentPhase, summary, entries }
+module.exports = { reset, withPhase, record, onTrace, onFeedback, sendFeedback, traceEvent, currentPhase, summary, entries }
