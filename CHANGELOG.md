@@ -29,6 +29,14 @@ The retrieval layer (this repo) and the desktop app
   citation instead of rendering it as a silent dead link. `fileAnswerToNest`
   appends a `## Sources` section listing the retrieved pages the answer
   didn't cite, so a filed answer carries its full evidence set.
+- **Peck reads the index first, then descends only where it points** (the
+  LLM-wiki Query rule, kip-app#106) — a question turn now runs an LLM-owned
+  selection round: the model sees the question plus the candidate index
+  (one line per page — slug and its one-line summary) and chooses which pages
+  to open, and only those are read into the answer prompt. A failed or empty
+  selection falls back to the full candidate set, and "thin retrieval" (the
+  skills/web trigger) is now judged from the recall count, not the narrowed
+  selection.
 
 ## [0.4.9] — 2026-09-03
 

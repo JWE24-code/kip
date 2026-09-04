@@ -56,6 +56,32 @@ async function extractKeyTerms (question, vaultRoot, { history = [] } = {}) {
   }
 }
 
+/**
+ * The LLM-owned "read the index, then descend only where it points" step — the
+ * vault's Query rule (kip-app#106). The model is given the question plus the
+ * wiki INDEX (one line per page: slug + its one-line summary) and returns the
+ * slugs it needs to read. This is the LLM deciding what to open, instead of the
+ * caller dumping every FTS recall hit into the answer prompt. Returns a slug
+ * array, or undefined when it cannot decide (callers fall back to the full set).
+ */
+async function selectPages (question, index, vaultRoot, { history = [] } = {}) {
+  const convo = formatConversation(history)
+  const indexBlock = index
+    .map((p) => {
+      const label = (p.summary && String(p.summary).trim()) ||
+        (p.snippet ? `…${String(p.snippet).replace(/\s+/g, ' ').trim()}…` : '')
+      return `- ${p.slug}${label ? ` — ${label}` : ''}`
+    })
+    .join('\n')
+  const system = 'You are choosing which pages of a personal wiki to read in order to answer a question. ' +
+    'You are shown the wiki index: one line per page — its slug and a one-line summary of what it is about. ' +
+    'Select the pages whose summaries indicate they could hold the answer. Prefer precision: choose only the pages you actually need to read; choose none if none look relevant. ' +
+    'Respond with a JSON object of exactly this shape: {"slugs": ["slug-1", "slug-2", ...]}.'
+  const prompt = (convo ? `${convo}\n\n` : '') + `Question: ${question}\n\nIndex:\n${indexBlock}`
+  return jsonCall({ system, prompt, maxTokens: 2048, label: 'peck:select-pages', vaultRoot }, (parsed) =>
+    Array.isArray(parsed.slugs) ? parsed.slugs : undefined)
+}
+
 function formatPagesForPrompt (pages) {
   return pages
     .map((p) => {
@@ -691,6 +717,7 @@ async function captureFacts (input, existingPages, vaultRoot) {
 
 module.exports = {
   extractKeyTerms,
+  selectPages,
   answerQuestion,
   answerFromWeb,
   isNoAnswer,
