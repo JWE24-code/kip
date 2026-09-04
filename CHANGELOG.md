@@ -7,6 +7,19 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.4.11] — 2026-09-04
+
+### The retrieval layer (`scripts/`)
+
+- **Peck router decision in the trace** (kip#34) — each question turn records
+  a content-free `router` event (`peck:nest-only` / `peck:skills`, plus the
+  reason) in `peck-trace.jsonl` and the panel's activity feed, so you can see
+  why a question did or didn't reach the skills path.
+- **Answer-depth control** (kip#36) — `--depth quick` answers nest-only
+  (index-first selection + answer, no skills tool loop, no web fallback);
+  anything else keeps the multi-source path. Wired to the app's Quick/Full
+  toggle.
+
 ## [0.4.10] — 2026-09-04
 
 ### The retrieval layer (`scripts/`)
