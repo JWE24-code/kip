@@ -7,6 +7,15 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.5.2] — 2026-09-04
+
+### The retrieval layer (`scripts/`)
+
+- **`add-person.js`** (kip-app#126) — create or dedupe a `person` page from
+  structured fields (name/email/org/role/phone/aliases), reusing
+  `resolvePage`'s slugify + email dedupe. Backs the People panel's "New person"
+  form.
+
 ## [0.5.0] — 2026-09-04
 
 ### The retrieval layer (`scripts/`)
