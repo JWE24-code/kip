@@ -19,6 +19,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
   body
 );
 
+-- The per-section index (kip-app#106 — index granularity below the page
+-- level). Derived from each page's body by a deterministic heading split; the
+-- 'summary' column is a one-line first-line extract, refined by hatch/groom
+-- later.
+CREATE TABLE IF NOT EXISTS sections (
+  slug    TEXT NOT NULL,
+  seq     INTEGER NOT NULL,
+  heading TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (slug, seq)
+);
+
 CREATE TABLE IF NOT EXISTS log (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp     TEXT NOT NULL,

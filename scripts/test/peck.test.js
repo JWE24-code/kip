@@ -1154,6 +1154,25 @@ test('peckTurn — an empty or unusable selection falls back to the full candida
   } finally { s.restore() }
 })
 
+test('the per-section index reaches the answer prompt as a section TOC (kip-app#106)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'sleep', {
+    type: 'concept',
+    body: 'Intro line.\n\n## Hygiene\nKeep a consistent bedtime.\n\n## Screens\nNo screens after 22:00.'
+  })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], be consistent.' })
+  try {
+    await askQuestion('what about sleep?', { vaultRoot: root, fileToNest: false })
+    const answerCall = s.calls.find((c) => /You are answering a question from a personal wiki/.test(c))
+    assert.match(answerCall, /Sections:\n- Hygiene — Keep a consistent bedtime\./)
+    assert.match(answerCall, /- Screens — No screens after 22:00\./)
+  } finally { s.restore() }
+})
+
 test('fileAnswerToNest mirrors the summary into frontmatter so a rebuild keeps it (kip-app#115)', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

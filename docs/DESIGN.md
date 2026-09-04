@@ -218,6 +218,14 @@ a nest page is always traceable back to its raw document. A one-line
 of re-deriving a first paragraph) and into `meta.db`, where Peck reads it
 above each page body and a deep Groom refreshes it if it drifts (§5.3).
 
+**The per-section index (kip-app#106):** below the page level, every page's
+body is split into sections on its `##`/`###` headings and `_Update_` blocks
+(a `sections` table in `meta.db`, re-derived on every write and rebuild). Each
+section carries a one-line first-line summary. Peck's selection round and the
+answer prompt both render this as a section table of contents, so the model
+navigates a long append-grown page at section granularity rather than reading
+the whole body blind.
+
 **Classic (`--classic` / the "Classic mode" checkbox):** the older path — one
 `proposeCandidatePages` call, then one `generatePageContent` call *per page*,
 each re-sending the full source. Kept for a side-by-side comparison in the

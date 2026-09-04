@@ -163,3 +163,35 @@ test('setPageSummary updates only the summary column (kip-app#115)', async (t) =
 
   assert.equal(setPageSummary('no-such-page', 'x', root), false, 'no row -> false')
 })
+
+test('the per-section index — splitSections + summarizeSection (kip-app#106)', async (t) => {
+  const { splitSections, summarizeSection, getPageSections } = require('../lib/roost')
+
+  await t.test('splitSections splits on ## headings and _Update markers, keeping the lead', () => {
+    const body = 'Leading paragraph.\n\n## Sleep hygiene\nConsistent bedtime.\n\n### Screens\nNo screens after 22:00.\n\n---\n_Update 2026-09-04:_\n\nStarted tracking duration.\n'
+    const sections = splitSections(body)
+    assert.deepEqual(sections.map((s) => s.heading), ['', 'Sleep hygiene', 'Screens', '_Update 2026-09-04:_'])
+    assert.match(sections[0].body, /Leading paragraph/)
+    assert.match(sections[1].body, /Consistent bedtime/)
+    assert.match(sections[3].body, /Started tracking duration/)
+  })
+
+  await t.test('summarizeSection takes the first non-heading line, truncated', () => {
+    assert.equal(summarizeSection('The user averages 6 hours.\n\nMore detail here.'), 'The user averages 6 hours.')
+    assert.equal(summarizeSection('# Heading\n\nFirst real line.'), 'First real line.')
+    assert.equal(summarizeSection(''), '')
+  })
+
+  await t.test('upsertPage writes sections; getPageSections reads them in order', () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'sleep', {
+      type: 'concept',
+      body: 'Intro.\n\n## Hygiene\nKeep a consistent bedtime.\n\n## Screens\nNo screens late.'
+    })
+    rebuildRoost(root)
+    const sections = getPageSections('sleep', root)
+    assert.deepEqual(sections.map((s) => s.heading), ['', 'Hygiene', 'Screens'])
+    assert.equal(sections[1].summary, 'Keep a consistent bedtime.')
+  })
+})
