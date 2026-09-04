@@ -19,10 +19,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const { openDb } = require('./lib/db')
-const { appendLog, setPageSummary, slugSimilarity, extractWikilinkSlugs, SIMILARITY_THRESHOLD } = require('./lib/roost')
+const { appendLog, setPageSummary, setSectionSummaries, splitSections, getPageSections, slugSimilarity, extractWikilinkSlugs, SIMILARITY_THRESHOLD } = require('./lib/roost')
 const { DEFAULT_VAULT_ROOT, nestPath, TYPE_DIRS } = require('./lib/paths')
 const {
-  flagContradictions, reviewPageCoherence, checkSummaryAccuracy, confirmMissingLinks, checkPagesSameSubject
+  flagContradictions, reviewPageCoherence, checkSummaryAccuracy, checkSectionSummaries, confirmMissingLinks, checkPagesSameSubject
 } = require('./lib/prompts')
 const { describeProvider } = require('./lib/llm')
 const { collectPendingSources } = require('./lib/hatch')
@@ -289,6 +289,7 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
 } = {}) {
   const coherenceFn = deps.reviewPageCoherence || reviewPageCoherence
   const summaryFn = deps.checkSummaryAccuracy || checkSummaryAccuracy
+  const sectionSummaryFn = deps.checkSectionSummaries || checkSectionSummaries
   const missingLinksFn = deps.confirmMissingLinks || confirmMissingLinks
   const sameSubjectFn = deps.checkPagesSameSubject || checkPagesSameSubject
 
@@ -329,11 +330,12 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
   // --- LLM deep checks ---
   const coherenceTargets = pages.filter((p) => needsCoherenceReview(p.body))
   const summaryTargets = pages.filter((p) => p.summary && p.summary.trim() && p.body.length > 400)
+  const sectionTargets = pages.filter((p) => splitSections(p.body).some((s) => s.heading))
   const mergePairs = buildMergePairs(pages, report.nearDuplicates).slice(0, MAX_MERGE_PAIRS)
   const xrefGroups = buildEntitySourceGroups(pages)
 
-  const total = coherenceTargets.length + summaryTargets.length + missingCandidates.length +
-    mergePairs.length + xrefGroups.length
+  const total = coherenceTargets.length + summaryTargets.length + sectionTargets.length +
+    missingCandidates.length + mergePairs.length + xrefGroups.length
   let done = 0
   const tick = (current) => onProgress({ done: done++, total, current })
 
@@ -356,6 +358,26 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
     if (r.ok || !r.suggested || !r.suggested.trim()) continue
     const applied = setPageSummary(p.slug, r.suggested.trim(), vaultRoot)
     report.summaryDrift.push({ slug: p.slug, current: p.summary, suggested: r.suggested.trim(), applied })
+  }
+
+  // Section-summary drift (kip-app#106): the per-section one-liners hatch wrote
+  // may go stale as a page grows new _Update_ sections. Re-check each heading
+  // section and persist the refreshed one-liner to the index — meta.db only,
+  // never a nest/ file.
+  report.sectionSummaryDrift = []
+  for (const p of sectionTargets) {
+    tick(`sections: ${p.slug}`)
+    const current = getPageSections(p.slug, vaultRoot)
+    const byHeading = new Map(current.map((s) => [s.heading.trim().toLowerCase(), s]))
+    const sections = splitSections(p.body).map((s) => ({
+      ...s,
+      summary: (byHeading.get(s.heading.trim().toLowerCase()) || {}).summary || ''
+    }))
+    const r = await sectionSummaryFn(p.slug, sections, vaultRoot)
+    const updates = (r.updates || []).filter((u) => u && typeof u.heading === 'string' && typeof u.summary === 'string' && u.summary.trim())
+    if (!updates.length) continue
+    const applied = setSectionSummaries(p.slug, updates, vaultRoot)
+    if (applied) report.sectionSummaryDrift.push({ slug: p.slug, updates })
   }
 
   report.missingLinks = []
@@ -479,6 +501,8 @@ function writeGroomReport (vaultRoot, report) {
     `**${c.slug}** — ${c.issues.join(' ')}${c.consolidate ? ' _(suggest consolidating into a current-state summary + a dated history)_' : ''}`)
   section('Summary drift', report.summaryDrift || [], (s) =>
     `**${s.slug}** — index summary ${s.applied ? 'refreshed' : 'should be'}: "${s.suggested}" _(was "${s.current}")_`)
+  section('Section summaries refreshed', report.sectionSummaryDrift || [], (s) =>
+    `**${s.slug}** — ${s.updates.map((u) => `"${u.heading}" → "${u.summary}"`).join('; ')}`)
   section('Merge candidates', report.mergeCandidates || [], (m) =>
     `**${m.slugs[0]}** ↔ **${m.slugs[1]}** — ${m.reason}`)
   section('Missing links', report.missingLinks || [], (l) =>
@@ -520,6 +544,7 @@ function printReport (report) {
   if (report.deep) {
     list('Page coherence', report.pageCoherence || [], (c) => `${c.slug}: ${c.issues.join(' ')}`)
     list('Summary drift', report.summaryDrift || [], (s) => `${s.slug}: -> "${s.suggested}"`)
+    list('Section summaries', report.sectionSummaryDrift || [], (s) => `${s.slug}: ${s.updates.map((u) => `${u.heading} -> "${u.summary}"`).join('; ')}`)
     list('Merge candidates', report.mergeCandidates || [], (m) => `${m.slugs.join(' <-> ')}: ${m.reason}`)
     list('Missing links', report.missingLinks || [], (l) => `${l.slug} -> ${l.shouldLink.join(', ')}`)
     list('Broken links', report.brokenLinks || [], (b) => `${b.slug} -> ${b.badTargets.join(', ')}`)
