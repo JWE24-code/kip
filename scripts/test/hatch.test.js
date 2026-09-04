@@ -377,6 +377,33 @@ test('hatchAllSources — combined mode makes one LLM call per file and drafts b
   }
 })
 
+test('hatchAllSources — proposes multiple files in parallel and commits them all', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  fs.writeFileSync(path.join(root, 'pages', 'a.md'), 'About the Alpha project and its launch plans.')
+  fs.writeFileSync(path.join(root, 'pages', 'b.md'), 'About the Beta initiative and its rollout.')
+
+  const { calls, restore } = stubFetch((body) => {
+    const text = (body.messages || []).map((m) => m.content).join('\n')
+    if (/Source title: A\b/.test(text)) return JSON.stringify({ pages: [{ title: 'Alpha', type: 'source', tags: [], summary: 's', body: 'Alpha notes.' }] })
+    if (/Source title: B\b/.test(text)) return JSON.stringify({ pages: [{ title: 'Beta', type: 'source', tags: [], summary: 's', body: 'Beta notes.' }] })
+    return JSON.stringify({ pages: [] })
+  })
+
+  try {
+    const summary = await hatchAllSources(root, { limit: 2 })
+    assert.equal(summary.hatched.length, 2, 'both files hatched')
+    assert.equal(summary.failed.length, 0)
+    assert.equal(calls.length, 2, 'one propose+draft call per file')
+    assert.ok(summary.hatched.some((h) => h.source === 'A') && summary.hatched.some((h) => h.source === 'B'))
+  } finally {
+    restore()
+  }
+})
+
 test('hatchAllSources — classic mode makes one propose call plus one generate call per page', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

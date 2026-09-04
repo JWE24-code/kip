@@ -42,6 +42,12 @@ const DEFAULT_BATCH_SIZE = 10
 // speedup — the calls are independent and read-only — capped to stay under
 // provider rate limits.
 const GENERATE_CONCURRENCY = 6
+// Max concurrent files hatched at once. Each file's propose/draft is one LLM
+// call and independent of the others, so batching them cuts wall-clock time by
+// ~this factor; capped to stay under provider rate limits.
+const HATCH_FILE_CONCURRENCY = 4
+// Max concurrent Office/PDF conversions in prepareSources().
+const OFFICE_CONCURRENCY = 4
 
 /** Promise.all with a concurrency cap; preserves input order in the result. */
 async function mapLimit (items, limit, fn) {
@@ -378,29 +384,40 @@ async function prepareSources (vaultRoot = DEFAULT_VAULT_ROOT) {
   const sourcesDir = pagesPath(vaultRoot)
   if (!fs.existsSync(sourcesDir)) return { converted: [], stubbed: [], failed: [] }
 
-  const converted = []
-  const stubbed = []
-  const failed = []
-  for (const entry of fs.readdirSync(sourcesDir, { withFileTypes: true })) {
-    if (!entry.isFile() || entry.name.startsWith('.') || entry.name.endsWith('.md')) continue
+  const entries = fs.readdirSync(sourcesDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && !entry.name.startsWith('.') && !entry.name.endsWith('.md'))
+
+  // Office/PDF extraction is independent per file (and several converters are
+  // promise-based), so convert them in parallel — a folder of dropped docs is
+  // a common case and serial conversion is what made it crawl.
+  const results = await mapLimit(entries, OFFICE_CONCURRENCY, async (entry) => {
     const absPath = path.join(sourcesDir, entry.name)
     const target = path.join(sourcesDir, markdownNameFor(entry.name))
     try {
       const r = await convertOfficeFile(absPath, target)
-      if (!r.skipped) converted.push({ source: entry.name, kind: r.kind })
+      return r.skipped ? null : { converted: { source: entry.name, kind: r.kind } }
     } catch (err) {
       if (err instanceof UnsupportedFormatError) {
         // Unreadable format → a reference-only stub, not a silent skip. Idempotent
         // like conversion: leave an up-to-date stub alone.
         try {
-          if (fs.statSync(target).mtimeMs >= fs.statSync(absPath).mtimeMs) continue
+          if (fs.statSync(target).mtimeMs >= fs.statSync(absPath).mtimeMs) return null
         } catch { /* no stub yet — write one */ }
         fs.writeFileSync(target, toStubSource(entry.name, (err && err.message) || undefined))
-        stubbed.push({ source: entry.name })
-      } else {
-        failed.push({ source: entry.name, error: (err && err.message) || String(err) })
+        return { stubbed: { source: entry.name } }
       }
+      return { failed: { source: entry.name, error: (err && err.message) || String(err) } }
     }
+  })
+
+  const converted = []
+  const stubbed = []
+  const failed = []
+  for (const r of results) {
+    if (!r) continue
+    if (r.converted) converted.push(r.converted)
+    else if (r.stubbed) stubbed.push(r.stubbed)
+    else if (r.failed) failed.push(r.failed)
   }
   return { converted, stubbed, failed }
 }
@@ -535,42 +552,60 @@ async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
   const { pending, oversized, empty } = collectPendingSources(vaultRoot, { roots, force })
   const batch = pending.slice(0, limit)
 
-  const hatched = []
-  const failed = []
-
-  for (let i = 0; i < batch.length; i++) {
-    const file = batch[i]
+  // Phase 1 — propose/draft every file in parallel. This is the expensive LLM
+  // call per file; it only reads the index (findSimilarSlug), so concurrent
+  // proposals can't race each other. Writes happen in phase 2, sequentially.
+  const prepared = await mapLimit(batch, HATCH_FILE_CONCURRENCY, async (file) => {
     const source = humanizeFilename(file.absPath)
-    onProgress({ done: i, total: batch.length, current: source })
     const startedAt = Date.now()
     try {
       const hash = hashContent(fs.readFileSync(file.absPath, 'utf8'))
-
       if (file.kind === 'whiteboard') {
-        const result = await hatchWhiteboard(file.absPath, vaultRoot)
-        recordHatchedSource(file.relPath, hash, vaultRoot)
-        hatched.push({ source, kind: 'whiteboard', results: [result], skipped: [], ms: Date.now() - startedAt })
-        onProgress({ done: i + 1, total: batch.length, current: null })
-        continue
+        return { file, source, hash, whiteboard: true, startedAt }
       }
-
       const proposal = await proposeHatchPlan(file.absPath, vaultRoot, { copyToSources: false, combined })
-      if (proposal.plan.length === 0) {
-        failed.push({ source, error: 'no usable pages proposed (often a transient LLM formatting issue — re-run to retry this file)', ms: Date.now() - startedAt })
+      return { file, source, hash, proposal, startedAt }
+    } catch (err) {
+      return { file, source, error: (err && err.message) || String(err), startedAt }
+    }
+  })
+
+  // Phase 2 — commit sequentially. resolvePage re-runs findSimilarSlug at write
+  // time, so a page two files both proposed still resolves correctly; the
+  // single-connection meta.db writes stay serial.
+  const hatched = []
+  const failed = []
+  for (let i = 0; i < prepared.length; i++) {
+    const p = prepared[i]
+    onProgress({ done: i, total: batch.length, current: p.source })
+
+    if (p.error) {
+      failed.push({ source: p.source, error: p.error, ms: Date.now() - p.startedAt })
+      onProgress({ done: i + 1, total: batch.length, current: null })
+      continue
+    }
+
+    try {
+      if (p.whiteboard) {
+        const result = await hatchWhiteboard(p.file.absPath, vaultRoot)
+        recordHatchedSource(p.file.relPath, p.hash, vaultRoot)
+        hatched.push({ source: p.source, kind: 'whiteboard', results: [result], skipped: [], ms: Date.now() - p.startedAt })
+      } else if (p.proposal.plan.length === 0) {
+        failed.push({ source: p.source, error: 'no usable pages proposed (often a transient LLM formatting issue — re-run to retry this file)', ms: Date.now() - p.startedAt })
       } else {
         // index.md is regenerated once after the whole batch, not per file.
         const { results, skipped } = await commitHatchPlan(
-          { ...proposal, sourceRelPath: file.relPath, sourceHash: hash },
+          { ...p.proposal, sourceRelPath: p.file.relPath, sourceHash: p.hash },
           vaultRoot, { regenIndex: false })
         if (results.length === 0) {
-          failed.push({ source, error: 'the LLM returned empty content for every proposed page — re-run to retry this file', ms: Date.now() - startedAt })
+          failed.push({ source: p.source, error: 'the LLM returned empty content for every proposed page — re-run to retry this file', ms: Date.now() - p.startedAt })
         } else {
-          recordHatchedSource(file.relPath, hash, vaultRoot)
-          hatched.push({ source, kind: file.kind, results, skipped, ms: Date.now() - startedAt })
+          recordHatchedSource(p.file.relPath, p.hash, vaultRoot)
+          hatched.push({ source: p.source, kind: p.file.kind, results, skipped, ms: Date.now() - p.startedAt })
         }
       }
     } catch (err) {
-      failed.push({ source, error: (err && err.message) || String(err), ms: Date.now() - startedAt })
+      failed.push({ source: p.source, error: (err && err.message) || String(err), ms: Date.now() - p.startedAt })
     }
     onProgress({ done: i + 1, total: batch.length, current: null })
   }
