@@ -21,6 +21,7 @@ function stubPeckFetch (routes) {
     calls.push(sys)
     let content = '{}'
     if (/key search terms/.test(sys)) content = routes.keyTerms || '{"terms": []}'
+    else if (/choosing which pages/.test(sys)) content = routes.select || '{"slugs": []}'
     else if (/planning which skills/.test(sys)) content = routes.plan || '{"calls": []}'
     else if (/told their personal wiki a fact/.test(sys)) content = routes.capture
     else if (routes.answerFn) content = routes.answerFn(sys, calls.length)
@@ -1101,6 +1102,56 @@ test('the summary layer reaches the answer prompt (kip-app#115)', async (t) => {
       assert.doesNotMatch(answerCall, /Summary:/)
     } finally { s.restore() }
   })
+})
+
+test('peckTurn — the LLM selects from the index before answering (index-first, kip-app#106)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', body: 'Consistent bedtime; no screens after 22:00.' })
+  writePage(root, 'concepts', 'sleep-quality', { type: 'concept', body: 'Deeper, more restful sleep.' })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({
+    keyTerms: '{"terms":["sleep"]}',
+    select: '{"slugs":["sleep-hygiene"]}',
+    answer: 'Per [[sleep-hygiene]], rest more.'
+  })
+  try {
+    const r = await peckTurn('what about sleep?', { vaultRoot: root })
+    assert.equal(r.answer, 'Per [[sleep-hygiene]], rest more.')
+
+    // round 1: the model saw the index (both slugs) before choosing
+    const selectCall = s.calls.find((c) => /choosing which pages/.test(c))
+    assert.ok(selectCall && /sleep-hygiene/.test(selectCall) && /sleep-quality/.test(selectCall),
+      'the selection prompt listed the candidate index')
+
+    // round 2: only the chosen page was read into the answer prompt
+    const answerCall = s.calls.find((c) => /You are answering a question from a personal wiki/.test(c))
+    assert.ok(answerCall && /### Page: sleep-hygiene/.test(answerCall), 'the chosen page was read')
+    assert.ok(answerCall && !/### Page: sleep-quality/.test(answerCall), 'the unselected page was NOT read')
+  } finally { s.restore() }
+})
+
+test('peckTurn — an empty or unusable selection falls back to the full candidate set', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', body: 'Consistent bedtime.' })
+  writePage(root, 'concepts', 'sleep-quality', { type: 'concept', body: 'Deeper sleep.' })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({
+    keyTerms: '{"terms":["sleep"]}',
+    select: '{"slugs":[]}',
+    answer: 'Per [[sleep-hygiene]].'
+  })
+  try {
+    await peckTurn('what about sleep?', { vaultRoot: root })
+    const answerCall = s.calls.find((c) => /You are answering a question from a personal wiki/.test(c))
+    assert.ok(answerCall && /### Page: sleep-hygiene/.test(answerCall) && /### Page: sleep-quality/.test(answerCall),
+      'an empty selection kept every candidate in play')
+  } finally { s.restore() }
 })
 
 test('fileAnswerToNest mirrors the summary into frontmatter so a rebuild keeps it (kip-app#115)', async (t) => {

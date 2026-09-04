@@ -18,7 +18,7 @@ const matter = require('gray-matter')
 
 const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSlugs, getPage } = require('./roost')
 const { resolvePage } = require('./pages')
-const { extractKeyTerms, answerQuestion, answerQuestionWithSkills, answerFromWeb, isNoAnswer, captureFacts } = require('./prompts')
+const { extractKeyTerms, selectPages, answerQuestion, answerQuestionWithSkills, answerFromWeb, isNoAnswer, captureFacts } = require('./prompts')
 const { discoverSkills, runSkill } = require('./skills')
 const { buildWebSource, parseWebSearchOutput } = require('./web-sources')
 const { looksLikeReminder } = require('./reminders')
@@ -166,6 +166,30 @@ async function retrieveCandidates (question, vaultRoot, { history = [] } = {}) {
     if (!bySlug.has(p.slug)) bySlug.set(p.slug, p)
   }
   return [...bySlug.values()]
+}
+
+/**
+ * The LLM-owned "index-first" selection step (the vault's Query rule,
+ * kip-app#106): hand the model the question plus the candidate INDEX (slug +
+ * one-line summary) and let it choose which pages to descend into. Only the
+ * chosen pages are read and passed to the answer — instead of the caller
+ * dumping every recall hit's full body. A failed/empty selection falls back to
+ * the full candidate set, so a weak model or a malformed reply never loses
+ * recall. No-op for < 2 candidates (a single hit needs no selection).
+ */
+async function selectCandidates (question, candidates, vaultRoot, { history = [] } = {}) {
+  if (!candidates || candidates.length < 2) return candidates
+  let selected
+  try {
+    selected = await selectPages(question, candidates, vaultRoot, { history })
+  } catch (err) {
+    console.error(`Warning: page selection failed (${err.message}); using the full candidate set.`)
+    return candidates
+  }
+  if (!Array.isArray(selected) || selected.length === 0) return candidates
+  const bySlug = new Map(candidates.map((c) => [c.slug, c]))
+  const chosen = selected.filter((s) => bySlug.has(s)).map((s) => bySlug.get(s))
+  return chosen.length ? chosen : candidates
 }
 
 /** Which of the candidate pages the answer actually cited via [[wikilink]] syntax. */
@@ -326,7 +350,7 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
  * can call them mid-answer — `steps` records what it ran. Skill discovery and
  * the whole tool loop are best-effort: a failure downgrades to a plain answer.
  */
-async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [], onStream = null }) {
+async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [], onStream = null, retrievedCount = null }) {
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
 
@@ -340,9 +364,13 @@ async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena 
   // The skills tool loop adds a bigger system prompt and, when a skill runs,
   // extra round-trips. Only take that path — or even look for skills — when
   // one is plausibly needed; otherwise answer straight from the nest. A miss
-  // is recoverable with the Regenerate button.
+  // is recoverable with the Regenerate button. `retrievedCount` is the number
+  // of FTS recall hits BEFORE the index-first selection (kip-app#106): "thin
+  // retrieval" is a property of the recall, not of the (possibly precise)
+  // selection, so a question the model narrowed to one page doesn't spuriously
+  // trigger the skills path.
   let skills = []
-  if (!arena && mightNeedSkill(question, pages.length)) {
+  if (!arena && mightNeedSkill(question, retrievedCount == null ? pages.length : retrievedCount)) {
     try {
       skills = discoverSkills(vaultRoot)
     } catch (err) {
@@ -509,9 +537,10 @@ async function askQuestion (question, { fileToNest = true, vaultRoot = DEFAULT_V
   if (candidates.length === 0 && !anySkills(vaultRoot)) {
     return { answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
-  const pages = readPageBodies(vaultRoot, candidates)
+  const selected = await selectCandidates(question, candidates, vaultRoot, { history })
+  const pages = readPageBodies(vaultRoot, selected)
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history, onStream })
+  return answerFromPages(question, pages, { fileToNest, vaultRoot, arena, history, onStream, retrievedCount: candidates.length })
 }
 
 /**
@@ -535,10 +564,14 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
   }
 
   const candidates = await retrieveCandidates(input, vaultRoot, { history })
-  const pages = readPageBodies(vaultRoot, candidates)
-  const candidateSlugs = pages.map((p) => p.slug)
 
+  // A statement (a fact to file) needs the full candidate set so captureFacts
+  // can route it onto the right existing page; a question runs the LLM-owned
+  // index-first selection (the vault's Query rule) and reads only the chosen
+  // pages.
   if (classifyPeckInput(input, history) === 'statement') {
+    const pages = readPageBodies(vaultRoot, candidates)
+    const candidateSlugs = pages.map((p) => p.slug)
     const capture = await captureFacts(input, pages, vaultRoot)
     const results = capture.learned ? fileCapturedFacts(capture.pages, vaultRoot) : []
     const touched = [...new Set(results.map((r) => r.slug))]
@@ -548,11 +581,15 @@ async function peckTurn (input, { vaultRoot = DEFAULT_VAULT_ROOT, fileToNest = f
       : { intent: 'statement', learned: false, note: capture.note || 'Nothing new to record.', candidateSlugs }
   }
 
+  const selected = await selectCandidates(input, candidates, vaultRoot, { history })
+  const pages = readPageBodies(vaultRoot, selected)
+  const candidateSlugs = pages.map((p) => p.slug)
+
   if (pages.length === 0 && !anySkills(vaultRoot)) {
     return { intent: 'question', answer: null, citedSlugs: [], candidateSlugs: [], steps: [] }
   }
   const arena = arenaCompareToCallId ? { compareToCallId: arenaCompareToCallId } : null
-  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream })) }
+  return { intent: 'question', ...(await answerFromPages(input, pages, { fileToNest, vaultRoot, arena, history, onStream, retrievedCount: candidates.length })) }
 }
 
 module.exports = { askQuestion, peckTurn, classifyPeckInput, fileAnswerToNest, fileCapturedFacts, extractCitedSlugs, stripSources, humanizeSlug, deadCitationSlugs, lintWarningsFor, knownConflictsFor }

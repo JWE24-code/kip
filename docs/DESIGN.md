@@ -262,8 +262,12 @@ a **statement**.
    finds only a few hits, a second pass runs on key terms an LLM extracts
    from the question, unioned in for recall; when the direct search already
    found enough, the second pass (and its LLM call) is skipped.
-2. Read only the matched pages — each passed to the model with its one-line
-   index summary above the body (§5.1), not just the raw text.
+2. **Read the index first, then descend only where it points** (the LLM-wiki
+   Query rule, kip-app#106). The model is handed the question plus the
+   candidate *index* — one line per page, its slug and one-line `summary`
+   (§5.1) — and returns the slugs it needs to read. Only those pages are then
+   read from disk and passed to the answer; a failed or empty selection falls
+   back to the full candidate set.
 3. Ask the LLM for an answer that cites every claim with `[[slug]]`
    wikilinks. A citation resolves to a `nest/` page, and that page carries
    `source:` frontmatter pointing at the source it was hatched from (§5.1) — so
