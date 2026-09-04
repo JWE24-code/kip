@@ -7,6 +7,21 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [0.5.0] — 2026-09-04
+
+### The retrieval layer (`scripts/`)
+
+- **A `person` page type** (kip-app#125) — `entity`/`concept`/`source` gain a
+  `person` sibling, hatched whenever a source names a real person. Carries a
+  small fixed schema (`name`, `email`, `org`, `role`, `phone`, `aliases`),
+  with the free-form tail in `properties::` lines.
+- **Email-canonical identity** (kip-app#125) — person pages dedupe by email
+  (case-insensitive) in addition to `findSimilarSlug`, so "Joeri De Deckere"
+  and "Joeri D. Deckere" resolve to the same page.
+- **Aliases are indexed** (kip-app#125) — a person's `aliases` are folded into
+  the FTS index, so Peck matches name variants and acronyms (`CDO` ↔
+  `Chief Digital Officer`).
+
 ## [0.4.11] — 2026-09-04
 
 ### The retrieval layer (`scripts/`)
