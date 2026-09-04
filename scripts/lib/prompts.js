@@ -524,9 +524,10 @@ Rules:
 - Always include exactly one "source" page. Only add an "entity" or "concept" page for something substantial enough in the source to warrant its own page — not every passing mention.
 - "body" is the page's markdown body only — NO YAML frontmatter, NO top-level "# Title" heading. Be factual and concise; use only what the source supports; do not invent details. Every page must have a non-empty body.
 - Cross-link the other pages you are creating in this same batch with [[slug]] wikilinks, where the slug is the title lowercased with spaces/punctuation replaced by single hyphens (e.g. "Dr. Alvarez" -> [[dr-alvarez]]).
+- If "body" uses "## " or "### " headings, also provide "sections": one {heading, summary} entry per heading, where "heading" is the EXACT heading text (without the "#") and "summary" is a one-line description of that section. Omit "sections" when the body has no such headings.
 
 Respond with a JSON object of exactly this shape:
-{"pages": [{"title": "...", "type": "entity"|"concept"|"source", "tags": ["..."], "summary": "one-line description", "body": "markdown body..."}, ...]}`
+{"pages": [{"title": "...", "type": "entity"|"concept"|"source", "tags": ["..."], "summary": "one-line description", "body": "markdown body...", "sections": [{"heading": "...", "summary": "..."}]}, ...]}`
 
 /** True when the provider stopped because it hit max_tokens (OpenAI-compatible or Anthropic shapes). */
 function responseWasTruncated (raw) {

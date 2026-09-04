@@ -260,6 +260,42 @@ function getPageSections (slug, vaultRoot = DEFAULT_VAULT_ROOT) {
   }
 }
 
+/** Matches a draft model's section headings to the deterministic split's rows,
+ *  normalizing case/whitespace so a heading that drifted slightly still lands. */
+function normalizeHeading (heading) {
+  return String(heading || '').trim().toLowerCase()
+}
+
+/**
+ * Overwrites a page's per-section summaries with the LLM's one-liners, matched
+ * to the deterministic section rows by heading (kip-app#106). Unmatched or
+ * missing headings keep their first-line summary. Returns the number of rows
+ * updated.
+ */
+function setSectionSummaries (slug, summaries, vaultRoot = DEFAULT_VAULT_ROOT) {
+  if (!Array.isArray(summaries) || !summaries.length) return 0
+  const db = openDb(vaultRoot)
+  try {
+    const rows = db.prepare('SELECT seq, heading FROM sections WHERE slug = ? ORDER BY seq').all(slug)
+    const byHeading = new Map(rows.map((r) => [normalizeHeading(r.heading), r]))
+    const update = db.prepare('UPDATE sections SET summary = ? WHERE slug = ? AND seq = ?')
+    let n = 0
+    for (const s of summaries) {
+      if (!s || typeof s.heading !== 'string' || typeof s.summary !== 'string') continue
+      const summary = s.summary.trim()
+      if (!s.heading.trim() || !summary) continue
+      const row = byHeading.get(normalizeHeading(s.heading))
+      if (row) {
+        update.run(summary, slug, row.seq)
+        n++
+      }
+    }
+    return n
+  } finally {
+    db.close()
+  }
+}
+
 /** Records an event in the `log` table and appends it to coop/clucks/YYYY-MM.md. */
 function appendLog (kind, title, pagesTouched = [], vaultRoot = DEFAULT_VAULT_ROOT) {
   const timestamp = new Date().toISOString()
@@ -401,6 +437,7 @@ module.exports = {
   findSimilarSlug,
   getPage,
   getPageSections,
+  setSectionSummaries,
   splitSections,
   summarizeSection,
   appendLog,

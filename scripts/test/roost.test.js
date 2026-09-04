@@ -194,4 +194,24 @@ test('the per-section index — splitSections + summarizeSection (kip-app#106)',
     assert.deepEqual(sections.map((s) => s.heading), ['', 'Hygiene', 'Screens'])
     assert.equal(sections[1].summary, 'Keep a consistent bedtime.')
   })
+
+  await t.test('setSectionSummaries matches LLM one-liners by heading and leaves the rest', () => {
+    const { setSectionSummaries } = require('../lib/roost')
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'sleep', {
+      type: 'concept',
+      body: 'Intro.\n\n## Hygiene\nKeep a consistent bedtime.\n\n## Screens\nNo screens late.'
+    })
+    rebuildRoost(root)
+
+    const n = setSectionSummaries('sleep', [
+      { heading: 'hygiene', summary: 'The user keeps a fixed bedtime and wake time.' },
+      { heading: 'no-such-section', summary: 'ignored' }
+    ], root)
+    assert.equal(n, 1, 'only the heading that matched was updated')
+    const sections = getPageSections('sleep', root)
+    assert.equal(sections[1].summary, 'The user keeps a fixed bedtime and wake time.')
+    assert.equal(sections[2].summary, 'No screens late.', 'unmatched section keeps its first-line summary')
+  })
 })
