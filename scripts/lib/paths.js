@@ -89,7 +89,7 @@ function calendarCachePath (vaultRoot = DEFAULT_VAULT_ROOT) {
 
 // Single source of truth for the page-type <-> nest subfolder mapping.
 // type -> dir (used when writing a page for a known type)
-const TYPE_DIRS = { entity: 'entities', concept: 'concepts', source: 'sources' }
+const TYPE_DIRS = { entity: 'entities', concept: 'concepts', source: 'sources', person: 'people' }
 // dir -> type (used when walking nest/ without already knowing the type)
 const DIR_TYPES = Object.fromEntries(Object.entries(TYPE_DIRS).map(([type, dir]) => [dir, type]))
 

@@ -10,8 +10,31 @@ const { DEFAULT_VAULT_ROOT, TYPE_DIRS } = require('./paths')
 
 function relPathFor (type, slug) {
   const dir = TYPE_DIRS[type]
-  if (!dir) throw new Error(`Unknown page type: ${type} (expected entity, concept, or source)`)
+  if (!dir) throw new Error(`Unknown page type: ${type} (expected entity, concept, source, or person)`)
   return `nest/${dir}/${slug}.md`
+}
+
+// The contact fields a `person` page carries beyond the title (which is the
+// name). Written to frontmatter when a hatch proposes them; the tail of
+// free-form fields stays in `properties::` lines in the body.
+const PERSON_FIELDS = ['email', 'org', 'role', 'phone', 'aliases']
+
+/** Finds an existing person page by canonical email (case-insensitive). */
+function findPersonByEmail (email, vaultRoot = DEFAULT_VAULT_ROOT) {
+  if (!email) return null
+  const dir = path.join(vaultRoot, 'nest', 'people')
+  if (!fs.existsSync(dir)) return null
+  const want = String(email).trim().toLowerCase()
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith('.md')) continue
+    try {
+      const { data } = matter(fs.readFileSync(path.join(dir, f), 'utf8'))
+      if (data.email && String(data.email).trim().toLowerCase() === want) {
+        return { slug: f.slice(0, -3), path: `nest/people/${f}` }
+      }
+    } catch { /* an unreadable page is not a person */ }
+  }
+  return null
 }
 
 // meta.db keys pages by slug alone, so one slug = one page. Long titles (raw
@@ -110,10 +133,10 @@ function hatchedSourcePaths (vaultRoot = DEFAULT_VAULT_ROOT) {
  *   caller asks (`mergeTags`) — a filed peck answer keeps its `from-peck`
  *   marker; a routine hatch update doesn't accumulate invented tags.
  *
- * @param {{type: 'entity'|'concept'|'source', title: string, body: string, tags?: string[], vaultRoot?: string, source?: string|null, sourceHash?: string|null, sourceOriginal?: string|null, summary?: string|null, mergeTags?: boolean}} args
+ * @param {{type: 'entity'|'concept'|'source'|'person', title: string, body: string, tags?: string[], vaultRoot?: string, source?: string|null, sourceHash?: string|null, sourceOriginal?: string|null, summary?: string|null, mergeTags?: boolean, person?: {email?: string, org?: string, role?: string, phone?: string, aliases?: string[]}|null}} args
  * @returns {{action: 'create'|'update', slug: string, path: string, type: string, tags: string[]}}
  */
-function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_ROOT, source = null, sourceHash = null, sourceOriginal = null, summary = null, mergeTags = false }) {
+function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_ROOT, source = null, sourceHash = null, sourceOriginal = null, summary = null, mergeTags = false, person = null }) {
   const today = new Date().toISOString().slice(0, 10)
   const similar = findSimilarSlug(title, vaultRoot)
   let matched = similar && similar.score >= SIMILARITY_THRESHOLD ? getPage(similar.slug, vaultRoot) : null
@@ -130,6 +153,16 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
     }
   }
 
+  // A person resolves by canonical email first — same email = same person page,
+  // whatever the title variant (kip-app#125).
+  if (type === 'person' && person && person.email) {
+    const byEmail = findPersonByEmail(person.email, vaultRoot)
+    if (byEmail) {
+      matched = { ...getPage(byEmail.slug, vaultRoot), ...byEmail }
+      mustCreate = false
+    }
+  }
+
   if (matched && !mustCreate) {
     const filePath = path.join(vaultRoot, matched.path)
     const raw = fs.readFileSync(filePath, 'utf8')
@@ -142,6 +175,9 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
       if (sourceOriginal) data.source_original = sourceOriginal
     }
     if (summary) data.summary = summary
+    if (person) {
+      for (const f of PERSON_FIELDS) if (person[f] != null && person[f] !== '') data[f] = person[f]
+    }
     if (mergeTags && Array.isArray(tags) && tags.length) {
       const existing = Array.isArray(data.tags) ? data.tags : (data.tags ? [data.tags] : [])
       data.tags = [...new Set([...existing, ...tags])]
@@ -176,9 +212,12 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
     }
   }
   if (summary) frontmatter.summary = summary
+  if (person) {
+    for (const f of PERSON_FIELDS) if (person[f] != null && person[f] !== '') frontmatter[f] = person[f]
+  }
   fs.writeFileSync(filePath, matter.stringify(bodyText, frontmatter))
 
   return { action: 'create', slug, path: relPath, type, tags }
 }
 
-module.exports = { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, hatchedSourcePaths, SIMILARITY_THRESHOLD }
+module.exports = { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, findPersonByEmail, hatchedSourcePaths, SIMILARITY_THRESHOLD }

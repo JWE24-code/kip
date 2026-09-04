@@ -11,7 +11,7 @@ const {
   findSimilarSlug, slugify, getPage, upsertPage, regenerateIndexMd, appendLog,
   hashContent, hatchedSourceHashes, recordHatchedSource, searchPages, setSectionSummaries, SIMILARITY_THRESHOLD
 } = require('./roost')
-const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, hatchedSourcePaths } = require('./pages')
+const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, findPersonByEmail, hatchedSourcePaths } = require('./pages')
 const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, describeWhiteboard } = require('./prompts')
 const { parseWhiteboard, whiteboardToOutline } = require('./whiteboard')
 const { convertFile: convertOfficeFile, markdownNameFor, toStubSource, UnsupportedFormatError } = require('./office')
@@ -91,6 +91,11 @@ function planCandidates (candidates, vaultRoot, { sourceRelPath = null } = {}) {
       const hub = findSourceHubByPath(sourceRelPath, vaultRoot)
       if (hub) return { ...candidate, action: 'update', slug: hub.slug }
     }
+    // A person resolves by canonical email first — same email = same person.
+    if (candidate.type === 'person' && candidate.email) {
+      const byEmail = findPersonByEmail(candidate.email, vaultRoot)
+      if (byEmail) return { ...candidate, action: 'update', slug: byEmail.slug }
+    }
     const similar = findSimilarSlug(candidate.title, vaultRoot)
     if (similar && similar.score >= SIMILARITY_THRESHOLD) {
       const matched = getPage(similar.slug, vaultRoot)
@@ -101,6 +106,16 @@ function planCandidates (candidates, vaultRoot, { sourceRelPath = null } = {}) {
     }
     return { ...candidate, action: 'create', slug: slugify(candidate.title) }
   })
+}
+
+/** The contact fields a `person` candidate carries (kip-app#125), minus any the
+ *  model left blank. */
+function pickPerson (candidate) {
+  const p = {}
+  for (const f of ['email', 'org', 'role', 'phone', 'aliases']) {
+    if (candidate[f] != null && candidate[f] !== '') p[f] = candidate[f]
+  }
+  return Object.keys(p).length ? p : null
 }
 
 /**
@@ -250,7 +265,8 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPat
       source: sourceRelPath,
       sourceHash,
       sourceOriginal,
-      summary: candidate.summary || null
+      summary: candidate.summary || null,
+      person: candidate.type === 'person' ? pickPerson(candidate) : null
     })
 
     const writtenRaw = fs.readFileSync(path.join(vaultRoot, result.path), 'utf8')

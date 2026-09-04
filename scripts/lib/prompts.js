@@ -435,15 +435,18 @@ async function flagContradictions (pages, vaultRoot) {
   }
 }
 
-const PROPOSE_CANDIDATES_SYSTEM_PROMPT = `You are analyzing a raw source document being ingested into a personal wiki (a second brain for journaling, goals, and health tracking). The wiki has three page types:
-- "entity": a person, place, or recurring thing (a doctor, a gym, a recurring project).
+const PROPOSE_CANDIDATES_SYSTEM_PROMPT = `You are analyzing a raw source document being ingested into a personal wiki (a second brain for journaling, goals, and health tracking). The wiki has four page types:
+- "entity": a place or recurring thing (a gym, a recurring project) — not a specific person.
+- "person": a specific human. Whenever the source names a real person, propose "person" (not "entity").
 - "concept": a recurring theme (a habit, a goal, sleep, a specific idea being tracked).
-- "source": one summary page for this ingested document itself, linking to the entity/concept pages it touches.
+- "source": one summary page for this ingested document itself, linking to the pages it touches.
 
-Propose the wiki pages this source touches. Always include exactly one "source" candidate for the document itself. Only propose an "entity" or "concept" candidate for something substantial enough in the source to be worth its own page — not every passing mention.
+Propose the wiki pages this source touches. Always include exactly one "source" candidate for the document itself. Only propose a page for something substantial enough in the source to be worth its own page — not every passing mention.
+
+For a "person" candidate, also fill the contact fields the source actually states: "email", "org", "role", "phone", and "aliases" (a list of name variants and acronyms, e.g. ["CDO"]). Omit a field when the source doesn't say it.
 
 Respond with a JSON object of exactly this shape:
-{"candidates": [{"title": "...", "type": "entity"|"concept"|"source", "tags": ["..."], "summary": "one-line description"}, ...]}`
+{"candidates": [{"title": "...", "type": "entity"|"concept"|"source"|"person", "tags": ["..."], "summary": "one-line description", "email": "...", "org": "...", "role": "...", "phone": "...", "aliases": ["..."]}, ...]}`
 
 /**
  * Proposes candidate wiki pages (title/type/tags/summary) a raw source likely
@@ -515,19 +518,21 @@ async function generatePageContent ({ title, type, action, existingContent, sour
 
 const PROPOSE_AND_DRAFT_SYSTEM_PROMPT = `You are ingesting a raw source document into a personal wiki (a second brain for journaling, goals, and health tracking) in a single step: decide which wiki pages the source touches AND write each page's body.
 
-The wiki has three page types:
-- "entity": a person, place, or recurring thing (a doctor, a gym, a recurring project).
+The wiki has four page types:
+- "entity": a place or recurring thing (a gym, a recurring project) — not a specific person.
+- "person": a specific human. Whenever the source names a real person, propose "person" (not "entity").
 - "concept": a recurring theme (a habit, a goal, sleep, a specific idea being tracked).
-- "source": exactly one page that summarizes THIS document and links to the entity/concept pages it touches.
+- "source": exactly one page that summarizes THIS document and links to the pages it touches.
 
 Rules:
-- Always include exactly one "source" page. Only add an "entity" or "concept" page for something substantial enough in the source to warrant its own page — not every passing mention.
+- Always include exactly one "source" page. Only add another page for something substantial enough in the source to warrant its own page — not every passing mention.
+- For a "person" page, also fill the contact fields the source actually states: "email", "org", "role", "phone", and "aliases" (a list of name variants and acronyms, e.g. ["CDO"]). Omit a field when the source doesn't say it.
 - "body" is the page's markdown body only — NO YAML frontmatter, NO top-level "# Title" heading. Be factual and concise; use only what the source supports; do not invent details. Every page must have a non-empty body.
 - Cross-link the other pages you are creating in this same batch with [[slug]] wikilinks, where the slug is the title lowercased with spaces/punctuation replaced by single hyphens (e.g. "Dr. Alvarez" -> [[dr-alvarez]]).
 - If "body" uses "## " or "### " headings, also provide "sections": one {heading, summary} entry per heading, where "heading" is the EXACT heading text (without the "#") and "summary" is a one-line description of that section. Omit "sections" when the body has no such headings.
 
 Respond with a JSON object of exactly this shape:
-{"pages": [{"title": "...", "type": "entity"|"concept"|"source", "tags": ["..."], "summary": "one-line description", "body": "markdown body...", "sections": [{"heading": "...", "summary": "..."}]}, ...]}`
+{"pages": [{"title": "...", "type": "entity"|"concept"|"source"|"person", "tags": ["..."], "summary": "one-line description", "body": "markdown body...", "sections": [{"heading": "...", "summary": "..."}], "email": "...", "org": "...", "role": "...", "phone": "...", "aliases": ["..."]}, ...]}`
 
 /** True when the provider stopped because it hit max_tokens (OpenAI-compatible or Anthropic shapes). */
 function responseWasTruncated (raw) {

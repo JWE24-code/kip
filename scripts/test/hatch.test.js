@@ -414,7 +414,7 @@ test('hatchAllSources — classic mode makes one propose call plus one generate 
 
   const kinds = []
   const { restore } = stubFetch((body) => {
-    if (/three page types/.test(body.messages[0].content)) {
+    if (/four page types/.test(body.messages[0].content)) {
       kinds.push('propose')
       return JSON.stringify({ candidates: [
         { title: 'Note', type: 'source', tags: [], summary: 's' },
