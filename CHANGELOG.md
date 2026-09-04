@@ -42,10 +42,14 @@ The retrieval layer (this repo) and the desktop app
   (a new `sections` table in `meta.db`, re-derived on every write and rebuild).
   Each section carries a one-line summary — a deterministic first-line extract
   by default, overwritten by the hatch model's own per-section one-liners
-  (the combined draft now emits `sections`). The selection round and the
-  answer prompt both render a section table of contents, so the model can
-  navigate a long append-grown page at section granularity instead of reading
-  it blind.
+  (the combined draft now emits `sections`), and refreshed by a deep groom.
+  The selection round and the answer prompt both render a section table of
+  contents, so the model can navigate a long append-grown page at section
+  granularity instead of reading it blind.
+- **Peck follows outbound `[[links]]` one hop** (kip-app#106) — a retrieved
+  page's links are now walked, so a question answered by a page plus the page
+  it links to is reachable even when the linked page shares no token with the
+  question. Deterministic, bounded (10 new pages), no LLM call.
 
 ## [0.4.9] — 2026-09-03
 

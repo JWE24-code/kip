@@ -130,6 +130,36 @@ function readPageBodies (vaultRoot, candidates) {
   return candidates.map((c) => readPageBody(vaultRoot, c)).filter(Boolean)
 }
 
+/**
+ * Multi-hop (kip-app#106 synthesis-3): follow each retrieved page's outbound
+ * [[wikilinks]] one hop, adding any linked page that exists and isn't already
+ * in the set. This reaches the page A links to even when it shares no token
+ * with the question — the case deterministic FTS alone can't reach. Deterministic
+ * and bounded; the LLM never drives it.
+ */
+function expandByOutboundLinks (pages, vaultRoot, { limit = 10 } = {}) {
+  const included = new Set(pages.map((p) => p.slug))
+  const linked = new Set()
+  for (const p of pages) {
+    for (const s of extractWikilinkSlugs(p.content || '')) {
+      if (!included.has(s)) linked.add(s)
+    }
+  }
+  if (!linked.size) return pages
+  const out = [...pages]
+  for (const slug of linked) {
+    if (out.length - pages.length >= limit) break
+    const page = getPage(slug, vaultRoot)
+    if (!page) continue
+    const body = readPageBody(vaultRoot, { slug, path: page.path, summary: page.summary })
+    if (body) {
+      out.push(body)
+      included.add(slug)
+    }
+  }
+  return out
+}
+
 /** True when the coop has at least one enabled skill — a question with no
  *  matching nest pages is still worth answering (a skill can answer it). */
 function anySkills (vaultRoot) {
@@ -355,6 +385,10 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
  * the whole tool loop are best-effort: a failure downgrades to a plain answer.
  */
 async function answerFromPages (question, pages, { fileToNest, vaultRoot, arena = null, history = [], onStream = null, retrievedCount = null }) {
+  // Multi-hop (kip-app#106): follow outbound [[links]] one hop so an answer
+  // that spans a page and the page it links to is reachable, even when the
+  // linked page shares no token with the question.
+  pages = expandByOutboundLinks(pages, vaultRoot)
   const candidateSlugs = pages.map((p) => p.slug)
   const telemetryStart = telemetry.entries().length
 
