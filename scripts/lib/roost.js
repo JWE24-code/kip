@@ -123,8 +123,11 @@ function summarizeSection (body) {
   return line.length > 120 ? line.slice(0, 117) + '...' : line
 }
 
-/** Writes a page's metadata and body into meta.db (pages + pages_fts + sections). */
-function upsertPage (slug, filePath, type, tags, summary, body, vaultRoot = DEFAULT_VAULT_ROOT) {
+/** Writes a page's metadata and body into meta.db (pages + pages_fts + sections).
+ *  `aliases` (name variants/acronyms for `person` pages, kip-app#125) are
+ *  folded into the FTS body so Peck matches them — e.g. "CDO" ↔ "Chief
+ *  Digital Officer" — without polluting the page's own summary/snippet source. */
+function upsertPage (slug, filePath, type, tags, summary, body, vaultRoot = DEFAULT_VAULT_ROOT, aliases = []) {
   const now = new Date().toISOString()
   const db = openDb(vaultRoot)
   try {
@@ -149,7 +152,9 @@ function upsertPage (slug, filePath, type, tags, summary, body, vaultRoot = DEFA
       updated: now
     })
     db.prepare('DELETE FROM pages_fts WHERE slug = ?').run(slug)
-    db.prepare('INSERT INTO pages_fts (slug, body) VALUES (?, ?)').run(slug, body || '')
+    const aliasText = (Array.isArray(aliases) ? aliases : []).filter(Boolean).join(' ')
+    const searchable = aliasText ? `${body || ''}\n${aliasText}` : (body || '')
+    db.prepare('INSERT INTO pages_fts (slug, body) VALUES (?, ?)').run(slug, searchable)
     // The per-section index (kip-app#106): re-derived from the body on every
     // write, so it never drifts from the file. First-line summaries only —
     // hatch/groom can refine them via setSectionSummary later.

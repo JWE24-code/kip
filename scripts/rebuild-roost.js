@@ -42,7 +42,8 @@ function rebuildRoost (vaultRoot = DEFAULT_VAULT_ROOT) {
         data.tags || [],
         data.summary || deriveSummary(content),
         content,
-        vaultRoot
+        vaultRoot,
+        data.aliases || []
       )
       found.add(slug)
     }

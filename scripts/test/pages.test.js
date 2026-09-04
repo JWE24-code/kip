@@ -132,3 +132,67 @@ test('resolvePage provenance (kip-app#113)', async (t) => {
     assert.ok(!raw.includes('summary:'), 'no summary key')
   })
 })
+
+test('person pages: schema frontmatter, email dedupe, aliases indexed (kip-app#125)', async (t) => {
+  const { searchPages } = require('../lib/roost')
+
+  await t.test('creates a person page with the contact schema', () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+    const result = resolvePage({
+      type: 'person',
+      title: 'Joeri De Deckere',
+      body: 'Met at the CDO roundtable.',
+      tags: ['work'],
+      vaultRoot: root,
+      person: { email: 'joeri@example.com', org: 'Acme', role: 'Chief Digital Officer', phone: '+32 000', aliases: ['CDO'] }
+    })
+    assert.equal(result.action, 'create')
+    assert.equal(result.path, 'nest/people/joeri-de-deckere.md')
+    const fm = require('gray-matter')(fs.readFileSync(path.join(root, result.path), 'utf8')).data
+    assert.equal(fm.type, 'person')
+    assert.equal(fm.email, 'joeri@example.com')
+    assert.equal(fm.role, 'Chief Digital Officer')
+    assert.deepEqual(fm.aliases, ['CDO'])
+  })
+
+  await t.test('dedupes by canonical email across name variants', () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+    resolvePage({
+      type: 'person',
+      title: 'Joeri De Deckere',
+      body: 'First note.',
+      vaultRoot: root,
+      person: { email: 'joeri@example.com', aliases: ['CDO'] }
+    })
+    const again = resolvePage({
+      type: 'person',
+      title: 'Joeri D. Deckere',
+      body: 'Second note.',
+      vaultRoot: root,
+      person: { email: 'Joeri@Example.com', aliases: ['JDD'] }
+    })
+    assert.equal(again.action, 'update')
+    assert.equal(again.slug, 'joeri-de-deckere')
+  })
+
+  await t.test('aliases are folded into the FTS index so Peck matches acronyms', () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+    resolvePage({
+      type: 'person',
+      title: 'Joeri De Deckere',
+      body: 'Met at the roundtable.',
+      vaultRoot: root,
+      person: { email: 'joeri@example.com', role: 'Chief Digital Officer', aliases: ['CDO'] }
+    })
+    rebuildRoost(root)
+    const hits = searchPages('CDO', { type: 'person' }, root)
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0].slug, 'joeri-de-deckere')
+  })
+})

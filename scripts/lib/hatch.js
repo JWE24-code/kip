@@ -256,6 +256,7 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPat
       continue
     }
 
+    const person = candidate.type === 'person' ? pickPerson(candidate) : null
     const result = resolvePage({
       type: candidate.type,
       title: candidate.title,
@@ -266,12 +267,12 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPat
       sourceHash,
       sourceOriginal,
       summary: candidate.summary || null,
-      person: candidate.type === 'person' ? pickPerson(candidate) : null
+      person
     })
 
     const writtenRaw = fs.readFileSync(path.join(vaultRoot, result.path), 'utf8')
     const { content: writtenBody } = matter(writtenRaw)
-    upsertPage(result.slug, result.path, result.type, result.tags, candidate.summary || '', writtenBody, vaultRoot)
+    upsertPage(result.slug, result.path, result.type, result.tags, candidate.summary || '', writtenBody, vaultRoot, person ? (person.aliases || []) : [])
 
     // LLM section summaries (kip-app#106): the combined draft may have also
     // proposed one-liners per "##"/"###" section. Match them onto the
