@@ -56,9 +56,11 @@ function rebuildRoost (vaultRoot = DEFAULT_VAULT_ROOT) {
     const stale = existingSlugs.filter((slug) => !found.has(slug))
     const deletePage = db.prepare('DELETE FROM pages WHERE slug = ?')
     const deleteFts = db.prepare('DELETE FROM pages_fts WHERE slug = ?')
+    const deleteSections = db.prepare('DELETE FROM sections WHERE slug = ?')
     for (const slug of stale) {
       deletePage.run(slug)
       deleteFts.run(slug)
+      deleteSections.run(slug)
     }
   } finally {
     db.close()

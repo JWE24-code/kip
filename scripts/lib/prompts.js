@@ -70,12 +70,18 @@ async function selectPages (question, index, vaultRoot, { history = [] } = {}) {
     .map((p) => {
       const label = (p.summary && String(p.summary).trim()) ||
         (p.snippet ? `…${String(p.snippet).replace(/\s+/g, ' ').trim()}…` : '')
-      return `- ${p.slug}${label ? ` — ${label}` : ''}`
+      const line = `- ${p.slug}${label ? ` — ${label}` : ''}`
+      // Granular sub-index (kip-app#106): list each section's heading + summary
+      // so the model can tell which PART of a large page is relevant.
+      const subs = (p.sections || [])
+        .filter((s) => s.heading)
+        .map((s) => `  - ${s.heading}${s.summary ? ` — ${s.summary}` : ''}`)
+      return subs.length ? [line, ...subs].join('\n') : line
     })
     .join('\n')
   const system = 'You are choosing which pages of a personal wiki to read in order to answer a question. ' +
-    'You are shown the wiki index: one line per page — its slug and a one-line summary of what it is about. ' +
-    'Select the pages whose summaries indicate they could hold the answer. Prefer precision: choose only the pages you actually need to read; choose none if none look relevant. ' +
+    'You are shown the wiki index: one line per page — its slug and a one-line summary of what it is about — and, for longer pages, an indented list of its sections. ' +
+    'Select the pages whose summaries or sections indicate they could hold the answer. Prefer precision: choose only the pages you actually need to read; choose none if none look relevant. ' +
     'Respond with a JSON object of exactly this shape: {"slugs": ["slug-1", "slug-2", ...]}.'
   const prompt = (convo ? `${convo}\n\n` : '') + `Question: ${question}\n\nIndex:\n${indexBlock}`
   return jsonCall({ system, prompt, maxTokens: 2048, label: 'peck:select-pages', vaultRoot }, (parsed) =>
@@ -89,7 +95,13 @@ function formatPagesForPrompt (pages) {
       // a "what this page is" anchor the model would otherwise infer from an
       // append-grown body. ~25 tokens against bodies that run 5k-30k.
       const summary = p.summary && String(p.summary).trim() ? `\nSummary: ${String(p.summary).trim()}` : ''
-      return `### Page: ${p.slug} (type: ${p.type || 'unknown'})${summary}\n${p.content}`
+      // The per-section index (kip-app#106): a compact table of contents so the
+      // model can navigate a long append-grown body instead of reading it blind.
+      const toc = (p.sections || [])
+        .filter((s) => s.heading)
+        .map((s) => `- ${s.heading}${s.summary ? ` — ${s.summary}` : ''}`)
+      const tocBlock = toc.length ? `\nSections:\n${toc.join('\n')}` : ''
+      return `### Page: ${p.slug} (type: ${p.type || 'unknown'})${summary}${tocBlock}\n${p.content}`
     })
     .join('\n\n---\n\n')
 }

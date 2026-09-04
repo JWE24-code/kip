@@ -37,6 +37,13 @@ The retrieval layer (this repo) and the desktop app
   selection falls back to the full candidate set, and "thin retrieval" (the
   skills/web trigger) is now judged from the recall count, not the narrowed
   selection.
+- **A per-section index below the page level** (kip-app#106) — every page's
+  body is split into sections on its `##`/`###` headings and `_Update_` blocks
+  (a new `sections` table in `meta.db`, re-derived on every write and rebuild).
+  Each section carries a one-line first-line summary; the selection round and
+  the answer prompt both render a section table of contents, so the model can
+  navigate a long append-grown page at section granularity instead of reading
+  it blind.
 
 ## [0.4.9] — 2026-09-03
 

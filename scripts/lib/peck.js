@@ -16,7 +16,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const matter = require('gray-matter')
 
-const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSlugs, getPage } = require('./roost')
+const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSlugs, getPage, getPageSections } = require('./roost')
 const { resolvePage } = require('./pages')
 const { extractKeyTerms, selectPages, answerQuestion, answerQuestionWithSkills, answerFromWeb, isNoAnswer, captureFacts } = require('./prompts')
 const { discoverSkills, runSkill } = require('./skills')
@@ -122,7 +122,7 @@ function readPageBody (vaultRoot, candidate) {
   // Carry the index's one-line summary through to the answer prompt
   // (kip-app#115) — it's already computed (hatch / a deep groom) and was
   // being dropped here. `summary` is on the searchPages() candidate.
-  return { slug: candidate.slug, path: candidate.path, type: data.type, content: content.trim(), summary: candidate.summary || null }
+  return { slug: candidate.slug, path: candidate.path, type: data.type, content: content.trim(), summary: candidate.summary || null, sections: getPageSections(candidate.slug, vaultRoot) }
 }
 
 /** map candidates -> page bodies, dropping any whose file is missing. */
@@ -181,7 +181,11 @@ async function selectCandidates (question, candidates, vaultRoot, { history = []
   if (!candidates || candidates.length < 2) return candidates
   let selected
   try {
-    selected = await selectPages(question, candidates, vaultRoot, { history })
+    // The selection index is granular (kip-app#106): each candidate also
+    // carries its section index so the model can judge sub-page relevance,
+    // not just the page-level one-liner.
+    const index = candidates.map((c) => ({ ...c, sections: getPageSections(c.slug, vaultRoot) }))
+    selected = await selectPages(question, index, vaultRoot, { history })
   } catch (err) {
     console.error(`Warning: page selection failed (${err.message}); using the full candidate set.`)
     return candidates

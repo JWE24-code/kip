@@ -83,7 +83,47 @@ function slugSimilarity (a, b) {
 // "sleep-hygiene" scores ~0.46; unrelated titles score well under 0.3.
 const SIMILARITY_THRESHOLD = 0.45
 
-/** Writes a page's metadata and body into meta.db (pages + pages_fts). */
+/** Splits a page body into sections on `##`/`###` headings and `_Update …`_
+ *  markers — the deterministic structure that already delimits every Kip page
+ *  (kip-app#106 index granularity). Leading content before the first heading
+ *  becomes one section with an empty heading. Returns [{heading, body}]. */
+function splitSections (body) {
+  const lines = String(body || '').split(/\r?\n/)
+  const sections = []
+  let heading = ''
+  let buf = []
+  const flush = () => {
+    const content = buf.join('\n').trim()
+    if (heading || content) sections.push({ heading, body: content })
+    buf = []
+  }
+  for (const line of lines) {
+    const h = line.match(/^#{2,4}\s+(.+?)\s*$/)
+    const u = line.match(/^_Update\s+\d{4}-\d{2}-\d{2}:_$/)
+    if (h || u) {
+      flush()
+      heading = h ? h[1].trim() : line.trim()
+    } else {
+      buf.push(line)
+    }
+  }
+  flush()
+  return sections
+}
+
+/** A one-line first-line summary for a section body (the deterministic
+ *  baseline that hatch/groom refine) — mirror of rebuild-roost's deriveSummary,
+ *  but per-section. */
+function summarizeSection (body) {
+  const line = String(body || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0 && !l.startsWith('#'))
+  if (!line) return ''
+  return line.length > 120 ? line.slice(0, 117) + '...' : line
+}
+
+/** Writes a page's metadata and body into meta.db (pages + pages_fts + sections). */
 function upsertPage (slug, filePath, type, tags, summary, body, vaultRoot = DEFAULT_VAULT_ROOT) {
   const now = new Date().toISOString()
   const db = openDb(vaultRoot)
@@ -110,6 +150,12 @@ function upsertPage (slug, filePath, type, tags, summary, body, vaultRoot = DEFA
     })
     db.prepare('DELETE FROM pages_fts WHERE slug = ?').run(slug)
     db.prepare('INSERT INTO pages_fts (slug, body) VALUES (?, ?)').run(slug, body || '')
+    // The per-section index (kip-app#106): re-derived from the body on every
+    // write, so it never drifts from the file. First-line summaries only —
+    // hatch/groom can refine them via setSectionSummary later.
+    db.prepare('DELETE FROM sections WHERE slug = ?').run(slug)
+    const insertSection = db.prepare('INSERT INTO sections (slug, seq, heading, summary) VALUES (?, ?, ?, ?)')
+    splitSections(body).forEach((s, i) => insertSection.run(slug, i, s.heading, summarizeSection(s.body)))
   } finally {
     db.close()
   }
@@ -199,6 +245,16 @@ function getPage (slug, vaultRoot = DEFAULT_VAULT_ROOT) {
   try {
     const row = db.prepare('SELECT slug, path, type, tags, summary, created, updated FROM pages WHERE slug = ?').get(slug)
     return row ? { ...row, tags: JSON.parse(row.tags) } : null
+  } finally {
+    db.close()
+  }
+}
+
+/** One page's section index — [{heading, summary}] in body order (kip-app#106). */
+function getPageSections (slug, vaultRoot = DEFAULT_VAULT_ROOT) {
+  const db = openDb(vaultRoot)
+  try {
+    return db.prepare('SELECT heading, summary FROM sections WHERE slug = ? ORDER BY seq').all(slug)
   } finally {
     db.close()
   }
@@ -344,6 +400,9 @@ module.exports = {
   searchPages,
   findSimilarSlug,
   getPage,
+  getPageSections,
+  splitSections,
+  summarizeSection,
   appendLog,
   regenerateIndexMd,
   recentClucks,
