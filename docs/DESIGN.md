@@ -287,6 +287,10 @@ a **statement**.
      cited, any `[[link]]` that resolves to no page at all, and — from
      `.roost/lint.json` — whether a cited page is one Groom flagged
      (kip-app#116, kip-app#117). Display-only; retrieval is unchanged.
+   - Before answering, Peck follows each selected page's outbound `[[links]]`
+     one hop (bounded), so a question answered by a page *plus the page it
+     links to* is reachable even when the linked page shares no token with the
+     question — the multi-hop case deterministic FTS alone can't reach.
 4. `appendLog('peck', …)`. The CLI asks whether to file the answer as a
    `concept` page; the app offers a per-answer "file into the nest"
    control instead (kip-app#112), and logs the question turn either way. A

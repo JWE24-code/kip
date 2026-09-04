@@ -1173,6 +1173,22 @@ test('the per-section index reaches the answer prompt as a section TOC (kip-app#
   } finally { s.restore() }
 })
 
+test('multi-hop: an outbound [[link]] reaches a page the question never matched (kip-app#106)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'Sleep notes. My doctor is [[dr-alvarez]].' })
+  writePage(root, 'entities', 'dr-alvarez', { type: 'entity', body: 'Dr Alvarez recommends no screens before bed.' })
+  rebuildRoost(root)
+
+  const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep]], see [[dr-alvarez]].' })
+  try {
+    await askQuestion('what about sleep?', { vaultRoot: root, fileToNest: false })
+    const answerCall = s.calls.find((c) => /You are answering a question from a personal wiki/.test(c))
+    assert.match(answerCall, /### Page: dr-alvarez/, 'the linked page was pulled in by following [[dr-alvarez]]')
+  } finally { s.restore() }
+})
+
 test('fileAnswerToNest mirrors the summary into frontmatter so a rebuild keeps it (kip-app#115)', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
