@@ -18,7 +18,7 @@ This repo is the **retrieval layer** (`scripts/`, Node). The desktop app that
 bundles it — the Logseq fork — is at
 **[JWE24-code/kip-app](https://github.com/JWE24-code/kip-app)**; grab a build
 from its [Releases](https://github.com/JWE24-code/kip-app/releases). More at the
-**[kip website](https://jwe24-code.github.io/kip-site/)**.
+**[kip website](https://www.kip-ai.be/)**.
 
 > Early and rough. Built to gather feedback.
 
