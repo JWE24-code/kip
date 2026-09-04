@@ -212,6 +212,7 @@ function resolvePage ({ type, title, body, tags = [], vaultRoot = DEFAULT_VAULT_
     }
   }
   if (summary) frontmatter.summary = summary
+  if (type === 'person') frontmatter.name = title
   if (person) {
     for (const f of PERSON_FIELDS) if (person[f] != null && person[f] !== '') frontmatter[f] = person[f]
   }

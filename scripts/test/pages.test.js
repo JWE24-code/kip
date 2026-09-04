@@ -152,6 +152,7 @@ test('person pages: schema frontmatter, email dedupe, aliases indexed (kip-app#1
     assert.equal(result.path, 'nest/people/joeri-de-deckere.md')
     const fm = require('gray-matter')(fs.readFileSync(path.join(root, result.path), 'utf8')).data
     assert.equal(fm.type, 'person')
+    assert.equal(fm.name, 'Joeri De Deckere')
     assert.equal(fm.email, 'joeri@example.com')
     assert.equal(fm.role, 'Chief Digital Officer')
     assert.deepEqual(fm.aliases, ['CDO'])
