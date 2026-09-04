@@ -58,7 +58,13 @@ async function extractKeyTerms (question, vaultRoot, { history = [] } = {}) {
 
 function formatPagesForPrompt (pages) {
   return pages
-    .map((p) => `### Page: ${p.slug} (type: ${p.type || 'unknown'})\n${p.content}`)
+    .map((p) => {
+      // The index's one-line summary, when the caller carries it (kip-app#115):
+      // a "what this page is" anchor the model would otherwise infer from an
+      // append-grown body. ~25 tokens against bodies that run 5k-30k.
+      const summary = p.summary && String(p.summary).trim() ? `\nSummary: ${String(p.summary).trim()}` : ''
+      return `### Page: ${p.slug} (type: ${p.type || 'unknown'})${summary}\n${p.content}`
+    })
     .join('\n\n---\n\n')
 }
 

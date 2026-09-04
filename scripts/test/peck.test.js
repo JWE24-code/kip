@@ -7,7 +7,7 @@ const path = require('node:path')
 const { rebuildRoost } = require('../rebuild-roost')
 const { extractCitedSlugs, fileAnswerToNest, askQuestion, peckTurn, classifyPeckInput, stripSources, humanizeSlug } = require('../lib/peck')
 const { captureFacts, answerQuestionWithSkills } = require('../lib/prompts')
-const { getPage } = require('../lib/roost')
+const { getPage, setPageSummary } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
 const telemetry = require('../lib/telemetry')
 
@@ -1063,4 +1063,55 @@ test('groom findings at answer time (kip-app#116)', async (t) => {
       assert.equal(s.calls.length, baseCalls, 'reading lint.json adds no LLM round-trip')
     } finally { s.restore() }
   })
+})
+
+test('the summary layer reaches the answer prompt (kip-app#115)', async (t) => {
+  await t.test('each candidate page shows slug + type + summary + body, with no extra LLM call', async () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', tags: ['health'], body: 'Consistent bedtime; no screens after 22:00.' })
+    rebuildRoost(root)
+    setPageSummary('sleep-hygiene', 'How the user keeps their sleep on track', root)
+    saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+    const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep-hygiene]], keep a consistent bedtime.' })
+    try {
+      const before = s.calls.length
+      await askQuestion('what about sleep?', { vaultRoot: root, fileToNest: false })
+      const answerCall = s.calls.find((sys) => /You are answering a question from a personal wiki/.test(sys))
+      assert.match(answerCall, /### Page: sleep-hygiene \(type: concept\)\nSummary: How the user keeps their sleep on track\nConsistent bedtime/)
+      // key-terms + answer only — the summary is read from the index, not generated
+      assert.equal(s.calls.length - before, 2)
+    } finally { s.restore() }
+  })
+
+  await t.test('a page with no summary just shows slug + type + body', async () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'sailing', { type: 'concept', body: 'Started sailing this summer.' })
+    rebuildRoost(root)
+    setPageSummary('sailing', '', root)
+    saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+    const s = stubPeckFetch({ keyTerms: '{"terms":["sailing"]}', answer: 'You sail [[sailing]].' })
+    try {
+      await askQuestion('what about sailing?', { vaultRoot: root, fileToNest: false })
+      const answerCall = s.calls.find((sys) => /You are answering a question from a personal wiki/.test(sys))
+      assert.match(answerCall, /### Page: sailing \(type: concept\)\nStarted sailing/)
+      assert.doesNotMatch(answerCall, /Summary:/)
+    } finally { s.restore() }
+  })
+})
+
+test('fileAnswerToNest mirrors the summary into frontmatter so a rebuild keeps it (kip-app#115)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  const filed = await fileAnswerToNest('what is the atlas deadline?', 'The Atlas deadline is 2026-11-01.', [], root)
+  const raw = fs.readFileSync(path.join(root, filed.path), 'utf8')
+  assert.match(raw, /^summary: /m, 'summary written to frontmatter')
+
+  // a rebuild reads the frontmatter summary back instead of degrading to "**Q:** …"
+  rebuildRoost(root)
+  assert.equal(getPage(filed.slug, root).summary, 'what is the atlas deadline?')
 })

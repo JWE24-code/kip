@@ -116,6 +116,25 @@ function upsertPage (slug, filePath, type, tags, summary, body, vaultRoot = DEFA
 }
 
 /**
+ * Updates just the `summary` column for one page (kip-app#115). A deep groom
+ * computes a better summary than the one hatch wrote and, rather than only
+ * listing it in the report, persists it here. meta.db only — the markdown
+ * file is untouched, so groom stays read-only to nest/. Returns true if a row
+ * was updated. (A `rebuild-roost` re-derives summary from frontmatter, so a
+ * groom-improved summary that isn't also mirrored to frontmatter is lost on a
+ * full rebuild — an accepted limitation until groom writes frontmatter.)
+ */
+function setPageSummary (slug, summary, vaultRoot = DEFAULT_VAULT_ROOT) {
+  const db = openDb(vaultRoot)
+  try {
+    return db.prepare('UPDATE pages SET summary = ?, updated = ? WHERE slug = ?')
+      .run(summary || '', new Date().toISOString(), slug).changes > 0
+  } finally {
+    db.close()
+  }
+}
+
+/**
  * Full-text search over page bodies, with optional type/tag filters.
  * Returns candidates ranked by FTS5 relevance: { slug, path, summary, snippet }.
  */
@@ -321,6 +340,7 @@ function recentClucks (n = 5, vaultRoot = DEFAULT_VAULT_ROOT) {
 
 module.exports = {
   upsertPage,
+  setPageSummary,
   searchPages,
   findSimilarSlug,
   getPage,

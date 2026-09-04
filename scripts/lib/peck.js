@@ -119,7 +119,10 @@ function readPageBody (vaultRoot, candidate) {
     return null
   }
   const { data, content } = matter(raw)
-  return { slug: candidate.slug, path: candidate.path, type: data.type, content: content.trim() }
+  // Carry the index's one-line summary through to the answer prompt
+  // (kip-app#115) — it's already computed (hatch / a deep groom) and was
+  // being dropped here. `summary` is on the searchPages() candidate.
+  return { slug: candidate.slug, path: candidate.path, type: data.type, content: content.trim(), summary: candidate.summary || null }
 }
 
 /** map candidates -> page bodies, dropping any whose file is missing. */
@@ -273,8 +276,16 @@ async function fileAnswerToNest (question, answer, candidateSlugs, vaultRoot = D
     ? existing.summary
     : trimmed.length > 200 ? trimmed.slice(0, 197) + '...' : trimmed
 
-  const writtenRaw = fs.readFileSync(path.join(vaultRoot, result.path), 'utf8')
-  const { content: writtenBody } = matter(writtenRaw)
+  const filePath = path.join(vaultRoot, result.path)
+  const writtenRaw = fs.readFileSync(filePath, 'utf8')
+  const { data: writtenData, content: writtenBody } = matter(writtenRaw)
+  // Mirror the summary into the page's frontmatter too, so a later
+  // rebuild-roost reads it back instead of degrading it to "**Q:** …"
+  // (kip-app#115 — the summary-in-frontmatter half of immutability-2).
+  if (summary && writtenData.summary !== summary) {
+    writtenData.summary = summary
+    fs.writeFileSync(filePath, matter.stringify(writtenBody, writtenData))
+  }
   upsertPage(result.slug, result.path, result.type, result.tags, summary, writtenBody, vaultRoot)
   regenerateIndexMd(vaultRoot)
   if (log) {

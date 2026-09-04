@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { searchPages, findSimilarSlug, getPage, appendLog, recentClucks, regenerateIndexMd, slugify } = require('../lib/roost')
+const { searchPages, findSimilarSlug, getPage, appendLog, recentClucks, regenerateIndexMd, slugify, setPageSummary } = require('../lib/roost')
 
 function makeTempVault () {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-test-'))
@@ -143,4 +143,23 @@ test('rebuildRoost + searchPages + findSimilarSlug + clucks', async (t) => {
     const results = searchPages('routine', {}, root)
     assert.equal(results.length, 0, 'deleted page should no longer be searchable')
   })
+})
+
+test('setPageSummary updates only the summary column (kip-app#115)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  writePage(root, 'concepts', 'sleep', { type: 'concept', body: 'Notes on sleep. Averaging 6h.' })
+  rebuildRoost(root)
+  const before = getPage('sleep', root)
+
+  assert.equal(setPageSummary('sleep', 'Sleep tracking — average dropped to ~6h', root), true)
+  const after = getPage('sleep', root)
+  assert.equal(after.summary, 'Sleep tracking — average dropped to ~6h')
+  assert.equal(after.path, before.path, 'path untouched')
+  assert.equal(after.type, before.type, 'type untouched')
+  // body FTS is unchanged — still searchable by its text
+  assert.equal(searchPages('averaging', {}, root)[0].slug, 'sleep')
+
+  assert.equal(setPageSummary('no-such-page', 'x', root), false, 'no row -> false')
 })
