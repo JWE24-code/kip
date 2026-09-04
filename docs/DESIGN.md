@@ -37,12 +37,13 @@ The design constraints that shaped everything:
    after a bare rebuild the next Hatch re-proposes pages for every source
    instead of updating them. Nothing else is locked inside an app.
 2. **One bounded write zone for your notes.** The core workflows (Hatch,
-   Peck, Groom) write only under `nest/` and never touch `journals/`,
-   `pages/`, or a dropped source in place. Two narrower exceptions, both
-   outside your notes: a dropped source is *copied* into `eggs/` and an
-   Office/PDF file gets a converted `.md` sibling there; and **skills**
-   (§5.4) write their deliverables to `exports/` and their own config under
-   `.henhouse/`. Sandboxing skill filesystem access is on the deferred list.
+   Peck, Groom) write only under `nest/` and never edit a note in `pages/`
+   or a journal in `journals/`. Dropped source material lands in `pages/`
+   itself — the single drop-box (§2) — and an Office/PDF drop becomes a
+   converted `.md` sibling there (its original is parked outside the graph).
+   The one other exception is **skills** (§5.4), which write their
+   deliverables to `exports/` and their own config under `.henhouse/`.
+   Sandboxing skill filesystem access is on the deferred list.
 3. **Provider-agnostic.** Anthropic, OpenAI, DeepSeek, a local Ollama model,
    or any OpenAI-compatible endpoint — one config file, one code path.
 4. **Observable and reversible.** Every LLM call is timed and (optionally)
@@ -57,7 +58,7 @@ The design constraints that shaped everything:
 | Kip term | What it is | Logseq/generic equivalent |
 |---|---|---|
 | **coop** | the graph folder you open | vault / graph |
-| **eggs/** | raw source documents you drop in — never edited in place (Kip only adds a converted `.md` sibling for an Office/PDF drop) | an inbox / `raw/` |
+| **pages/** | the unified source folder — Logseq's own notes directory *and* the drop-box for source material; an Office/PDF drop becomes a converted `.md` sibling | notes + `raw/` inbox |
 | **nest/** | the LLM-maintained wiki | `wiki/` |
 | **clucks/** | append-only monthly activity log | `log/` |
 | **.roost/** | the SQLite index (`meta.db`) + per-run artifacts | `.index/` |
@@ -210,7 +211,7 @@ Measured (4-page source, DeepSeek): **1 call / ~14 s** vs the classic path's
 5 calls / ~33 s.
 
 **Provenance (kip-app#113):** every page a hatch writes carries
-`source:`/`source_hatched:` frontmatter naming the egg it came from, and each
+`source:`/`source_hatched:` frontmatter naming the source it came from, and each
 `type: source` page gets a `## Source` block (file, content hash, date) — so
 a nest page is always traceable back to its raw document. A one-line
 `summary:` is written to frontmatter too (so `rebuild-roost` keeps it instead
@@ -223,7 +224,7 @@ each re-sending the full source. Kept for a side-by-side comparison in the
 telemetry panel.
 
 **"Hatch sources" (batch, no review):** `hatch-all.js` runs the whole
-workflow over every new-or-changed file in `eggs/`, `journals/`, `pages/`,
+workflow over every new-or-changed file in `pages/`, `journals/`,
 and `whiteboards/`, in batches of 10, tracked by content hash in
 `hatched_sources` so a re-run only touches what changed. Skipped: near-empty
 stubs, and files over ~1 MB (a context-window backstop — chunking large
@@ -265,7 +266,7 @@ a **statement**.
    index summary above the body (§5.1), not just the raw text.
 3. Ask the LLM for an answer that cites every claim with `[[slug]]`
    wikilinks. A citation resolves to a `nest/` page, and that page carries
-   `source:` frontmatter pointing at the egg it was hatched from (§5.1) — so
+   `source:` frontmatter pointing at the source it was hatched from (§5.1) — so
    the chain answer → page → source document is walkable. If the coop has
    any **skill** configured (§5.4), the model can call one or more before
    answering.
@@ -456,7 +457,7 @@ scripts/<x>.js   (runs as plain Node — the app's own Electron binary,
 - **`ELECTRON_RUN_AS_NODE`** means a packaged Kip needs no system Node — it
   runs its own bundled Electron binary as the interpreter.
 - **`KIP_COOP_ROOT`** = whatever graph folder the user has open. The scripts
-  operate on *that* coop (`eggs/`, `nest/`, `.roost/`, `.henhouse/` inside
+  operate on *that* coop (`pages/`, `nest/`, `.roost/`, `.henhouse/` inside
   it), not a fixed location.
 - **Not** routed through Logseq's `electron.shell` command-runner (that's an
   allow-list for known tools like git/pandoc); the one
@@ -488,7 +489,7 @@ touching upstream attribution.
 
 - **"The Nest"** — the left-sidebar graph view, scoped to the `nest/`
   subtree (`build-global-graph` filters to pages whose path starts with
-  `nest/`). Journals/pages/eggs are still parsed into the DB but don't show
+  `nest/`). Journals and `pages/` are still parsed into the DB but don't show
   here.
 - **"Grains"** — a collapsible left-nav group holding New page / Journals /
   Whiteboards / Flashcards.
