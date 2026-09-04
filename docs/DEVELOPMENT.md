@@ -88,7 +88,7 @@ scripts/
 │   ├── connectors.js # the connector registry: each provider is a ProviderSpec
 │   │                # (fields + complete()); built-ins + bundled/graph-local
 │   │                # connectors (install from a .tgz, @kip-ai/* allowlist)
-│   ├── kip-connector.js # the managed-backend "kip" connector (AGPL, built-in)
+│   ├── kip-connector.js # the managed-backend "kip" connector (Apache-2.0, built-in)
 │   ├── preference-signals.js # the "is the kip connector active" gate — every
 │   │                # preference-signal surface (kip-app#73) checks it
 │   ├── feedback-poster.js # batches content-free preference signals and POSTs
@@ -405,7 +405,7 @@ only). Three sources:
 
 - **built-in** — `anthropic` / `openai` / `deepseek` / `local` / `other`, in
   `connectors.js`, plus **`kip`** — the managed-backend connector
-  (`lib/kip-connector.js`; AGPL-3.0, first-party). Their ids can never be
+  (`lib/kip-connector.js`; Apache-2.0, first-party). Their ids can never be
   shadowed. The settings UI hides `kip` from the dropdown until the user
   opts in (kip-app#58).
 - **bundled** — an allowlisted package shipped as an app dependency
@@ -908,11 +908,11 @@ toolchain here to verify against).
 
 Copyright © 2026 Joeri Weitmann.
 
-This retrieval layer (`scripts/`) is licensed under the **GNU Affero General
-Public License v3.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). The Kip
-desktop app is a fork of Logseq ([`logseq/og`](https://github.com/logseq/og) —
-the file-based, markdown-first line, not the newer `logseq/logseq` rewrite),
-AGPL-3.0, versioned separately at
+This retrieval layer (`scripts/`) is licensed under the **Apache License,
+Version 2.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) (in the repo
+root). The Kip desktop app is a fork of Logseq
+([`logseq/og`](https://github.com/logseq/og) — the file-based, markdown-first
+line, not the newer `logseq/logseq` rewrite), AGPL-3.0, versioned separately at
 [JWE24-code/kip-app](https://github.com/JWE24-code/kip-app). **Kip is not
 affiliated with or endorsed by Logseq.** The wiki content under `coop/` is
 personal data and not part of either repo.

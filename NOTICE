@@ -1,12 +1,22 @@
 Kip — retrieval layer
 Copyright (C) 2026 Joeri Weitmann
 
-Licensed under the GNU Affero General Public License version 3 (see LICENSE).
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
 
 This repository is the Node retrieval layer (scripts/) — Hatch / Peck / Groom /
 Reminders / Skills. The desktop app that bundles it is a fork of Logseq and
-lives at https://github.com/JWE24-code/kip-app (also AGPL-3.0). Kip is not
-affiliated with or endorsed by Logseq.
+lives at https://github.com/JWE24-code/kip-app (the app as a whole remains
+AGPL-3.0). Kip is not affiliated with or endorsed by Logseq.
 
 Runtime dependencies (npm) retain their own licenses; see package.json and the
 respective package metadata.

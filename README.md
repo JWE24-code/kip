@@ -62,8 +62,8 @@ Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md). Changes:
 
 Copyright © 2026 Joeri Weitmann.
 
-This retrieval layer (`scripts/`) is licensed under the **GNU Affero General
-Public License v3.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). The Kip
+This retrieval layer (`scripts/`) is licensed under the **Apache License,
+Version 2.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). The Kip
 desktop app is a fork of Logseq
 ([`logseq/og`](https://github.com/logseq/og) — the file-based, markdown-first
 line, not the newer `logseq/logseq` rewrite), AGPL-3.0, versioned separately at

@@ -424,7 +424,7 @@ function builtinSpecs ({ anthropicClient, fetchImpl } = {}) {
       complete: openAICompatibleComplete
     },
     // The managed Kip backend — a first-party connector that ships with the
-    // app (AGPL-3.0, ./kip-connector.js). The settings UI keeps it out of
+    // app (Apache-2.0, ./kip-connector.js). The settings UI keeps it out of
     // the provider dropdown until the user opts in (kip-app#58).
     require('./kip-connector')
   ]

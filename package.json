@@ -2,7 +2,7 @@
   "name": "kip",
   "version": "0.1.0",
   "private": true,
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "description": "Retrieval-layer scripts for maintaining the nest in ./coop",
   "scripts": {
     "rebuild-roost": "node scripts/rebuild-roost.js",

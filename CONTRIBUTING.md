@@ -29,4 +29,6 @@ If you do send a PR:
 ## License
 
 By contributing you agree your contribution is licensed under
-**AGPL-3.0**, the same as the rest of Kip.
+**Apache-2.0**, the same as the rest of this repository (the retrieval layer).
+The desktop app that bundles it, Kip, is a separate AGPL-3.0 project — see
+`NOTICE`.

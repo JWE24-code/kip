@@ -3,11 +3,13 @@
 // per-provider key. One `kip_` key; the backend picks the model per
 // workload, enforces the plan, and meters usage.
 //
-// This is an AGPL-3.0 ProviderSpec that ships with Kip (see kip-app#62 and
-// kip-backend/KIP-BACKEND.md §15-16 for why an AGPL client leaves the
-// backend proprietary). It's registered as a built-in in connectors.js but
-// hidden from the settings dropdown until the user opts in (kip-app#58) —
-// invite-only for now, gated by whether the backend issues you a key.
+// This is an Apache-2.0 ProviderSpec that ships inside the AGPL-3.0 Kip app
+// (see kip-backend/KIP-BACKEND.md §16 for why that leaves the backend
+// proprietary — the client reaches it only over the HTTP contract below, and
+// copyleft does not cross a network boundary). It's registered as a built-in
+// in connectors.js but hidden from the settings dropdown until the user opts
+// in (kip-app#58) — invite-only for now, gated by whether the backend issues
+// you a key.
 //
 // Contract (KIP-BACKEND.md §3):
 //   POST {baseUrl}/v1/chat/completions

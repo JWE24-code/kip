@@ -7,6 +7,15 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### Licensing
+
+- **Relicensed to Apache-2.0** — this retrieval layer (`scripts/`) is now under
+  the [Apache License 2.0](LICENSE) (was AGPL-3.0). The desktop app as a whole
+  remains AGPL-3.0; bundling this permissive layer into it is unchanged. See
+  [`NOTICE`](NOTICE).
+
 ## [0.5.2] — 2026-09-04
 
 ### The retrieval layer (`scripts/`)
