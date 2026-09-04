@@ -664,6 +664,25 @@ async function checkSummaryAccuracy (slug, summary, body, vaultRoot) {
   return v || { ok: true, suggested: '' }
 }
 
+/** Re-checks a page's per-section one-liners (kip-app#106): each section's
+ *  current summary against its body, returning only the stale ones. */
+async function checkSectionSummaries (slug, sections, vaultRoot) {
+  const headed = (sections || []).filter((s) => s && s.heading)
+  if (!headed.length) return { updates: [] }
+  const block = headed
+    .map((s) => `### ${s.heading}\nCurrent summary: ${s.summary || '(none)'}\n${s.body || ''}`)
+    .join('\n\n')
+  const system = 'You review the per-section summaries of a wiki page. Each section is shown with its ' +
+    'heading, its current one-line summary, and its body. Respond with a JSON object of exactly this ' +
+    'shape: {"updates": [{"heading": "exact heading text", "summary": "a better one-line summary"}, ...]}. ' +
+    'Include ONLY sections whose current summary is stale — wrong, or missing the main point of that ' +
+    'section now — not for minor wording. Omit sections whose summary is fine.'
+  const v = await jsonCall(
+    { system, prompt: `Page: ${slug}\n\n${block}`, maxTokens: 1024, label: 'groom:section-summaries', vaultRoot },
+    (p) => (Array.isArray(p.updates) ? { updates: p.updates } : undefined))
+  return v || { updates: [] }
+}
+
 /** From deterministic "mentioned but not linked" candidates, the subset that are genuine references worth linking. */
 async function confirmMissingLinks (slug, body, candidateSlugs, vaultRoot) {
   if (!candidateSlugs.length) return []
@@ -749,6 +768,7 @@ module.exports = {
   describeWhiteboard,
   reviewPageCoherence,
   checkSummaryAccuracy,
+  checkSectionSummaries,
   confirmMissingLinks,
   checkPagesSameSubject,
   captureFacts

@@ -212,6 +212,7 @@ test('runGroom --deep runs the extra checks via injected stubs and writeGroomRep
     checkSummaryAccuracy: async (slug) => slug === 'sleep'
       ? { ok: false, suggested: 'Sleep tracking; average dropped from 8h to 6h over summer 2026' }
       : { ok: true, suggested: '' },
+    checkSectionSummaries: async () => ({ updates: [] }),
     confirmMissingLinks: async (_slug, _body, candidates) => candidates,
     checkPagesSameSubject: async () => ({ same: true, reason: 'both describe the same practice/physician' })
   }
