@@ -30,15 +30,25 @@ into one clearly-bounded zone and never touches your own notes.
 The design constraints that shaped everything:
 
 1. **Files stay the source of truth.** Every LLM-written page is a plain
-   Markdown file with YAML frontmatter. Delete the database and rebuild it
-   from the files. Nothing is locked inside an app.
-2. **One bounded write zone.** The LLM writes only under `nest/`. Your
-   journals, your pages, your dropped sources — read-only to it, forever.
+   Markdown file with YAML frontmatter. Delete `.roost/` and rebuild it from
+   the files (`rebuild-roost`) — it's a derived index (the page table +
+   full-text search), machine-local, and not synced. The one thing a rebuild
+   can't recover is `hatched_sources`, the per-file "already hatched" memory:
+   after a bare rebuild the next Hatch re-proposes pages for every source
+   instead of updating them. Nothing else is locked inside an app.
+2. **One bounded write zone for your notes.** The core workflows (Hatch,
+   Peck, Groom) write only under `nest/` and never touch `journals/`,
+   `pages/`, or a dropped source in place. Two narrower exceptions, both
+   outside your notes: a dropped source is *copied* into `eggs/` and an
+   Office/PDF file gets a converted `.md` sibling there; and **skills**
+   (§5.4) write their deliverables to `exports/` and their own config under
+   `.henhouse/`. Sandboxing skill filesystem access is on the deferred list.
 3. **Provider-agnostic.** Anthropic, OpenAI, DeepSeek, a local Ollama model,
    or any OpenAI-compatible endpoint — one config file, one code path.
 4. **Observable and reversible.** Every LLM call is timed and (optionally)
-   traced. Every workflow logs what it did. Groom *reports*, it never
-   auto-fixes.
+   traced. Every workflow logs what it did. Groom *reports* — it never edits
+   or deletes a `nest/` page; the most it changes is the derived index (a
+   drifted one-line summary, refreshed in `meta.db` — §5.3).
 
 ---
 
@@ -47,7 +57,7 @@ The design constraints that shaped everything:
 | Kip term | What it is | Logseq/generic equivalent |
 |---|---|---|
 | **coop** | the graph folder you open | vault / graph |
-| **eggs/** | raw source documents you drop in, immutable | an inbox / `raw/` |
+| **eggs/** | raw source documents you drop in — never edited in place (Kip only adds a converted `.md` sibling for an Office/PDF drop) | an inbox / `raw/` |
 | **nest/** | the LLM-maintained wiki | `wiki/` |
 | **clucks/** | append-only monthly activity log | `log/` |
 | **.roost/** | the SQLite index (`meta.db`) + per-run artifacts | `.index/` |
@@ -199,6 +209,14 @@ update appends it under a dated `_Update_` section. One `appendLog('hatch',
 Measured (4-page source, DeepSeek): **1 call / ~14 s** vs the classic path's
 5 calls / ~33 s.
 
+**Provenance (kip-app#113):** every page a hatch writes carries
+`source:`/`source_hatched:` frontmatter naming the egg it came from, and each
+`type: source` page gets a `## Source` block (file, content hash, date) — so
+a nest page is always traceable back to its raw document. A one-line
+`summary:` is written to frontmatter too (so `rebuild-roost` keeps it instead
+of re-deriving a first paragraph) and into `meta.db`, where Peck reads it
+above each page body and a deep Groom refreshes it if it drifts (§5.3).
+
 **Classic (`--classic` / the "Classic mode" checkbox):** the older path — one
 `proposeCandidatePages` call, then one `generatePageContent` call *per page*,
 each re-sending the full source. Kept for a side-by-side comparison in the
@@ -239,16 +257,26 @@ a **statement**.
 
 **A question:**
 
-1. Full-text search `meta.db` for the question, plus a second pass on key
-   terms an LLM extracts from it — unioned for recall.
-2. Read only the matched pages.
+1. Full-text search `meta.db` for the question. When that direct search
+   finds only a few hits, a second pass runs on key terms an LLM extracts
+   from the question, unioned in for recall; when the direct search already
+   found enough, the second pass (and its LLM call) is skipped.
+2. Read only the matched pages — each passed to the model with its one-line
+   index summary above the body (§5.1), not just the raw text.
 3. Ask the LLM for an answer that cites every claim with `[[slug]]`
-   wikilinks, so the human can verify provenance back to the source. If the
-   coop has any **skill** configured (§5.4), the model can call one or more
-   before answering.
+   wikilinks. A citation resolves to a `nest/` page, and that page carries
+   `source:` frontmatter pointing at the egg it was hatched from (§5.1) — so
+   the chain answer → page → source document is walkable. If the coop has
+   any **skill** configured (§5.4), the model can call one or more before
+   answering.
+   - The turn also reports back which retrieved pages the answer actually
+     cited, any `[[link]]` that resolves to no page at all, and — from
+     `.roost/lint.json` — whether a cited page is one Groom flagged
+     (kip-app#116, kip-app#117). Display-only; retrieval is unchanged.
 4. `appendLog('peck', …)`. The CLI asks whether to file the answer as a
    `concept` page; the app offers a per-answer "file into the nest"
-   control instead (kip-app#112), and logs the question turn either way.
+   control instead (kip-app#112), and logs the question turn either way. A
+   filed answer keeps a `## Sources` list of the pages it drew on.
 
 **A statement** ("the CDO of CompanyX is John Doe") — a fact to remember:
 
@@ -265,14 +293,16 @@ The in-app Peck panel renders `[[slug]]` links as real clickable page links,
 and shows a "✓ Learned — updated [[companyx]], created [[john-doe]]" note
 after a capture.
 
-### 5.3 Groom — health checks (read-only, always)
+### 5.3 Groom — health checks (reports only; never edits a `nest/` page)
 
-**Quick** (`npm run groom`) — fast, `meta.db` only + one light contradiction
+**Quick** (`npm run groom`) — fast: deterministic structural checks over
+`meta.db` *and* the `nest/` / source filesystem, plus one light contradiction
 pass:
 
 - **orphan pages** (no inbound wikilink), **filesystem drift** (`meta.db` ↔
-  disk mismatch → `rebuild-roost`), **near-duplicate slugs**, **possible
-  contradictions** (pages batched ≤6 by type/tag, one LLM check each).
+  disk mismatch → `rebuild-roost`), **near-duplicate slugs**, **sources
+  changed since hatch**, **possible contradictions** (pages batched ≤6 by
+  type/tag, one LLM check each).
 
 **Deep** (`groom.js --deep` / the "Deep groom (weekly)" button) — the planned
 weekly session; many LLM calls, minutes:
@@ -280,8 +310,10 @@ weekly session; many LLM calls, minutes:
 - **page coherence** — an LLM read of each page with multiple `_Update_`
   sections: internal contradictions, redundancy, superseded claims. (This is
   where the reconciliation Hatch defers actually gets looked at.)
-- **summary drift** — is the one-line `meta.db` summary still accurate for
-  the grown body? Suggests a replacement.
+- **summary drift** — is the one-line summary still accurate for the grown
+  body? A better one is written straight back to `meta.db` `pages.summary`
+  (kip-app#115) — the derived index, not the markdown file — and the report
+  notes it as refreshed.
 - **missing links** — prose that names another page without linking it
   (deterministic scan → LLM confirm, to skip incidental word matches).
 - **merge candidates** — same-type pages the slug check missed that share
@@ -291,8 +323,10 @@ weekly session; many LLM calls, minutes:
   against the source pages that cite it.
 
 Output: `<coop>/.roost/groom-report.md` — a dated `- [ ]` checklist the human
-works through — plus telemetry. Every item is a suggestion; Groom writes no
-page.
+works through — plus telemetry, and `<coop>/.roost/lint.json` (slug →
+findings) which Peck reads at answer time to flag a cited page that Groom
+found orphaned / contradicted / drifted (kip-app#116). Every checklist item
+is a suggestion; Groom never edits or deletes a `nest/` page.
 
 ### 5.4 Skills — Peck's tool loop
 
