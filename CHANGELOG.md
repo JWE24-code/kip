@@ -40,8 +40,10 @@ The retrieval layer (this repo) and the desktop app
 - **A per-section index below the page level** (kip-app#106) — every page's
   body is split into sections on its `##`/`###` headings and `_Update_` blocks
   (a new `sections` table in `meta.db`, re-derived on every write and rebuild).
-  Each section carries a one-line first-line summary; the selection round and
-  the answer prompt both render a section table of contents, so the model can
+  Each section carries a one-line summary — a deterministic first-line extract
+  by default, overwritten by the hatch model's own per-section one-liners
+  (the combined draft now emits `sections`). The selection round and the
+  answer prompt both render a section table of contents, so the model can
   navigate a long append-grown page at section granularity instead of reading
   it blind.
 

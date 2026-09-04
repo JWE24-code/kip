@@ -9,7 +9,7 @@ const matter = require('gray-matter')
 
 const {
   findSimilarSlug, slugify, getPage, upsertPage, regenerateIndexMd, appendLog,
-  hashContent, hatchedSourceHashes, recordHatchedSource, searchPages, SIMILARITY_THRESHOLD
+  hashContent, hatchedSourceHashes, recordHatchedSource, searchPages, setSectionSummaries, SIMILARITY_THRESHOLD
 } = require('./roost')
 const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, hatchedSourcePaths } = require('./pages')
 const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, describeWhiteboard } = require('./prompts')
@@ -250,6 +250,15 @@ async function commitHatchPlan ({ plan, sourceTitle, sourceContent, sourceRelPat
     const writtenRaw = fs.readFileSync(path.join(vaultRoot, result.path), 'utf8')
     const { content: writtenBody } = matter(writtenRaw)
     upsertPage(result.slug, result.path, result.type, result.tags, candidate.summary || '', writtenBody, vaultRoot)
+
+    // LLM section summaries (kip-app#106): the combined draft may have also
+    // proposed one-liners per "##"/"###" section. Match them onto the
+    // deterministic section rows; unmatched headings keep their first-line
+    // summary. Best-effort — a model that omits or mangles sections degrades
+    // gracefully.
+    if (Array.isArray(candidate.sections) && candidate.sections.length) {
+      setSectionSummaries(result.slug, candidate.sections, vaultRoot)
+    }
 
     results.push(result)
   }

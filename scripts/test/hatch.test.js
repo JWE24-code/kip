@@ -245,6 +245,30 @@ test('commitHatchPlan: regenIndex:false skips the index.md rewrite (batch caller
   assert.equal(fs.existsSync(indexPath), true, 'index.md is written by default')
 })
 
+test('commitHatchPlan applies the combined draft\'s section one-liners to the section index', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+
+  const plan = [{
+    slug: 'sleep',
+    title: 'sleep',
+    type: 'concept',
+    action: 'create',
+    tags: [],
+    summary: 'Sleep habits',
+    body: 'Intro line.\n\n## Hygiene\nKeep a consistent bedtime.\n\n## Screens\nNo screens late.',
+    sections: [{ heading: 'Hygiene', summary: 'The user keeps a fixed bedtime and wake time.' }]
+  }]
+
+  await commitHatchPlan({ plan, sourceTitle: 'Sleep Notes', sourceContent: 'notes', sourceRelPath: 'pages/sleep.md' }, root)
+
+  const { getPageSections } = require('../lib/roost')
+  const sections = getPageSections('sleep', root)
+  assert.equal(sections.find((s) => s.heading === 'Hygiene').summary, 'The user keeps a fixed bedtime and wake time.')
+  assert.equal(sections.find((s) => s.heading === 'Screens').summary, 'No screens late.', 'unmatched heading keeps its first-line summary')
+})
+
 test('collectPendingSources buckets a whiteboards/*.edn as kind "whiteboard"', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
