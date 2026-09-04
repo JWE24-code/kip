@@ -1115,3 +1115,56 @@ test('fileAnswerToNest mirrors the summary into frontmatter so a rebuild keeps i
   rebuildRoost(root)
   assert.equal(getPage(filed.slug, root).summary, 'what is the atlas deadline?')
 })
+
+test('answer evidence: dead citations and the ## Sources section (kip-app#117)', async (t) => {
+  const { deadCitationSlugs } = require('../lib/peck')
+
+  await t.test('deadCitationSlugs: [[links]] that resolve to no page, excluding candidates and journal dates', () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', body: 'notes' })
+    rebuildRoost(root)
+
+    const answer = 'Per [[sleep-hygiene]] and [[ghost-page]], and on [[2026-08-26]] you noted [[another-ghost]].'
+    assert.deepEqual(deadCitationSlugs(answer, ['sleep-hygiene'], root).sort(), ['another-ghost', 'ghost-page'])
+    // a cited page that IS a candidate is never "dead"
+    assert.deepEqual(deadCitationSlugs('see [[sleep-hygiene]]', ['sleep-hygiene'], root), [])
+  })
+
+  await t.test('askQuestion returns deadCitations for a hallucinated link', async () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    writePage(root, 'concepts', 'sleep-hygiene', { type: 'concept', tags: ['health'], body: 'Consistent bedtime.' })
+    rebuildRoost(root)
+    saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+    const s = stubPeckFetch({ keyTerms: '{"terms":["sleep"]}', answer: 'Per [[sleep-hygiene]] and [[sleep-lab-results]], sleep well.' })
+    try {
+      const r = await askQuestion('what about sleep?', { vaultRoot: root, fileToNest: false })
+      assert.deepEqual(r.citedSlugs, ['sleep-hygiene'])
+      assert.deepEqual(r.deadCitations, ['sleep-lab-results'])
+    } finally { s.restore() }
+  })
+
+  await t.test('fileAnswerToNest appends a ## Sources section for retrieved-but-uncited pages', async () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+    const filed = await fileAnswerToNest(
+      'what is the plan?',
+      'The plan is X, per [[plan-doc]].',
+      ['plan-doc', 'meeting-notes', 'old-draft'],
+      root)
+    const raw = fs.readFileSync(path.join(root, filed.path), 'utf8')
+    assert.match(raw, /## Sources\n\nAlso retrieved, not cited: \[\[meeting-notes\]\], \[\[old-draft\]\]/)
+    assert.doesNotMatch(raw, /Also retrieved.*plan-doc/, 'the cited page is not repeated in Sources')
+  })
+
+  await t.test('no ## Sources section when every candidate was cited', async () => {
+    const root = makeTempVault()
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    const filed = await fileAnswerToNest('q?', 'A, per [[only-page]].', ['only-page'], root)
+    const raw = fs.readFileSync(path.join(root, filed.path), 'utf8')
+    assert.doesNotMatch(raw, /## Sources/)
+  })
+})
