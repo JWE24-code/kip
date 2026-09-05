@@ -56,3 +56,6 @@ coop/.roost/reminders-trace.jsonl
 
 # Generated — rebuilt by scripts/rebuild-roost.js.
 coop/nest/index.md
+
+# Local agent instructions — never commit
+AGENTS.md
