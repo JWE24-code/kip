@@ -7,7 +7,7 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
-## [0.6.0] — 2026-09-05
+## [0.5.3] — 2026-09-05
 
 ### The retrieval layer (`scripts/`)
 
