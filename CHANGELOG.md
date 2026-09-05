@@ -7,7 +7,15 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
-## [Unreleased]
+## [0.6.0] — 2026-09-05
+
+### The retrieval layer (`scripts/`)
+
+- **`log-interaction.js`** (kip-app#127) — log an interaction (email/call/
+  meeting) against a `person` page from structured fields, resolving the person
+  by canonical email (creating the page when unknown) and appending to its
+  `## Interactions` section. Backs the local `/interactions` capture endpoint
+  and the Gmail helper extension.
 
 ### Licensing
 
