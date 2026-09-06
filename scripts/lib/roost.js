@@ -167,6 +167,24 @@ function upsertPage (slug, filePath, type, tags, summary, body, vaultRoot = DEFA
 }
 
 /**
+ * Removes a page from meta.db entirely — its `pages`, `pages_fts` and
+ * `sections` rows (the same three tables `upsertPage` writes, and that
+ * `rebuild-roost` prunes for a vanished file). The markdown file itself is
+ * the caller's responsibility. Returns true when a `pages` row was deleted.
+ */
+function removePage (slug, vaultRoot = DEFAULT_VAULT_ROOT) {
+  const db = openDb(vaultRoot)
+  try {
+    const info = db.prepare('DELETE FROM pages WHERE slug = ?').run(slug)
+    db.prepare('DELETE FROM pages_fts WHERE slug = ?').run(slug)
+    db.prepare('DELETE FROM sections WHERE slug = ?').run(slug)
+    return info.changes > 0
+  } finally {
+    db.close()
+  }
+}
+
+/**
  * Updates just the `summary` column for one page (kip-app#115). A deep groom
  * computes a better summary than the one hatch wrote and, rather than only
  * listing it in the report, persists it here. meta.db only — the markdown
@@ -437,6 +455,7 @@ function recentClucks (n = 5, vaultRoot = DEFAULT_VAULT_ROOT) {
 
 module.exports = {
   upsertPage,
+  removePage,
   setPageSummary,
   searchPages,
   findSimilarSlug,
