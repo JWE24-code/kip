@@ -7,6 +7,16 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **`delete-person.js`** (kip-app#126) — delete a `person` page from the nest:
+  removes `nest/people/<slug>.md` and its `meta.db` rows (`pages` +
+  `pages_fts` + `sections`) via the new `roost.removePage`, then regenerates
+  `nest/index.md`. `[[slug]]` mentions elsewhere are left in place. Backs the
+  People panel's per-row delete.
+
 ## [0.5.3] — 2026-09-05
 
 ### The retrieval layer (`scripts/`)

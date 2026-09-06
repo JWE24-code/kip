@@ -4,8 +4,10 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
+const { execFileSync } = require('node:child_process')
+
 const { rebuildRoost } = require('../rebuild-roost')
-const { searchPages, findSimilarSlug, getPage, appendLog, recentClucks, regenerateIndexMd, slugify, setPageSummary } = require('../lib/roost')
+const { searchPages, findSimilarSlug, getPage, appendLog, recentClucks, regenerateIndexMd, slugify, setPageSummary, removePage } = require('../lib/roost')
 
 function makeTempVault () {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-test-'))
@@ -162,6 +164,61 @@ test('setPageSummary updates only the summary column (kip-app#115)', async (t) =
   assert.equal(searchPages('averaging', {}, root)[0].slug, 'sleep')
 
   assert.equal(setPageSummary('no-such-page', 'x', root), false, 'no row -> false')
+})
+
+test('removePage drops a page from pages + pages_fts + sections (kip-app#126)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  writePage(root, 'concepts', 'keep-me', { type: 'concept', body: 'Notes worth keeping.' })
+  writePage(root, 'concepts', 'drop-me', { type: 'concept', body: 'Ephemeral notes about widgets.\n\n## A section\n\nmore.' })
+  rebuildRoost(root)
+  assert.ok(getPage('drop-me', root))
+  assert.equal(searchPages('widgets', {}, root)[0].slug, 'drop-me')
+
+  assert.equal(removePage('drop-me', root), true, 'a deleted row -> true')
+  assert.equal(getPage('drop-me', root), null, 'pages row gone')
+  assert.equal(searchPages('widgets', {}, root).length, 0, 'pages_fts row gone')
+  assert.ok(getPage('keep-me', root), 'other pages untouched')
+
+  assert.equal(removePage('never-existed', root), false, 'nothing to delete -> false')
+})
+
+test('delete-person.js removes the file + de-indexes, leaving mentions (kip-app#126)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'nest', 'people'), { recursive: true })
+
+  const personMd = [
+    '---', 'type: person', 'name: Jane Doe', 'email: jane@example.com',
+    'created: 2026-01-01', 'updated: 2026-01-01', '---', '',
+    'CFO at Acme. Met at the summit.', ''
+  ].join('\n')
+  fs.writeFileSync(path.join(root, 'nest', 'people', 'jane-doe.md'), personMd)
+  writePage(root, 'concepts', 'q3-planning', { type: 'concept', body: 'Owned by [[jane-doe]].' })
+  rebuildRoost(root)
+  assert.ok(getPage('jane-doe', root))
+
+  const run = (args) => JSON.parse(execFileSync(
+    process.execPath, [path.join(__dirname, '..', 'delete-person.js'), ...args],
+    { env: { ...process.env, KIP_COOP_ROOT: root }, encoding: 'utf8' }
+  ))
+
+  await t.test('by --email', () => {
+    const out = run(['--email', 'jane@example.com'])
+    assert.deepEqual(out, { deleted: true, slug: 'jane-doe', path: 'nest/people/jane-doe.md', deindexed: true })
+    assert.equal(fs.existsSync(path.join(root, 'nest', 'people', 'jane-doe.md')), false, 'file removed')
+    assert.equal(getPage('jane-doe', root), null, 'de-indexed')
+  })
+
+  await t.test('the [[jane-doe]] mention is left in place', () => {
+    const body = fs.readFileSync(path.join(root, 'nest', 'concepts', 'q3-planning.md'), 'utf8')
+    assert.match(body, /\[\[jane-doe\]\]/)
+  })
+
+  await t.test('a missing person exits non-zero', () => {
+    assert.throws(() => run(['--slug', 'nobody-here']), /No person page/)
+  })
 })
 
 test('the per-section index — splitSections + summarizeSection (kip-app#106)', async (t) => {
