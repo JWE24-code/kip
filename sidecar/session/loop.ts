@@ -455,7 +455,7 @@ export class TurnLoop {
     }
   }
 
-  private trace(active: ActiveTurn, record: { type: string; [key: string]: unknown }): void {
+  private trace(active: ActiveTurn, record: TurnEvent | { type: string; [key: string]: unknown }): void {
     if (!this.recorder) return
     this.recorder.record({
       ts: this.now(),
