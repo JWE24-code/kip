@@ -9,7 +9,8 @@ when_to_use: >
   "mute / silence the … reminder" (or "no sound"). NOT for past events or general facts.
 entry: run.js
 network: false
-timeout: 30
+hostcalls: [internal_action]
+limits: { wall: 30, mem: 128, output: "64kb" }
 parameters:
   - { name: action, type: string, required: true, enum: [create, list, cancel, mute, unmute], description: "What to do." }
   - { name: text, type: string, required: false, description: "action=create: the whole request in the user's words ('meeting with Acme friday at 15h, remind me a day before'). Preferred — the skill parses the date, title, lead time, and whether it should be silent." }

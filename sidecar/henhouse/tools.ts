@@ -14,7 +14,7 @@
 import type { Tool, ToolContext } from '../session/loop.ts'
 import type { SkillExecutor, SkillRunRequest } from './executor.ts'
 import type { SkillManifest, SkillParameter } from './manifest.ts'
-import type { LlmCompleteFn } from './hostcalls.ts'
+import type { InternalActionFn, LlmCompleteFn, WebSearchFn } from './hostcalls.ts'
 import type { SkillSnapshot } from './mounts.ts'
 
 export interface SkillToolDeps {
@@ -24,6 +24,8 @@ export interface SkillToolDeps {
   /** Retrieved notes materialized read-only under the input mount. */
   snapshot?: SkillSnapshot
   llm?: LlmCompleteFn
+  webSearch?: WebSearchFn
+  internalActions?: InternalActionFn
   fetchImpl?: typeof fetch
 }
 
@@ -80,6 +82,8 @@ export function createSkillTool (deps: SkillToolDeps): Tool {
         vaultRoot: deps.vaultRoot,
         ...(deps.snapshot ? { snapshot: deps.snapshot } : {}),
         ...(deps.llm ? { llm: deps.llm } : {}),
+        ...(deps.webSearch ? { webSearch: deps.webSearch } : {}),
+        ...(deps.internalActions ? { internalActions: deps.internalActions } : {}),
         ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
         signal: ctx.signal
       }
