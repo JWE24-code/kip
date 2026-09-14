@@ -12,6 +12,14 @@ import { z } from 'zod'
 
 export const PROTOCOL_VERSION = 1
 
+// Optional protocol features this build actually honours, advertised in `ready`
+// so a client can gate UI on real capability instead of inferring it from
+// `protocolVersion` alone. Clients must ignore entries they don't recognise,
+// which keeps the list append-only: `cancel` became real when the TurnLoop
+// replaced the P1 stub (kip#94).
+export const CAPABILITIES = ['cancel'] as const
+export type Capability = (typeof CAPABILITIES)[number]
+
 export const ErrorCode = {
   BAD_REQUEST: 'BAD_REQUEST',
   UNAUTHORIZED: 'UNAUTHORIZED',
@@ -74,7 +82,8 @@ export const payloadSchemas = {
   ready: z.object({
     protocolVersion: z.number().int(),
     sessionId: z.string().min(1),
-    pid: z.number().int()
+    pid: z.number().int(),
+    capabilities: z.array(z.string())
   }),
 
   'chat.send': z.object({

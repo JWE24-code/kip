@@ -22,6 +22,9 @@ export interface MessagePredicate {
 export interface SidecarClient {
   socket: WebSocket
   sessionId: string
+  /** The optional protocol features the server advertised in `ready` (kip#96).
+   *  Empty when the server predates the field, so a caller can gate UI on it. */
+  capabilities: string[]
   events: Envelope[]
   send: (type: string, payload?: unknown) => string
   next: (type: string, predicate?: MessagePredicate, timeoutMs?: number) => Promise<Envelope>
@@ -100,6 +103,7 @@ export async function connect (options: ConnectOptions): Promise<SidecarClient> 
   const client: SidecarClient = {
     socket,
     sessionId: '',
+    capabilities: [],
     events,
     send,
     next,
@@ -134,5 +138,6 @@ export async function connect (options: ConnectOptions): Promise<SidecarClient> 
     timer = setTimeout(() => settle(() => reject(new Error('timed out during hello/ready handshake'))), timeoutMs)
   })
   client.sessionId = (handshake.payload as { sessionId: string }).sessionId
+  client.capabilities = (handshake.payload as { capabilities?: string[] }).capabilities ?? []
   return client
 }

@@ -132,6 +132,25 @@ test('a wrong protocol version is rejected with PROTOCOL_VERSION_MISMATCH', asyn
   }
 })
 
+test('a fresh client reads cancel from the ready capabilities and can gate on it', async () => {
+  const token = generateToken()
+  const server = await startSidecarServer({ token, complete: scriptedCompleter([{ text: 'x' }]) })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    const ready = client.events.find((event) => event.type === 'ready')
+    const advertised = (ready?.payload as { capabilities?: string[] }).capabilities ?? []
+    assert.ok(advertised.includes('cancel'), `ready advertised ${JSON.stringify(advertised)}`)
+    assert.deepEqual(client.capabilities, advertised)
+
+    const cancelSupported = client.capabilities.includes('cancel')
+    assert.equal(cancelSupported, true)
+    assert.equal(client.capabilities.includes('teleport'), false)
+  } finally {
+    client.close()
+    await server.close()
+  }
+})
+
 test('ping is answered with pong and a stray cancel is TURN_NOT_FOUND', async () => {
   const token = generateToken()
   const server = await startSidecarServer({ token, complete: scriptedCompleter([{ text: 'x' }]) })
