@@ -359,6 +359,21 @@ test('docx skill: refuses a template path outside the coop', async (t) => {
   assert.match(res.error, /outside the coop/)
 })
 
+test('docx skill: refuses an absolute template path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  // A real file outside the coop — the pre-#105 absolute-path bypass read it.
+  const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'docx-outside-')), 'secret.docx')
+  fs.writeFileSync(outside, 'LIVE VAULT SECRET')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'docx')
+  const res = await runSkill(skill, { template: outside, data: {} }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+  assert.ok(!fs.existsSync(path.join(root, 'exports', 'secret-filled.docx')), 'nothing was written')
+})
+
 test('pptx skill: builds a .pptx from a slide outline', async (t) => {
   const root = makeTempCoop()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))

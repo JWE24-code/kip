@@ -3,6 +3,13 @@
 //   content mode  (input.content)  — build from scratch with the `docx` package
 //   template mode (input.template) — fill a .docx's {tags} with docxtemplater
 //
+// A sandboxed skill holds no vault access (kip#105): the template's bytes come
+// from the parent over the `read_vault_file` hostcall, which resolves the path
+// against the real vault root and refuses anything that escapes it. The
+// direct-`fs` fallback below is only for the legacy `scripts/lib/skills.js` CLI
+// runner, which predates the sandbox and provides no `globalThis.kip`; it
+// enforces the same containment rule.
+//
 // Deps (pure JS): docx, docxtemplater, pizzip. Required lazily so a broken
 // install of one doesn't sink the other mode.
 const fs = require('node:fs')
@@ -19,14 +26,33 @@ const exportsDir = process.env.KIP_EXPORTS_DIR
   ? path.resolve(process.env.KIP_EXPORTS_DIR)
   : path.join(coop, 'exports')
 
-// A coop-relative path must stay inside the coop; an absolute path is taken as-is.
+// Legacy runner only: a path — relative *or* absolute — must resolve inside the
+// coop. An absolute path that happens to point elsewhere is refused, not read.
 function resolveInCoop (rel, label) {
   const abs = path.resolve(coop, rel)
-  if (!path.isAbsolute(rel) && !(abs === coop || abs.startsWith(coop + path.sep))) {
+  if (abs !== coop && !abs.startsWith(coop + path.sep)) {
     fail(`${label} "${rel}" resolves outside the coop — use a path inside it.`)
   }
   if (!fs.existsSync(abs)) fail(`${label} not found: ${rel}`)
   return abs
+}
+
+// Sandboxed: ask the parent, which owns the vault and the containment check.
+async function viaHostcall () {
+  const result = await globalThis.kip.hostcall('read_vault_file', { path: String(input.template) })
+  if (!result || typeof result.bytes !== 'string') fail(`could not read "${input.template}" from the vault.`)
+  return Buffer.from(result.bytes, 'base64')
+}
+
+// Legacy `scripts/lib/skills.js` runner: no bridge, so read it directly — with
+// the same containment rule the parent applies.
+function viaLegacy () {
+  return fs.readFileSync(resolveInCoop(input.template, 'template'))
+}
+
+async function readTemplateBytes () {
+  const hasBridge = globalThis.kip && typeof globalThis.kip.hostcall === 'function'
+  return hasBridge ? viaHostcall() : viaLegacy()
 }
 
 function relToCoop (p) {
@@ -43,12 +69,12 @@ function outPath (hint) {
 }
 
 async function fromTemplate () {
-  const tpl = resolveInCoop(input.template, 'template')
+  const tplBytes = await readTemplateBytes()
   const PizZip = require('pizzip')
   const Docxtemplater = require('docxtemplater')
   let doc
   try {
-    const zip = new PizZip(fs.readFileSync(tpl))
+    const zip = new PizZip(tplBytes)
     doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true })
     doc.render(input.data && typeof input.data === 'object' ? input.data : {})
   } catch (err) {
@@ -58,7 +84,8 @@ async function fromTemplate () {
     fail(`could not fill "${input.template}": ${errs}`)
   }
   const buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' })
-  const out = outPath(path.basename(tpl, path.extname(tpl)) + '-filled')
+  const base = path.basename(String(input.template), path.extname(String(input.template)))
+  const out = outPath(base + '-filled')
   fs.writeFileSync(out, buf)
   console.log(`Filled ${input.template} → ${relToCoop(out)} (${Math.round(buf.length / 1024)} KB).`)
 }

@@ -5,8 +5,10 @@ when_to_use: >
   The user wants a Word document, a written report as a file, a formatted write-up, meeting
   notes as a .docx, or wants a .docx template in the coop filled in with values.
 entry: run.js
-network: false
-timeout: 60
+network: none
+mounts: [exports]
+hostcalls: [read_vault_file]
+limits: { wall: 60, mem: 128, output: "64kb" }
 parameters:
   - { name: content, type: array, required: false, description: "Blocks, in order, for a from-scratch document. Each is one of: {\"heading\":\"...\",\"level\":1-4}, {\"text\":\"...\"} (\\n splits paragraphs), {\"bullets\":[\"...\",\"...\"]}, {\"table\":{\"headers\":[...],\"rows\":[[...],...]}}. Ignored when \"template\" is set." }
   - { name: title, type: string, required: false, description: "Document title — added as the first heading in content mode." }

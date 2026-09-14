@@ -24,14 +24,23 @@
 //     (Hatch / Groom / rebuild-roost / settings / reminders) that the mount
 //     model cannot express. The skill asks by name; the parent owns both the
 //     vault access and the allowlist of action names.
+//   * `read_vault_file` — the parent resolves a coop-relative path against the
+//     real vault root, refuses anything (relative or absolute) that escapes it,
+//     and returns the file's bytes as base64. This is how a skill that needs a
+//     vault file the run's input snapshot does not carry (e.g. a docx template)
+//     reads it without ever holding vault access itself.
 
+import { readFile, stat } from 'node:fs/promises'
+import { isAbsolute, relative, resolve } from 'node:path'
+import { isInside } from './mounts.ts'
 import type { NetworkPolicy } from './manifest.ts'
 
 export const HOSTCALL_NAMES = {
   FETCH_URL: 'fetch_url',
   LLM_COMPLETE: 'llm.complete',
   WEB_SEARCH: 'web_search',
-  INTERNAL_ACTION: 'internal_action'
+  INTERNAL_ACTION: 'internal_action',
+  READ_VAULT_FILE: 'read_vault_file'
 } as const
 
 export type HostcallName = (typeof HOSTCALL_NAMES)[keyof typeof HOSTCALL_NAMES]
@@ -44,6 +53,7 @@ export const HOSTCALL_ERRORS = {
   FETCH_FAILED: 'FETCH_FAILED',
   WEB_SEARCH_FAILED: 'WEB_SEARCH_FAILED',
   ACTION_FAILED: 'ACTION_FAILED',
+  READ_FAILED: 'READ_FAILED',
   NOT_IMPLEMENTED: 'NOT_IMPLEMENTED'
 } as const
 
@@ -60,6 +70,10 @@ export class CapabilityError extends Error {
 }
 
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024
+
+/** A vault file (a .docx template, say) may be larger than a fetch response;
+ *  the bytes are base64'd over IPC, so keep the ceiling sane. */
+const DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 
 export interface LlmCompleteRequest {
   prompt: string
@@ -108,11 +122,28 @@ export interface InternalActionRequest {
  */
 export type InternalActionFn = (request: InternalActionRequest) => Promise<unknown>
 
+export interface ReadVaultFileRequest {
+  /** A path inside the coop — relative to its root, or an absolute path that
+   *  still resolves inside it. Anything that escapes is refused. */
+  path: string
+}
+
+export interface ReadVaultFileResult {
+  /** The path, relative to the vault root, with `/` separators. */
+  path: string
+  /** The file's raw bytes, base64-encoded (the IPC boundary is JSON). */
+  bytes: string
+  /** The decoded byte length. */
+  size: number
+}
+
 export interface HostcallContext {
   /** Manifest policy: which hosts `fetch_url` may reach. */
   network: NetworkPolicy
   /** Manifest's declared `hostcalls:`; anything else is refused. */
   hostcalls: string[]
+  /** The real vault root `read_vault_file` resolves against. */
+  vaultRoot: string
   fetchImpl: typeof fetch
   /** Injected by the sidecar; absent means `llm.complete` is unavailable. */
   llm?: LlmCompleteFn
@@ -122,6 +153,8 @@ export interface HostcallContext {
   internalActions?: InternalActionFn
   signal: AbortSignal
   maxResponseBytes?: number
+  /** Per-`read_vault_file` size ceiling; defaults to 8 MiB. */
+  maxFileBytes?: number
 }
 
 /**
@@ -270,6 +303,54 @@ async function internalAction (args: unknown, ctx: HostcallContext): Promise<unk
 }
 
 /**
+ * Reads one file from the live vault on the skill's behalf. The parent owns
+ * the vault root; the skill only names a path. A relative path resolves
+ * against the root, an absolute path is taken as-is, and *both* are refused
+ * unless they land inside the root — an absolute `/etc/passwd` is no more
+ * allowed than `../../etc/passwd`. The bytes come back base64-encoded because
+ * the hostcall reply crosses a JSON IPC boundary.
+ */
+async function readVaultFile (args: unknown, ctx: HostcallContext): Promise<ReadVaultFileResult> {
+  const request = asObject(args)
+  const requested = typeof request.path === 'string' ? request.path.trim() : ''
+  if (!requested) throw new CapabilityError(HOSTCALL_ERRORS.BAD_ARGS, 'read_vault_file requires a "path" string')
+  if (requested.includes('\0')) {
+    throw new CapabilityError(HOSTCALL_ERRORS.BAD_ARGS, 'read_vault_file path must not contain NUL bytes')
+  }
+
+  const vaultRoot = resolve(ctx.vaultRoot)
+  const abs = isAbsolute(requested) ? resolve(requested) : resolve(vaultRoot, requested)
+  if (abs !== vaultRoot && !isInside(vaultRoot, abs)) {
+    throw new CapabilityError(HOSTCALL_ERRORS.DENIED, `path "${requested}" resolves outside the vault`)
+  }
+
+  let info
+  try {
+    info = await stat(abs)
+  } catch {
+    throw new CapabilityError(HOSTCALL_ERRORS.READ_FAILED, `file not found: ${requested}`)
+  }
+  if (!info.isFile()) throw new CapabilityError(HOSTCALL_ERRORS.READ_FAILED, `not a file: ${requested}`)
+
+  const maxBytes = ctx.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
+  if (info.size > maxBytes) {
+    throw new CapabilityError(HOSTCALL_ERRORS.READ_FAILED, `file is too large (${info.size} > ${maxBytes} bytes)`)
+  }
+
+  let bytes: Buffer
+  try {
+    bytes = await readFile(abs)
+  } catch (err) {
+    throw new CapabilityError(HOSTCALL_ERRORS.READ_FAILED, err instanceof Error ? err.message : String(err))
+  }
+  return {
+    path: relative(vaultRoot, abs).replace(/\\/g, '/'),
+    bytes: bytes.toString('base64'),
+    size: bytes.byteLength
+  }
+}
+
+/**
  * Runs one declared hostcall. Throws `CapabilityError` for anything the
  * manifest did not ask for, so a compromised skill can only do what it
  * declared.
@@ -293,5 +374,7 @@ export async function invokeHostcall (
       return webSearch(args, ctx)
     case HOSTCALL_NAMES.INTERNAL_ACTION:
       return internalAction(args, ctx)
+    case HOSTCALL_NAMES.READ_VAULT_FILE:
+      return readVaultFile(args, ctx)
   }
 }

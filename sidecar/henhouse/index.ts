@@ -61,6 +61,8 @@ export type {
   LlmCompleteFn,
   LlmCompleteRequest,
   LlmCompleteResult,
+  ReadVaultFileRequest,
+  ReadVaultFileResult,
   WebSearchFn,
   WebSearchRequest,
   WebSearchResponse,
