@@ -1,0 +1,81 @@
+name: Bug report
+description: A retrieval-layer script is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Kip is v0.1 — thanks for helping shake it out. For questions or "does
+        anyone else…", use [Discussions](https://github.com/JWE24-code/kip/discussions).
+        If you hit this **through the desktop app**, [kip-app](https://github.com/JWE24-code/kip-app/issues)
+        is the place — but a CLI repro here helps a lot.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. node scripts/hatch.js path/to/file.md
+        2. …
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Kip version
+      description: A release tag or a commit sha
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: "`node --version`"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Hatch
+        - Peck
+        - Groom
+        - Reminders
+        - Skills
+        - LLM providers
+        - Roost / index
+        - Something else
+    validations:
+      required: false
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider
+      options:
+        - Not relevant (deterministic bug)
+        - Anthropic
+        - OpenAI
+        - DeepSeek
+        - Local / Ollama
+        - Other OpenAI-compatible
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / trace
+      description: >
+        The error output. For an LLM-path bug, re-run with `--trace` (or
+        `KIP_HATCH_TRACE=1` / `KIP_PECK_TRACE=1`) and attach the relevant
+        `<coop>/.roost/*-trace.jsonl`. These contain your content — redact first.
+      render: text
+    validations:
+      required: false
