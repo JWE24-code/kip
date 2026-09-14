@@ -21,7 +21,7 @@ import {
   type ServerEventType
 } from './protocol.ts'
 import { ProtocolError, type TurnEvent } from '../protocol.ts'
-import { TurnLoop, type LlmClient, type Tool } from '../session/loop.ts'
+import { TurnLoop, type LlmClient, type LlmMessage, type Tool } from '../session/loop.ts'
 import { createReActLlmClient, type CompleteFn } from '../session/llm-client.ts'
 import { createDefaultTools } from '../session/default-tools.ts'
 import { TurnEventTranslator } from './turn-events.ts'
@@ -65,6 +65,16 @@ interface ConnState {
   authed: boolean
   loop: TurnLoop
   translator: TurnEventTranslator
+}
+
+/** The validated `chat.send` payload (server/protocol.ts). `arenaCompareTo` is
+ *  listed so the descope is explicit at the dispatch site; ws.ts deliberately
+ *  does not act on it yet (see the schema comment in protocol.ts and kip#98). */
+interface ChatSendPayload {
+  text: string
+  history?: Array<{ role: 'user' | 'assistant', text: string }>
+  depth?: 'quick' | 'full'
+  arenaCompareTo?: string
 }
 
 function safeTokenEqual (a: string, b: string): boolean {
@@ -218,7 +228,7 @@ export async function startSidecarServer (
           send(conn.socket, 'pong', { pingId: id })
           return
         case 'chat.send':
-          await handleChatSend(conn, validated.data as { text: string })
+          await handleChatSend(conn, validated.data as ChatSendPayload)
           return
         case 'chat.respond':
           handleChatRespond(conn, validated.data as { toolCallId: string, value: string })
@@ -282,12 +292,28 @@ export async function startSidecarServer (
       }
     }
 
+    // Fold the client-resent history into this turn's seed messages (kip#97),
+    // and give `depth: "quick"` a real per-turn effect by offering only the
+    // non-skill (nest) tools. `arenaCompareTo` is deliberately descoped: it is
+    // parsed off the wire and ignored until the managed arena path is ported
+    // (see the schema comment in server/protocol.ts).
     async function handleChatSend (
       conn: ConnState,
-      payload: { text: string }
+      payload: ChatSendPayload
     ): Promise<void> {
+      const history: LlmMessage[] | undefined = payload.history?.map((turn) =>
+        turn.role === 'user'
+          ? { role: 'user', content: turn.text }
+          : { role: 'assistant', content: turn.text }
+      )
+      const turnTools = payload.depth === 'quick'
+        ? tools.filter((tool) => tool.kind !== 'skill')
+        : undefined
       try {
-        await conn.loop.start(sessionId, payload.text)
+        await conn.loop.start(sessionId, payload.text, {
+          ...(history && history.length > 0 ? { history } : {}),
+          ...(turnTools ? { tools: turnTools } : {})
+        })
       } catch (err) {
         sendError(
           conn.socket,

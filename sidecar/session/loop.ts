@@ -97,6 +97,17 @@ interface PendingAsk {
   onAbort: () => void
 }
 
+export interface StartTurnOptions {
+  /** Prior turns of the current, still-open session, oldest first. Folded into
+   *  this turn's seed messages ahead of the new user message so a follow-up can
+   *  resolve what it refers to (kip#97). Client-supplied and never persisted:
+   *  the server keeps no conversation state (ADD-1 AD-11 / SPEC-1 FR-6). */
+  history?: LlmMessage[]
+  /** The tool set for just this turn, overriding the loop's own. `ws.ts` uses
+   *  it to give `depth: "quick"` a nest-only subset instead of the full set. */
+  tools?: Tool[]
+}
+
 interface ActiveTurn {
   turnId: string
   sessionId: string
@@ -108,6 +119,7 @@ interface ActiveTurn {
   toolCalls: number
   usage: Usage
   messages: LlmMessage[]
+  tools: Map<string, Tool>
   pendingAsk: PendingAsk | null
   done: Promise<void>
   resolveDone: () => void
@@ -181,7 +193,11 @@ export class TurnLoop {
     return this.active ? this.active.turnId : null
   }
 
-  async start(sessionId: string, userMessage: string): Promise<TurnResult> {
+  async start(
+    sessionId: string,
+    userMessage: string,
+    options: StartTurnOptions = {},
+  ): Promise<TurnResult> {
     if (this.active) {
       throw new ProtocolError(
         ERROR_CODES.TURN_ALREADY_RUNNING,
@@ -202,7 +218,10 @@ export class TurnLoop {
       error: null,
       toolCalls: 0,
       usage: { inputTokens: 0, outputTokens: 0 },
-      messages: [{ role: 'user', content: userMessage }],
+      messages: this.seedMessages(options.history, userMessage),
+      tools: options.tools
+        ? new Map(options.tools.map((tool) => [tool.spec.name, tool]))
+        : this.tools,
       pendingAsk: null,
       done,
       resolveDone,
@@ -274,8 +293,18 @@ export class TurnLoop {
     if (!active.ended) this.finish(active, 'cancelled')
   }
 
+  // The replayable prefix of a turn: the client-resent history (user/assistant
+  // only; a defense-in-depth filter behind the wire schema) followed by the new
+  // user message. The server builds a fresh array every turn and stores nothing.
+  private seedMessages(history: LlmMessage[] | undefined, userMessage: string): LlmMessage[] {
+    const prior = (history ?? []).filter(
+      (message) => message.role === 'user' || message.role === 'assistant',
+    )
+    return [...prior, { role: 'user', content: userMessage }]
+  }
+
   private async runModel(active: ActiveTurn): Promise<void> {
-    const specs: ToolSpec[] = [...this.tools.values()].map((tool) => tool.spec)
+    const specs: ToolSpec[] = [...active.tools.values()].map((tool) => tool.spec)
     specs.push(ASK_USER_SPEC)
 
     for (let round = 0; round <= this.maxToolCalls; round++) {
@@ -325,7 +354,7 @@ export class TurnLoop {
   private async executeTool(active: ActiveTurn, call: LlmToolCall): Promise<string> {
     if (call.name === ASK_USER_NAME) return this.askUser(active, call)
 
-    const tool = this.tools.get(call.name)
+    const tool = active.tools.get(call.name)
     if (!tool) {
       const result = `Unknown tool: ${call.name}`
       this.emitToolEnd(active, call, false, result)
