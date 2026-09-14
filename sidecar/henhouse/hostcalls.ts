@@ -14,12 +14,24 @@
 //
 // This is the FR-25/FR-27 boundary: credentials stay in the parent, and
 // outbound access is opt-in per skill, not ambient.
+//
+// kip#78 adds two higher-level parent-side capabilities on the same seam:
+//
+//   * `web_search` — the parent runs the configured search backend (with its
+//     key) and returns the parsed results; the skill never sees the key and
+//     the raw HTTP never happens in the sandbox.
+//   * `internal_action` — the parent performs a sidecar-internal operation
+//     (Hatch / Groom / rebuild-roost / settings / reminders) that the mount
+//     model cannot express. The skill asks by name; the parent owns both the
+//     vault access and the allowlist of action names.
 
 import type { NetworkPolicy } from './manifest.ts'
 
 export const HOSTCALL_NAMES = {
   FETCH_URL: 'fetch_url',
-  LLM_COMPLETE: 'llm.complete'
+  LLM_COMPLETE: 'llm.complete',
+  WEB_SEARCH: 'web_search',
+  INTERNAL_ACTION: 'internal_action'
 } as const
 
 export type HostcallName = (typeof HOSTCALL_NAMES)[keyof typeof HOSTCALL_NAMES]
@@ -30,6 +42,8 @@ export const HOSTCALL_ERRORS = {
   BAD_ARGS: 'HOSTCALL_BAD_ARGS',
   NETWORK_DENIED: 'NETWORK_DENIED',
   FETCH_FAILED: 'FETCH_FAILED',
+  WEB_SEARCH_FAILED: 'WEB_SEARCH_FAILED',
+  ACTION_FAILED: 'ACTION_FAILED',
   NOT_IMPLEMENTED: 'NOT_IMPLEMENTED'
 } as const
 
@@ -58,6 +72,42 @@ export interface LlmCompleteResult {
 
 export type LlmCompleteFn = (request: LlmCompleteRequest) => Promise<LlmCompleteResult>
 
+export interface WebSearchRequest {
+  query: string
+  count?: number
+}
+
+export interface WebSearchResult {
+  title: string
+  url: string
+  snippet: string
+}
+
+export interface WebSearchResponse {
+  /** Which backend actually ran (duckduckgo | brave | tavily). */
+  backend: string
+  results: WebSearchResult[]
+}
+
+/**
+ * Parent-side search. The backend's API key stays in the parent, which owns
+ * the configured provider and performs the HTTP request.
+ */
+export type WebSearchFn = (request: WebSearchRequest) => Promise<WebSearchResponse>
+
+export interface InternalActionRequest {
+  /** A namespace the parent knows, e.g. `reminders` or `kip-control`. */
+  action: string
+  params?: unknown
+}
+
+/**
+ * Parent-side implementation of a sidecar-internal operation. The parent owns
+ * both the vault access and the action allowlist; a skill can only ask for an
+ * action the parent already knows.
+ */
+export type InternalActionFn = (request: InternalActionRequest) => Promise<unknown>
+
 export interface HostcallContext {
   /** Manifest policy: which hosts `fetch_url` may reach. */
   network: NetworkPolicy
@@ -66,6 +116,10 @@ export interface HostcallContext {
   fetchImpl: typeof fetch
   /** Injected by the sidecar; absent means `llm.complete` is unavailable. */
   llm?: LlmCompleteFn
+  /** Injected by the sidecar; absent means `web_search` is unavailable. */
+  webSearch?: WebSearchFn
+  /** Injected by the sidecar; absent means `internal_action` is unavailable. */
+  internalActions?: InternalActionFn
   signal: AbortSignal
   maxResponseBytes?: number
 }
@@ -188,6 +242,33 @@ async function llmComplete (args: unknown, ctx: HostcallContext): Promise<Record
   return { text: result.text }
 }
 
+async function webSearch (args: unknown, ctx: HostcallContext): Promise<Record<string, unknown>> {
+  const request = asObject(args)
+  const query = typeof request.query === 'string' ? request.query.trim() : ''
+  if (!query) throw new CapabilityError(HOSTCALL_ERRORS.BAD_ARGS, 'web_search requires a "query" string')
+  if (!ctx.webSearch) throw new CapabilityError(HOSTCALL_ERRORS.NOT_IMPLEMENTED, 'no search backend is configured')
+  const count = Number(request.count)
+  try {
+    const result = await ctx.webSearch({ query, ...(Number.isFinite(count) && count > 0 ? { count } : {}) })
+    return { backend: result.backend, results: result.results }
+  } catch (err) {
+    throw new CapabilityError(HOSTCALL_ERRORS.WEB_SEARCH_FAILED, err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function internalAction (args: unknown, ctx: HostcallContext): Promise<unknown> {
+  const request = asObject(args)
+  const action = typeof request.action === 'string' ? request.action.trim() : ''
+  if (!action) throw new CapabilityError(HOSTCALL_ERRORS.BAD_ARGS, 'internal_action requires an "action" string')
+  if (!ctx.internalActions) throw new CapabilityError(HOSTCALL_ERRORS.NOT_IMPLEMENTED, 'no internal actions are registered')
+  try {
+    return await ctx.internalActions({ action, params: request.params })
+  } catch (err) {
+    if (err instanceof CapabilityError) throw err
+    throw new CapabilityError(HOSTCALL_ERRORS.ACTION_FAILED, err instanceof Error ? err.message : String(err))
+  }
+}
+
 /**
  * Runs one declared hostcall. Throws `CapabilityError` for anything the
  * manifest did not ask for, so a compromised skill can only do what it
@@ -208,5 +289,9 @@ export async function invokeHostcall (
       return fetchUrl(args, ctx)
     case HOSTCALL_NAMES.LLM_COMPLETE:
       return llmComplete(args, ctx)
+    case HOSTCALL_NAMES.WEB_SEARCH:
+      return webSearch(args, ctx)
+    case HOSTCALL_NAMES.INTERNAL_ACTION:
+      return internalAction(args, ctx)
   }
 }

@@ -56,9 +56,15 @@ export type {
   HostcallContext,
   HostcallErrorCode,
   HostcallName,
+  InternalActionFn,
+  InternalActionRequest,
   LlmCompleteFn,
   LlmCompleteRequest,
-  LlmCompleteResult
+  LlmCompleteResult,
+  WebSearchFn,
+  WebSearchRequest,
+  WebSearchResponse,
+  WebSearchResult
 } from './hostcalls.ts'
 
 export { createSkillExecutor } from './executor.ts'
@@ -73,3 +79,6 @@ export type {
 
 export { createSkillTool, formatSkillResult, skillParametersSchema } from './tools.ts'
 export type { SkillToolDeps } from './tools.ts'
+
+export { MIGRATED_BUILTIN_SKILLS, createBuiltinSkillTools } from './skills.ts'
+export type { BuiltinSkillToolsDeps } from './skills.ts'

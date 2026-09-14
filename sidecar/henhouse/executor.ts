@@ -37,7 +37,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { SkillManifest } from './manifest.ts'
 import { createRunMounts, materializeSnapshot, type RunMounts, type SkillSnapshot } from './mounts.ts'
-import { invokeHostcall, type HostcallContext, type LlmCompleteFn } from './hostcalls.ts'
+import { invokeHostcall, type HostcallContext, type InternalActionFn, type LlmCompleteFn, type WebSearchFn } from './hostcalls.ts'
 
 const require = createRequire(import.meta.url)
 const paths = require('../../scripts/lib/paths.js') as {
@@ -71,6 +71,10 @@ export interface SkillRunRequest {
   runId?: string
   /** Parent-side LLM used by the `llm.complete` hostcall (key stays here). */
   llm?: LlmCompleteFn
+  /** Parent-side search used by the `web_search` hostcall (key stays here). */
+  webSearch?: WebSearchFn
+  /** Parent-side internal operations used by the `internal_action` hostcall. */
+  internalActions?: InternalActionFn
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch
   /** Extra non-secret env for the child (never inherited from the parent). */
@@ -237,6 +241,8 @@ class NodeInprocExecutor implements SkillExecutor {
         hostcalls: manifest.hostcalls,
         fetchImpl: request.fetchImpl ?? globalThis.fetch,
         llm: request.llm,
+        webSearch: request.webSearch,
+        internalActions: request.internalActions,
         signal: (hostcallController = new AbortController()).signal
       }
 
