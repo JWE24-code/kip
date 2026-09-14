@@ -5,10 +5,11 @@
 // model, so a manifest's declared capabilities are enforced by the OS rather
 // than documented and hoped for:
 //
-//   * mounts       — only the run's input snapshot (ro) and the coop's
-//                    `exports/` (rw) are readable/writable; the live vault is
-//                    not. Path traversal is refused twice: by the mount
-//                    resolver (mounts.ts) and, ultimately, by the kernel-level
+//   * mounts       — only the run's input snapshot (ro), the coop's
+//                    `exports/` (rw), and the run's ephemeral `scratch/` (rw)
+//                    are readable/writable; the live vault is not. Path
+//                    traversal is refused twice: by the mount resolver
+//                    (mounts.ts) and, ultimately, by the kernel-level
 //                    permission scope.
 //   * network:none — the process cannot reach the network: the permission
 //                    model denies it on Node 25+, and boot.cjs removes
@@ -219,6 +220,7 @@ class NodeInprocExecutor implements SkillExecutor {
     const started = Date.now()
     const exportsDir = paths.exportsPath(vaultRoot)
     const runRoot = join(paths.workspaceRoot(vaultRoot), 'skill-runs', runId)
+    const scratchDir = join(runRoot, 'scratch')
     const mounts = createRunMounts(runRoot)
 
     await mkdir(exportsDir, { recursive: true })
@@ -230,12 +232,13 @@ class NodeInprocExecutor implements SkillExecutor {
 
     try {
       await mkdir(runRoot, { recursive: true })
+      await mkdir(scratchDir, { recursive: true })
       await materializeSnapshot(mounts, request.snapshot)
       const bootPath = join(runRoot, '__kip_boot.cjs')
       await writeFile(bootPath, await readFile(BOOT_PATH))
 
-      const execArgv = this.buildExecArgv(request, mounts, bootPath, exportsDir)
-      const env = this.buildEnv(request, runId, mounts, exportsDir)
+      const execArgv = this.buildExecArgv(request, mounts, bootPath, exportsDir, scratchDir)
+      const env = this.buildEnv(request, runId, mounts, exportsDir, scratchDir)
       const hostcallCtx: HostcallContext = {
         network: manifest.network,
         hostcalls: manifest.hostcalls,
@@ -344,7 +347,8 @@ class NodeInprocExecutor implements SkillExecutor {
     request: SkillRunRequest,
     mounts: RunMounts,
     bootPath: string,
-    exportsDir: string
+    exportsDir: string,
+    scratchDir: string
   ): string[] {
     const { manifest } = request
     const readRoots = new Set<string>([
@@ -356,13 +360,14 @@ class NodeInprocExecutor implements SkillExecutor {
     const execArgv = [permissionFlag(), `--max-old-space-size=${manifest.limits.memMb}`]
     for (const root of readRoots) execArgv.push(`--allow-fs-read=${root}`)
     execArgv.push(`--allow-fs-write=${exportsDir}`)
+    execArgv.push(`--allow-fs-write=${scratchDir}`)
     execArgv.push('--require', bootPath)
     return execArgv
   }
 
   /** The child env is a whitelist. Parent env, provider keys, and skills.json
    *  secrets are deliberately not inherited (FR-25). */
-  private buildEnv (request: SkillRunRequest, runId: string, mounts: RunMounts, exportsDir: string): Record<string, string> {
+  private buildEnv (request: SkillRunRequest, runId: string, mounts: RunMounts, exportsDir: string, scratchDir: string): Record<string, string> {
     const { manifest, vaultRoot } = request
     const inputJson = JSON.stringify(request.input == null ? {} : request.input)
     if (inputJson.length > INPUT_CAP_BYTES) {
@@ -375,6 +380,7 @@ class NodeInprocExecutor implements SkillExecutor {
       KIP_NETWORK: manifest.network.mode,
       KIP_INPUT_DIR: mounts.input,
       KIP_EXPORTS_DIR: exportsDir,
+      KIP_SCRATCH_DIR: scratchDir,
       KIP_COOP_ROOT: vaultRoot,
       SKILL_DIR: manifest.dir,
       SKILL_INPUT: inputJson,

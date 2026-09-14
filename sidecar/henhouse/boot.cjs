@@ -73,10 +73,12 @@ globalThis.kip = Object.freeze({
       }
     })
   },
-  /** Absolute mount dirs. `input` is the read-only snapshot; `exports` is rw. */
+  /** Absolute mount dirs. `input` is the read-only snapshot; `exports` and
+   *  `scratch` are rw (`scratch` is ephemeral, removed after the run). */
   mounts: Object.freeze({
     input: process.env.KIP_INPUT_DIR || '',
-    exports: process.env.KIP_EXPORTS_DIR || ''
+    exports: process.env.KIP_EXPORTS_DIR || '',
+    scratch: process.env.KIP_SCRATCH_DIR || ''
   }),
   network: process.env.KIP_NETWORK || 'none'
 })
