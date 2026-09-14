@@ -206,7 +206,7 @@ Groom **never edits pages automatically**. It only reports problems for you to f
 
 ## 8. Rebuild the index if something looks wrong
 
-The search index lives in `<coop>/.roost/meta.db`. It is fully derived from the Markdown files in `nest/`. If you hand-edit a page, move files, or suspect the index is out of sync, run:
+The search index lives outside the coop, in the Kip state dir (`<workspace>/roost/meta.db` — e.g. `~/.local/state/kip/coops/<coop>/roost/meta.db` on Linux; `KIP_WORKSPACE_ROOT` overrides the base). It is fully derived from the Markdown files in `nest/`, so it is deliberately kept out of Dropbox/OneDrive/iCloud Drive to avoid corrupting a SQLite WAL mid-sync. If you hand-edit a page, move files, or suspect the index is out of sync, run:
 
 ```powershell
 npm run rebuild-roost
@@ -224,7 +224,7 @@ This is safe to run at any time.
 | Your daily notes / pages | `journals/`, `pages/` | you, via the app |
 | The LLM wiki | `nest/` | Kip (you can hand-edit) |
 | Activity log | `clucks/` | Kip only |
-| Search index | `.roost/meta.db` | rebuilt from `nest/` |
+| Search index | workspace `roost/meta.db` (outside the coop, never synced) | rebuilt from `nest/` |
 | LLM config | `.henhouse/llm.json` | you, via Settings |
 | Generated catalog | `nest/index.md` | rebuilt automatically |
 
