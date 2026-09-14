@@ -44,7 +44,8 @@ The design constraints that shaped everything:
    converted `.md` sibling there (its original is parked outside the graph).
    The one other exception is **skills** (§5.4), which write their
    deliverables to `exports/` and their own config under `.henhouse/`.
-   Sandboxing skill filesystem access is on the deferred list.
+   Skill filesystem access is capability-limited in the rebuilt sidecar
+   executor (§5.4), replacing the old unsandboxed runner.
 3. **Provider-agnostic.** Anthropic, OpenAI, DeepSeek, a local Ollama model,
    or any OpenAI-compatible endpoint — one config file, one code path.
 4. **Observable and reversible.** Every LLM call is timed and (optionally)
@@ -455,6 +456,18 @@ snooze, an OS-level timer for a closed app.
 **Trust model.** A skill is arbitrary Node code, unsandboxed, with the user's
 privileges. Built-ins are reviewed here; a user skill is like adding a shell
 script. The runner limits blast radius but does not contain it.
+
+**Rebuilt executor (P6, kip#77).** The sidecar grows a real capability
+perimeter beside this path: `sidecar/henhouse/` parses the same `SKILL.md`
+frontmatter but treats `network`, `mounts`, and `limits` as enforced
+capabilities rather than documentation. The `node-inproc` backend runs a skill
+as its own Node process under the platform permission model — only a
+read-only input snapshot and the coop's `exports/` are mounted, direct network
+is denied outright, wall/memory/output limits are real, and the child
+environment is a whitelist that never carries provider keys (FR-25). The only
+way out of the sandbox is a manifest-declared hostcall (`fetch_url`,
+`llm.complete`) mediated by the parent. The CLI's `skills.js` remains until
+kip#78 migrates the built-in skills onto the manifest + hostcalls.
 
 ---
 
