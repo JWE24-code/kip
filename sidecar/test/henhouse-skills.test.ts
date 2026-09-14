@@ -227,7 +227,7 @@ test('a registered web-search tool returns the fenced result to the loop', async
     })
   })
   assert.ok(tool)
-  const out = await tool.run({ query: 'q' }, { signal: new AbortController().signal } as never)
+  const out = String(await tool.run({ query: 'q' }, { signal: new AbortController().signal } as never))
   assert.match(out, /untrusted external source material/i)
   assert.match(out, /tavily/)
 })

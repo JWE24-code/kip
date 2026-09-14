@@ -162,7 +162,18 @@ export const payloadSchemas = {
   'turn.end': z.object({
     turnId: z.string().min(1),
     reason: z.enum(['complete', 'cancelled', 'error', 'max_tools']),
-    text: z.string().optional()
+    text: z.string().optional(),
+    // Answer enrichment (kip#98): the evidence and filed-fact card kip-app's
+    // `turn->message` maps onto the settled message.
+    intent: z.string().optional(),
+    learned: z.boolean().optional(),
+    note: z.string().optional(),
+    pages: z.array(z.object({ action: z.string(), slug: z.string() })).optional(),
+    citedSlugs: z.array(z.string()).optional(),
+    candidateSlugs: z.array(z.string()).optional(),
+    deadCitations: z.array(z.string()).optional(),
+    lintWarnings: z.array(z.object({ slug: z.string(), kind: z.string(), note: z.string() })).optional(),
+    sources: z.array(z.object({ slug: z.string(), title: z.string() })).optional()
   }),
   'turn.usage': z.object({
     turnId: z.string().min(1),

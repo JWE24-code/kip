@@ -9,6 +9,7 @@
 import { TurnEndReason as WireReason } from './protocol.ts'
 import type { ServerEventType } from './protocol.ts'
 import type { TurnEndReason, TurnEvent } from '../protocol.ts'
+import type { TurnEnricher } from './turn-enrichment.ts'
 
 export interface WireEvent {
   type: ServerEventType
@@ -32,6 +33,13 @@ export class TurnEventTranslator {
   private readonly seq = new Map<string, number>()
   private readonly toolCalls = new Map<string, number>()
   private readonly text = new Map<string, string>()
+  private readonly enrich?: TurnEnricher
+
+  /** `enrich` is the vault-bound answer-enrichment builder (kip#98). Without it
+   *  the wire still carries the raw text and vocabulary; tests use that. */
+  constructor (enrich?: TurnEnricher) {
+    this.enrich = enrich
+  }
 
   translate (event: TurnEvent): WireEvent | null {
     switch (event.type) {
@@ -113,14 +121,21 @@ export class TurnEventTranslator {
   }
 
   private translateEnd (event: Extract<TurnEvent, { type: 'turn.end' }>): WireEvent {
-    const text = this.text.get(event.turnId) ?? ''
-    return {
-      type: 'turn.end',
-      payload: {
-        turnId: event.turnId,
-        reason: REASON[event.reason] ?? WireReason.ERROR,
-        ...(text ? { text } : {})
-      }
+    // A completed turn's authoritative answer is the loop's own final text; for
+    // a cancellation/error the streamed deltas are the tail we have. Preferring
+    // the loop's text also covers a provider that answered without streaming.
+    const streamed = this.text.get(event.turnId) ?? ''
+    const text = event.reason === 'completed' ? event.text ?? streamed : streamed
+    const payload: Record<string, unknown> = {
+      turnId: event.turnId,
+      reason: REASON[event.reason] ?? WireReason.ERROR,
+      ...(text ? { text } : {})
     }
+    if (this.enrich) {
+      // The enrichment is what lets kip-app show sources, the evidence row,
+      // lint warnings and the "✓ Learned" card (kip#98).
+      Object.assign(payload, this.enrich({ text, ...(event.accounting ? { accounting: event.accounting } : {}) }))
+    }
+    return { type: 'turn.end', payload }
   }
 }

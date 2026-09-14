@@ -63,3 +63,30 @@ test('skill.progress keeps its optional fields only when present', () => {
   const full = translator.translate({ type: 'skill.progress', turnId: 'x', skill: 's', phase: 'working', message: 'half', pct: 50 })
   assert.deepEqual(full?.payload, { turnId: 'x', skill: 's', phase: 'working', message: 'half', pct: 50 })
 })
+
+test('turn.end runs the enricher over the answer text and the turn accounting (kip#98)', () => {
+  const seen: Array<{ text: string, accounting?: unknown }> = []
+  const translator = new TurnEventTranslator((input) => {
+    seen.push(input)
+    return {
+      candidateSlugs: ['a'],
+      citedSlugs: ['a'],
+      deadCitations: [],
+      lintWarnings: [],
+      sources: [{ slug: 'a', title: 'a' }]
+    }
+  })
+
+  const end = translator.translate({
+    type: 'turn.end',
+    turnId: 'x',
+    reason: 'completed',
+    text: 'See [[a]].',
+    accounting: { candidateSlugs: ['a'], writes: [] }
+  })
+
+  assert.deepEqual(seen, [{ text: 'See [[a]].', accounting: { candidateSlugs: ['a'], writes: [] } }])
+  const payload = end?.payload as { citedSlugs?: string[], sources?: unknown[] }
+  assert.deepEqual(payload.citedSlugs, ['a'])
+  assert.deepEqual(payload.sources, [{ slug: 'a', title: 'a' }])
+})

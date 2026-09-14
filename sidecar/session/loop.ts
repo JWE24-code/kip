@@ -11,8 +11,11 @@ import { randomUUID } from 'node:crypto'
 import type {
   AskUserEvent,
   ErrorCode,
+  LearnedPage,
   LlmToolCall,
   SkillProgressEvent,
+  ToolEnrichment,
+  ToolOutput,
   ToolSpec,
   TurnEndReason,
   TurnError,
@@ -68,7 +71,10 @@ export interface Tool {
   spec: ToolSpec
   // `skill` marks a tool whose exec gets its own full-fidelity trace line.
   kind?: 'tool' | 'skill'
-  run(args: unknown, ctx: ToolContext): Promise<string> | string
+  // A tool returns its result text, or a `ToolOutput` when it also has
+  // structured facts for the turn's enrichment (kip#98) — e.g. the slugs a
+  // search surfaced or the note a write tool created.
+  run(args: unknown, ctx: ToolContext): Promise<string | ToolOutput> | string | ToolOutput
 }
 
 export interface TraceSink {
@@ -120,6 +126,12 @@ interface ActiveTurn {
   usage: Usage
   messages: LlmMessage[]
   tools: Map<string, Tool>
+  // The final answer text once the model answers (kip#98); the source the
+  // translator prefers over the re-assembled deltas.
+  answerText: string
+  // Answer enrichment (kip#98): merged from the tools that ran this turn.
+  candidateSlugs: string[]
+  writes: LearnedPage[]
   pendingAsk: PendingAsk | null
   done: Promise<void>
   resolveDone: () => void
@@ -158,6 +170,15 @@ function errorMessage(error: unknown): string {
 
 function truncate(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text
+}
+
+/** Normalizes a tool's return (a bare string, or the richer ToolOutput) to the
+ *  one shape the loop handles. A malformed object still yields a usable string
+ *  so a buggy tool can't take the turn down. */
+function toToolOutput(value: string | ToolOutput): ToolOutput {
+  if (typeof value === 'string') return { text: value }
+  if (value && typeof value === 'object' && typeof value.text === 'string') return value
+  return { text: String(value) }
 }
 
 export class TurnLoop {
@@ -222,6 +243,9 @@ export class TurnLoop {
       tools: options.tools
         ? new Map(options.tools.map((tool) => [tool.spec.name, tool]))
         : this.tools,
+      answerText: '',
+      candidateSlugs: [],
+      writes: [],
       pendingAsk: null,
       done,
       resolveDone,
@@ -333,7 +357,10 @@ export class TurnLoop {
       }
 
       // No tool calls → the assistant answered; the turn is done.
-      if (calls.length === 0) return
+      if (calls.length === 0) {
+        active.answerText = textParts.join('')
+        return
+      }
 
       active.messages.push({ role: 'assistant', content: textParts.join(''), toolCalls: calls })
 
@@ -375,7 +402,9 @@ export class TurnLoop {
     let ok = true
     let result: string
     try {
-      result = String(await tool.run(call.arguments, this.toolContext(active, call.name)))
+      const output = toToolOutput(await tool.run(call.arguments, this.toolContext(active, call.name)))
+      result = output.text
+      this.recordEnrichment(active, output.enrichment)
     } catch (error) {
       ok = false
       result = errorMessage(error)
@@ -490,6 +519,19 @@ export class TurnLoop {
     }
   }
 
+  // Merge a tool's structured accounting into the turn. Candidate slugs are
+  // deduped in surfacing order, so the enrichment's `candidateSlugs` reads like
+  // the order the model discovered them.
+  private recordEnrichment(active: ActiveTurn, enrichment?: ToolEnrichment): void {
+    if (!enrichment) return
+    for (const slug of enrichment.candidates ?? []) {
+      if (typeof slug === 'string' && slug && !active.candidateSlugs.includes(slug)) {
+        active.candidateSlugs.push(slug)
+      }
+    }
+    if (enrichment.write) active.writes.push(enrichment.write)
+  }
+
   // Idempotent terminal transition: reports usage then the end reason exactly
   // once, and releases any cancel() waiter.
   private finish(active: ActiveTurn, reason: TurnEndReason): void {
@@ -500,7 +542,16 @@ export class TurnLoop {
     active.pendingAsk = null
 
     this.dispatch(active, { type: 'turn.usage', turnId: active.turnId, usage: { ...active.usage } })
-    this.dispatch(active, { type: 'turn.end', turnId: active.turnId, reason })
+    this.dispatch(active, {
+      type: 'turn.end',
+      turnId: active.turnId,
+      reason,
+      text: active.answerText,
+      accounting: {
+        candidateSlugs: [...active.candidateSlugs],
+        writes: [...active.writes],
+      },
+    })
     active.resolveDone()
   }
 

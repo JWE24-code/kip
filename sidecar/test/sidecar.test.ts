@@ -8,6 +8,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 
 import { connect } from '../client.ts'
 import { createNoteTools, SEARCH_NOTES_TOOL_NAME } from '../session/notes.ts'
+import { createWriteTools, WRITE_AGENT_NOTE_TOOL_NAME } from '../session/notes-write.ts'
 import { startSidecarServer, generateToken } from '../server/ws.ts'
 import { discoveryPath } from '../discovery.ts'
 import { PROTOCOL_VERSION } from '../server/protocol.ts'
@@ -343,6 +344,92 @@ test('chat.send reaches the real TurnLoop: search_notes runs and turn.delta stre
   } finally {
     client.close()
     await server.close()
+    fs.rmSync(vault, { recursive: true, force: true })
+  }
+})
+
+test('turn.end carries the enrichment a real search_notes turn produced (kip#98)', async () => {
+  const vault = makeIndexedVault()
+  fs.writeFileSync(path.join(vault, '.roost', 'lint.json'), JSON.stringify({
+    generated: '2026-01-01T00:00:00.000Z',
+    deep: false,
+    findings: { 'sleep-hygiene': [{ kind: 'orphan', note: 'nothing links to this page' }] }
+  }))
+  const token = generateToken()
+  const server = await startSidecarServer({
+    token,
+    vaultRoot: vault,
+    tools: createNoteTools({ vaultRoot: vault }),
+    complete: scriptedCompleter([
+      { text: `<use_tool name="${SEARCH_NOTES_TOOL_NAME}">{ "query": "sleep" }</use_tool>` },
+      { text: 'Consistent bedtime; see [[sleep-hygiene]] and [[ghost-note]].', chunks: ['Consistent bedtime; see ', '[[sleep-hygiene]] and [[ghost-note]].'] }
+    ])
+  })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    client.send('chat.send', { text: 'what do my notes say about sleep?' })
+    const end = await client.next('turn.end')
+    const payload = end.payload as {
+      reason: string
+      candidateSlugs?: string[]
+      citedSlugs?: string[]
+      deadCitations?: string[]
+      lintWarnings?: Array<{ slug: string, kind: string, note: string }>
+      sources?: Array<{ slug: string, title: string }>
+    }
+
+    assert.equal(payload.reason, 'complete')
+    assert.deepEqual(payload.candidateSlugs, ['sleep-hygiene'])
+    assert.deepEqual(payload.citedSlugs, ['sleep-hygiene'])
+    assert.deepEqual(payload.deadCitations, ['ghost-note'])
+    assert.deepEqual(payload.lintWarnings, [
+      { slug: 'sleep-hygiene', kind: 'orphan', note: 'nothing links to this page' }
+    ])
+    assert.deepEqual(payload.sources, [{ slug: 'sleep-hygiene', title: 'sleep hygiene' }])
+  } finally {
+    client.close()
+    await server.close()
+    fs.rmSync(vault, { recursive: true, force: true })
+  }
+})
+
+test('turn.end reports a filed fact as a learned statement, not an empty answer (kip#98)', async () => {
+  const vault = makeIndexedVault()
+  const base = TMP()
+  const originalWorkspaceRoot = process.env.KIP_WORKSPACE_ROOT
+  process.env.KIP_WORKSPACE_ROOT = path.join(base, 'workspace')
+  const token = generateToken()
+  const server = await startSidecarServer({
+    token,
+    vaultRoot: vault,
+    tools: createWriteTools({ vaultRoot: vault }),
+    complete: scriptedCompleter([
+      { text: `<use_tool name="${WRITE_AGENT_NOTE_TOOL_NAME}">{ "title": "Acme moved", "body": "Acme moved to Berlin." }</use_tool>` },
+      { text: 'Saved "Acme moved".', chunks: ['Saved "Acme moved".'] }
+    ])
+  })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    client.send('chat.send', { text: 'Acme moved to Berlin.' })
+    const end = await client.next('turn.end')
+    const payload = end.payload as {
+      reason: string
+      intent?: string
+      learned?: boolean
+      note?: string
+      pages?: Array<{ action: string, slug: string }>
+    }
+
+    assert.equal(payload.reason, 'complete')
+    assert.equal(payload.intent, 'statement')
+    assert.equal(payload.learned, true)
+    assert.equal(payload.note, 'Saved "Acme moved".')
+    assert.deepEqual(payload.pages, [{ action: 'create', slug: 'acme-moved' }])
+  } finally {
+    client.close()
+    await server.close()
+    process.env.KIP_WORKSPACE_ROOT = originalWorkspaceRoot
+    fs.rmSync(base, { recursive: true, force: true })
     fs.rmSync(vault, { recursive: true, force: true })
   }
 })
