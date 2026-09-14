@@ -1,7 +1,9 @@
 // The block-level vector index (AD-8, AD-16), backed by sqlite-vec in its own
-// `.roost/vectors.db`. It is deliberately separate from meta.db: the FTS index
-// stays usable when sqlite-vec's native extension is unavailable (the app's
-// packaged runtime), and the two derived stores can be rebuilt independently.
+// `vectors.db` beside meta.db in the workspace roost dir (kip#67 — never
+// inside the synced coop). It is deliberately separate from meta.db: the FTS
+// index stays usable when sqlite-vec's native extension is unavailable (the
+// app's packaged runtime), and the two derived stores can be rebuilt
+// independently.
 //
 // Incremental contract: indexing a page re-embeds only the blocks whose
 // heading+content hash changed, and never touches an unchanged block. All
@@ -13,7 +15,7 @@ const matter = require('gray-matter')
 const Database = require('better-sqlite3')
 const { splitBlocks, blockId, hashBlockText } = require('./blocks')
 const { getEmbedder } = require('./embeddings')
-const { DEFAULT_VAULT_ROOT, nestPath, DIR_TYPES } = require('./paths')
+const { DEFAULT_VAULT_ROOT, nestPath, roostPath, DIR_TYPES } = require('./paths')
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS vec_meta (
@@ -61,8 +63,10 @@ function isVectorAvailable () {
   }
 }
 
+// Lives beside meta.db in the workspace roost dir (kip#67) — never inside the
+// synced coop, where a WAL write mid-transaction could be corrupted.
 function vectorDbPath (vaultRoot = DEFAULT_VAULT_ROOT) {
-  return path.join(vaultRoot, '.roost', 'vectors.db')
+  return path.join(roostPath(vaultRoot), 'vectors.db')
 }
 
 /** The text actually embedded for a block: heading context + content. */

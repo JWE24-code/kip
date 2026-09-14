@@ -12,6 +12,9 @@
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** — dev environment: layout, `scripts/`
   internals, running the app in dev mode, system dependencies.
 - **[BUILD.md](BUILD.md)** — packaging the desktop app (Windows / Linux / CI).
+- **[PECK-REBUILT.md](PECK-REBUILT.md)** — the overhaul proposal replacing Peck's
+  process model, storage, retrieval, skill sandbox, and key custody with the
+  Personal Knowledge-Agent Harness design, tracked as issues across all four repos.
 
 Project overview: **[`../README.md`](../README.md)**. The desktop app you
 install is at

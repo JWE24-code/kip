@@ -43,7 +43,9 @@ node scripts/watch.js                             # live reindex on vault edits
 npm test
 ```
 
-It operates on `./coop/` by default, or the folder in `KIP_COOP_ROOT`.
+It operates on `./coop/` by default, or the folder in `KIP_COOP_ROOT`. The
+search index is kept out of the coop (in the `KIP_WORKSPACE_ROOT` state dir),
+so a Dropbox/OneDrive/iCloud-synced coop can't corrupt it.
 
 ## Docs
 
@@ -55,6 +57,7 @@ It operates on `./coop/` by default, or the folder in `KIP_COOP_ROOT`.
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | build & dev-environment notes |
 | [BUILD.md](docs/BUILD.md) | packaging the app |
 | [VS-LOGSEQ.md](docs/VS-LOGSEQ.md) | what changed vs upstream Logseq |
+| [PECK-REBUILT.md](docs/PECK-REBUILT.md) | the Peck overhaul proposal (harness architecture, tracked as issues) |
 
 Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md). Changes:
 [CHANGELOG.md](CHANGELOG.md). Vulnerabilities: [SECURITY.md](SECURITY.md).

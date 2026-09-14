@@ -13,7 +13,8 @@ The retrieval layer (this repo) and the desktop app
 
 - **Hybrid retrieval** (#71, AD-8) — retrieval merges FTS5 lexical hits and
   block-level vector hits by reciprocal rank fusion (`scripts/lib/hybrid.js`).
-  Vector search lives in its own `.roost/vectors.db` (sqlite-vec, AD-8), so the
+  Vector search lives in its own `vectors.db` beside `meta.db` in the workspace
+  roost dir (sqlite-vec, AD-8; kip#67 keeps it out of the synced coop), so the
   FTS index still works when the native extension is unavailable. `Peck` uses
   `hybridSearch`, which degrades to exactly the old FTS ranking when there is
   no vector index.

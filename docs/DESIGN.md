@@ -30,9 +30,10 @@ into one clearly-bounded zone and never touches your own notes.
 The design constraints that shaped everything:
 
 1. **Files stay the source of truth.** Every LLM-written page is a plain
-   Markdown file with YAML frontmatter. Delete `.roost/` and rebuild it from
-   the files (`rebuild-roost`) — it's a derived index (the page table +
-   full-text search), machine-local, and not synced. The one thing a rebuild
+   Markdown file with YAML frontmatter. Delete the workspace's `roost/meta.db`
+   and rebuild it from the files (`rebuild-roost`) — it's a derived index (the
+   page table + full-text search), machine-local, and not synced (it lives
+   outside the coop on purpose, kip#67). The one thing a rebuild
    can't recover is `hatched_sources`, the per-file "already hatched" memory:
    after a bare rebuild the next Hatch re-proposes pages for every source
    instead of updating them. Nothing else is locked inside an app.
@@ -61,7 +62,7 @@ The design constraints that shaped everything:
 | **pages/** | the unified source folder — Logseq's own notes directory *and* the drop-box for source material; an Office/PDF drop becomes a converted `.md` sibling | notes + `raw/` inbox |
 | **nest/** | the LLM-maintained wiki | `wiki/` |
 | **clucks/** | append-only monthly activity log | `log/` |
-| **.roost/** | the SQLite index (`meta.db`) + per-run artifacts | `.index/` |
+| **.roost/** | per-run artifacts (progress/trace/lint/caches); the SQLite index itself lives at the workspace root, outside the coop (kip#67) | `.index/` |
 | **.henhouse/** | LLM provider config (`llm.json`, gitignored) | `.config/` |
 | **Hatch** | turn a source into nest pages | ingest |
 | **Peck** | ask a question, get a cited answer | ask / query / chat |
@@ -77,8 +78,8 @@ The design constraints that shaped everything:
 prj01/
 ├── scripts/           # the retrieval layer — plain Node
 │   ├── lib/
-│   │   ├── db.js          # opens coop/.roost/meta.db, owns the schema
-│   │   ├── paths.js       # path helpers + type↔folder map; KIP_COOP_ROOT
+│   │   ├── db.js          # opens <workspace>/roost/meta.db, migrates the old in-coop one
+│   │   ├── paths.js       # path helpers + type↔folder map; KIP_COOP_ROOT + KIP_WORKSPACE_ROOT
 │   │   ├── roost.js       # upsertPage, searchPages, findSimilarSlug,
 │   │   │                  #   appendLog, regenerateIndexMd, recentClucks,
 │   │   │                  #   hatchedSourceHashes, slug similarity, wikilinks
@@ -474,8 +475,10 @@ scripts/<x>.js   (runs as plain Node — the app's own Electron binary,
 - **`ELECTRON_RUN_AS_NODE`** means a packaged Kip needs no system Node — it
   runs its own bundled Electron binary as the interpreter.
 - **`KIP_COOP_ROOT`** = whatever graph folder the user has open. The scripts
-  operate on *that* coop (`pages/`, `nest/`, `.roost/`, `.henhouse/` inside
-  it), not a fixed location.
+  operate on *that* coop (`pages/`, `nest/`, `.henhouse/` inside it), not a
+  fixed location. `KIP_WORKSPACE_ROOT` is separate: the local app-data base
+  holding each coop's index (`<base>/coops/<coop>/roost/meta.db`) so a synced
+  coop never holds the SQLite WAL (kip#67).
 - **Not** routed through Logseq's `electron.shell` command-runner (that's an
   allow-list for known tools like git/pandoc); the one
   renderer-supplied string (the Peck question) is passed as an argv entry to
