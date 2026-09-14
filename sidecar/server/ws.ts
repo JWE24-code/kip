@@ -26,6 +26,7 @@ import { TurnLoop, type LlmClient, type LlmMessage, type Tool } from '../session
 import { createReActLlmClient, type CompleteFn } from '../session/llm-client.ts'
 import { createDefaultTools } from '../session/default-tools.ts'
 import { TurnEventTranslator } from './turn-events.ts'
+import { createTurnEnricher } from './turn-enrichment.ts'
 import { UndoUnavailableError, undo, workspacePaths } from '../workspace/git.ts'
 import { silentLogger, type Logger } from '../logger.ts'
 
@@ -152,7 +153,7 @@ export async function startSidecarServer (
     activeSocket = socket
     touch()
 
-    const translator = new TurnEventTranslator()
+    const translator = new TurnEventTranslator(createTurnEnricher(options.vaultRoot))
     const loop = new TurnLoop({
       llm,
       tools,

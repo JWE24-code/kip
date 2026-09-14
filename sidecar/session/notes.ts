@@ -20,6 +20,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { z } from 'zod'
 import type { Tool, ToolContext } from './loop.ts'
+import type { ToolOutput } from '../protocol.ts'
 // The roost index now lives in the sidecar (kip#70): reads come from the
 // ported reader connection instead of requiring the retrieval-layer script.
 import { searchPages, getPage, getPageSections } from '../roost/reader.ts'
@@ -378,6 +379,12 @@ export function extractCitedSlugs (answerText: string, candidateSlugs: string[])
   return candidateSlugs.filter((slug) => linked.has(slug))
 }
 
+/** A human-readable title from a slug: "sleep-hygiene" -> "sleep hygiene".
+ *  Ported from peck.js `humanizeSlug` (the `sources` list's `title`). */
+export function humanizeSlug (slug: string): string {
+  return String(slug).replace(/-+/g, ' ').trim()
+}
+
 /** date-shaped ([[2026-08-26]]) is a valid Logseq journal ref, not a nest slug. */
 const DATE_SLUG_RE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -589,22 +596,27 @@ export function createNoteTools ({ vaultRoot }: NoteToolDeps): Tool[] {
   return [
     {
       spec: SEARCH_NOTES_SPEC,
-      run: (args: unknown): string => {
+      run: (args: unknown): ToolOutput => {
         const parsed = searchNotesSchema.parse(args)
         const candidates = searchNotes(parsed.query, {
           namespace: parsed.namespace ?? 'all',
           ...(parsed.limit ? { limit: parsed.limit } : {}),
           vaultRoot
         })
-        return formatSearchIndex(parsed.query, candidates)
+        return {
+          text: formatSearchIndex(parsed.query, candidates),
+          enrichment: { candidates: candidates.map((candidate) => candidate.slug) }
+        }
       }
     },
     {
       spec: READ_NOTE_SPEC,
-      run: (args: unknown, _ctx?: ToolContext): string => {
+      run: (args: unknown, _ctx?: ToolContext): ToolOutput => {
         const parsed = readNoteSchema.parse(args)
         const note = readNote(parsed.id, { vaultRoot })
-        return note ? formatNote(note) : `Note not found: ${parsed.id}`
+        return note
+          ? { text: formatNote(note), enrichment: { candidates: [note.slug] } }
+          : { text: `Note not found: ${parsed.id}` }
       }
     }
   ]

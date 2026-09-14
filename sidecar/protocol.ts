@@ -105,10 +105,82 @@ export interface TurnUsageEvent {
   usage: Usage
 }
 
+// ---- Answer enrichment (kip#98) --------------------------------------------
+// The pre-sidecar `peckTurn()` returned a rich answer shape — cited/candidate
+// slugs, dead citations, lint warnings, sources, and the statement/filed-fact
+// card — but the model-driven loop reaches an answer through arbitrary tool
+// calls, so there is no single `answerFromPages()` to read it from. Instead
+// tools *account* for what they surfaced or wrote (TurnAccounting), the loop
+// attaches that to `turn.end`, and the server's enricher (`server/
+// turn-enrichment.ts`, which owns the vault) turns it into the TurnEnrichment
+// kip-app's `turn->message` already maps.
+
+/** One groom finding, exactly as `.roost/lint.json` stores it (kip-app#116). */
+export interface LintWarning {
+  slug: string
+  kind: string
+  note: string
+}
+
+/** A cited page plus the human-readable title peck's `sources` list carries. */
+export interface SourceRef {
+  slug: string
+  title: string
+}
+
+/** A note a write tool created or updated; the "✓ Learned" card's pages. */
+export interface LearnedPage {
+  action: 'create' | 'update'
+  slug: string
+}
+
+/** Raw per-turn facts a tool contributed (via `ToolOutput.enrichment`). The
+ *  loop merges them and puts them on `turn.end`; on their own they are not
+ *  enough to compute citations — the enricher still needs the final text and
+ *  the vault. */
+export interface TurnAccounting {
+  /** Slugs surfaced by `search_notes`/`read_note` during the turn. */
+  candidateSlugs: string[]
+  /** Notes written by `write_agent_note`/`update_agent_note`. */
+  writes: LearnedPage[]
+}
+
+/** The enrichment kip-app consumes on `turn.end`. */
+export interface TurnEnrichment {
+  candidateSlugs: string[]
+  citedSlugs: string[]
+  deadCitations: string[]
+  lintWarnings: LintWarning[]
+  sources: SourceRef[]
+  /** Set when the turn filed a fact instead of answering. */
+  intent?: 'statement'
+  learned?: boolean
+  /** The card text (the model's confirmation, or a synthesized line). */
+  note?: string
+  pages?: LearnedPage[]
+}
+
+/** What one tool can report about a turn beyond its result text. */
+export interface ToolEnrichment {
+  candidates?: string[]
+  write?: LearnedPage
+}
+
+/** A tool's result: the text the model sees, plus optional accounting. */
+export interface ToolOutput {
+  text: string
+  enrichment?: ToolEnrichment
+}
+
 export interface TurnEndEvent {
   type: 'turn.end'
   turnId: string
   reason: TurnEndReason
+  /** The final answer text when the model answered (`completed`); absent for
+   *  cancellations/errors, where the streamed deltas are the tail. */
+  text?: string
+  /** What the tools of this turn surfaced/wrote (kip#98). */
+  accounting?: TurnAccounting
 }
 
 export interface TurnErrorEvent {

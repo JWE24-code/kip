@@ -50,6 +50,22 @@ The retrieval layer (this repo) and the desktop app
   search within NFR-1's single-digit-ms p95 at 10k notes. The read path in
   `sidecar/session/notes.ts` now uses the ported reader.
 
+- **Answer enrichment on `turn.end`** (#98) — a settled turn now carries the
+  evidence kip-app's `turn->message` already maps: `candidateSlugs` (the slugs
+  `search_notes`/`read_note` surfaced during the turn), `citedSlugs`,
+  `deadCitations`, `lintWarnings` (read from `.roost/lint.json`) and `sources`.
+  Tools report what they surfaced or wrote through a new `ToolOutput`; the loop
+  accounts for it and attaches it to `turn.end` (`server/turn-events.ts`), and
+  `server/turn-enrichment.ts` runs the deterministic extractors ported in
+  `session/notes.ts` against the final answer and the vault. A turn that filed
+  a note (`write_agent_note`/`update_agent_note`) without citing a page reports
+  `intent: "statement"`, `learned: true`, `pages` and a `note`, so the app
+  renders the "✓ Learned" card instead of an empty assistant bubble.
+  `callId`/`arenaId`/`webSource` are deliberately not carried yet: BYOK has no
+  per-call id and kip#79 keeps the managed backend's id on the metering
+  side-channel, while `webSource` needs per-turn capture the shared
+  `web_search` hostcall seam does not expose.
+
 ### The agent workspace (`sidecar/`, P4)
 
 - **Git-versioned `nest/`** (#73, AD-5) — the nest is its own git repository,

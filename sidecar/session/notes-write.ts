@@ -25,6 +25,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import type { Tool, ToolContext } from './loop.ts'
+import type { ToolOutput } from '../protocol.ts'
 import { commitAction } from '../workspace/git.ts'
 
 const require = createRequire(import.meta.url)
@@ -312,16 +313,22 @@ export function createWriteTools ({ vaultRoot }: WriteToolDeps): Tool[] {
   return [
     {
       spec: WRITE_AGENT_NOTE_SPEC,
-      run: async (args: unknown, _ctx?: ToolContext): Promise<string> => {
+      run: async (args: unknown, _ctx?: ToolContext): Promise<ToolOutput> => {
         const result = await writeAgentNote(args, vaultRoot)
-        return `Wrote ${result.id} (${result.action}) at ${result.path}; committed ${result.commit ? result.commit.slice(0, 12) : 'nothing to commit'}.`
+        return {
+          text: `Wrote ${result.id} (${result.action}) at ${result.path}; committed ${result.commit ? result.commit.slice(0, 12) : 'nothing to commit'}.`,
+          enrichment: { write: { action: result.action, slug: result.slug } }
+        }
       }
     },
     {
       spec: UPDATE_AGENT_NOTE_SPEC,
-      run: async (args: unknown, _ctx?: ToolContext): Promise<string> => {
+      run: async (args: unknown, _ctx?: ToolContext): Promise<ToolOutput> => {
         const result = await updateAgentNote(args, vaultRoot)
-        return `Updated ${result.id} at ${result.path}; committed ${result.commit ? result.commit.slice(0, 12) : 'nothing to commit'}.`
+        return {
+          text: `Updated ${result.id} at ${result.path}; committed ${result.commit ? result.commit.slice(0, 12) : 'nothing to commit'}.`,
+          enrichment: { write: { action: result.action, slug: result.slug } }
+        }
       }
     }
   ]
