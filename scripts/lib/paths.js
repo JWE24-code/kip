@@ -118,6 +118,16 @@ function nestPath (vaultRoot = DEFAULT_VAULT_ROOT) {
   return path.join(vaultRoot, 'nest')
 }
 
+// The nest's git metadata dir (P4, kip#73). The nest working tree stays at
+// <coop>/nest (it syncs with the user's graph like any markdown), but the
+// .git directory must never sit inside the coop: a sync engine writing to git
+// objects mid-commit corrupts the repo, exactly as it tears the SQLite WAL
+// (kip#67). So the repo is init'd with this separate gitdir under the same
+// per-coop workspace the index lives in, with <coop>/nest as its worktree.
+function nestGitPath (vaultRoot = DEFAULT_VAULT_ROOT) {
+  return path.join(workspaceRoot(vaultRoot), 'nest.git')
+}
+
 function clucksPath (vaultRoot = DEFAULT_VAULT_ROOT) {
   return path.join(vaultRoot, 'clucks')
 }
@@ -201,6 +211,7 @@ module.exports = {
   warnIfSynced,
   dbPath,
   nestPath,
+  nestGitPath,
   clucksPath,
   pagesPath,
   henhousePath,
