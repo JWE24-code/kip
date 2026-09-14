@@ -73,8 +73,8 @@ export const LIMIT_CAPS: SkillLimits = { wallMs: 120_000, memMb: 512, outputByte
 
 /** The parent-side capabilities the executor knows how to expose. A manifest
  *  may declare a subset; anything else is refused (`kip#78` added
- *  `web_search` + `internal_action`). */
-export const KNOWN_HOSTCALLS = ['fetch_url', 'llm.complete', 'web_search', 'internal_action'] as const
+ *  `web_search` + `internal_action`; `kip#105` added `read_vault_file`). */
+export const KNOWN_HOSTCALLS = ['fetch_url', 'llm.complete', 'web_search', 'internal_action', 'read_vault_file'] as const
 export type KnownHostcall = (typeof KNOWN_HOSTCALLS)[number]
 
 export type SkillSource = 'builtin' | 'user'

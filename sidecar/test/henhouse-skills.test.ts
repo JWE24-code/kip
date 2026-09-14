@@ -14,6 +14,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -26,6 +27,7 @@ import {
 } from '../henhouse/index.ts'
 import { createInternalActionHandler, createWebSearchHostcall } from '../session/internal-actions.ts'
 
+const require = createRequire(import.meta.url)
 const executor = createSkillExecutor()
 
 function makeCoop (): string {
@@ -55,7 +57,7 @@ function withTempWorkspace (t: { after: (fn: () => void) => void }): void {
 
 // ---- criterion 1: capability manifests ------------------------------------
 
-test('the three migrated skills declare network:none and only their hostcalls', () => {
+test('the migrated skills declare network:none and only their hostcalls', () => {
   const web = builtin('web-search')
   assert.equal(web.network.mode, 'none')
   assert.deepEqual(web.hostcalls, ['web_search'])
@@ -68,8 +70,13 @@ test('the three migrated skills declare network:none and only their hostcalls', 
   assert.equal(control.network.mode, 'none')
   assert.deepEqual(control.hostcalls, ['internal_action'])
 
+  const docx = builtin('docx')
+  assert.equal(docx.network.mode, 'none')
+  assert.deepEqual(docx.hostcalls, ['read_vault_file'], 'docx reads the vault only through the hostcall')
+  assert.deepEqual(docx.mounts, [{ name: 'exports', mode: 'rw' }], 'docx needs no input mount')
+
   // Every declared hostcall is something the executor actually exposes.
-  for (const manifest of [web, reminders, control]) {
+  for (const manifest of [web, reminders, control, docx]) {
     assert.ok(manifest.hostcalls.length > 0, `${manifest.name} declares a hostcall`)
     assert.equal(manifest.limits.wallMs > 0, true)
     assert.equal(manifest.limits.memMb > 0, true)
@@ -198,7 +205,7 @@ test('internal_action with no parent handler is NOT_IMPLEMENTED, not a crash', a
 
 // ---- the registration seam -------------------------------------------------
 
-test('createBuiltinSkillTools registers the three skills as kind:skill tools', (t) => {
+test('createBuiltinSkillTools registers the migrated skills as kind:skill tools', (t) => {
   const root = makeCoop()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
 
@@ -208,7 +215,10 @@ test('createBuiltinSkillTools registers the three skills as kind:skill tools', (
     webSearch: async () => ({ backend: 'duckduckgo', results: [] }),
     internalActions: async () => 'ok'
   })
-  assert.deepEqual(tools.map((tool) => tool.spec.name).sort(), ['kip-control', 'reminders', 'web-search'])
+  assert.deepEqual(
+    tools.map((tool) => tool.spec.name).sort(),
+    ['docx', 'kip-control', 'reminders', 'web-search']
+  )
   for (const tool of tools) assert.equal(tool.kind, 'skill')
 })
 
@@ -230,6 +240,89 @@ test('a registered web-search tool returns the fenced result to the loop', async
   const out = String(await tool.run({ query: 'q' }, { signal: new AbortController().signal } as never))
   assert.match(out, /untrusted external source material/i)
   assert.match(out, /tavily/)
+})
+
+// ---- criterion 4: docx reads the vault only through read_vault_file ---------
+
+/** Writes a minimal docxtemplater-shaped .docx at `rel` under `root`. */
+async function writeDocxTemplate (root: string, rel: string, lines: string[]): Promise<string> {
+  const D = require('docx') as {
+    Document: new (options: unknown) => unknown
+    Packer: { toBuffer: (doc: unknown) => Promise<Buffer> }
+    Paragraph: new (text: string) => unknown
+  }
+  const doc = new D.Document({ sections: [{ children: lines.map((text) => new D.Paragraph(text)) }] })
+  const abs = path.join(root, rel)
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, await D.Packer.toBuffer(doc))
+  return abs
+}
+
+function documentXml (file: string): string {
+  const PizZip = require('pizzip') as new (data: Buffer) => {
+    file: (name: string) => { asText: () => string }
+  }
+  return new PizZip(fs.readFileSync(file)).file('word/document.xml').asText()
+}
+
+test('acceptance: docx fills a vault template through the read_vault_file hostcall', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  withTempWorkspace(t)
+  await writeDocxTemplate(root, 'templates/memo.docx', ['Dear {client},', 'You have {count} open items.'])
+
+  const result = await executor.run({
+    manifest: builtin('docx'),
+    vaultRoot: root,
+    input: { template: 'templates/memo.docx', data: { client: 'Acme', count: 7 } }
+  })
+
+  assert.equal(result.ok, true, result.error ?? '')
+  assert.match(result.output, /Filled templates\/memo\.docx/)
+  assert.deepEqual(result.artifacts, [path.join(root, 'exports', 'memo-filled.docx')])
+  const xml = documentXml(path.join(root, 'exports', 'memo-filled.docx'))
+  assert.match(xml, /Dear Acme,/)
+  assert.match(xml, /You have 7 open items\./)
+})
+
+test('acceptance: docx builds a document from content under the sandbox', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  withTempWorkspace(t)
+
+  const result = await executor.run({
+    manifest: builtin('docx'),
+    vaultRoot: root,
+    input: {
+      title: 'Report',
+      filename: 'r.docx',
+      content: [{ heading: 'Intro', level: 1 }, { text: 'Hello world.' }]
+    }
+  })
+
+  assert.equal(result.ok, true, result.error ?? '')
+  assert.deepEqual(result.artifacts, [path.join(root, 'exports', 'r.docx')])
+  assert.match(documentXml(path.join(root, 'exports', 'r.docx')), /Hello world\./)
+})
+
+test('acceptance: docx refuses an absolute template path outside the coop', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  withTempWorkspace(t)
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kip-docx-outside-'))
+  const outside = path.join(outsideDir, 'secret.docx')
+  fs.writeFileSync(outside, 'LIVE VAULT SECRET')
+  t.after(() => fs.rmSync(outsideDir, { recursive: true, force: true }))
+
+  const result = await executor.run({
+    manifest: builtin('docx'),
+    vaultRoot: root,
+    input: { template: outside, data: {} }
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.error ?? '', /outside the vault/)
+  assert.deepEqual(result.artifacts, [], 'a refused template writes nothing')
 })
 
 // ---- the real parent handlers ---------------------------------------------

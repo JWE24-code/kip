@@ -239,6 +239,7 @@ class NodeInprocExecutor implements SkillExecutor {
       const hostcallCtx: HostcallContext = {
         network: manifest.network,
         hostcalls: manifest.hostcalls,
+        vaultRoot,
         fetchImpl: request.fetchImpl ?? globalThis.fetch,
         llm: request.llm,
         webSearch: request.webSearch,
