@@ -14,7 +14,6 @@ import { join } from 'node:path'
 
 import type { LlmStreamEvent, LlmStreamRequest, Tool } from '../session/loop.ts'
 import { ASK_USER_SPEC, TurnLoop } from '../session/loop.ts'
-import { stubToolSchema } from '../session/tools.ts'
 import {
   SEARCH_NOTES_TOOL_NAME,
   createNoteTools
@@ -239,8 +238,6 @@ test('no tool schema accepts a pages/-rooted path (SPEC-1 Acceptance D)', () => 
   ]
   const named = new Map<string, string[]>()
   for (const spec of specs) named.set(spec.name, Object.keys(spec.parameters?.properties ?? {}))
-  // plus the stub tool, whose schema is a zod object rather than a ToolSpec
-  named.set('stub_echo', Object.keys(stubToolSchema.shape))
 
   const pathLike = /^(path|file|filepath|dir|directory|root|vault|targetfile)$/i
   for (const [name, properties] of named) {

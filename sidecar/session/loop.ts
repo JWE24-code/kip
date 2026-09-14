@@ -12,6 +12,7 @@ import type {
   AskUserEvent,
   ErrorCode,
   LlmToolCall,
+  SkillProgressEvent,
   ToolSpec,
   TurnEndReason,
   TurnError,
@@ -51,6 +52,16 @@ export interface ToolContext {
   // Available to any tool, not just the built-in one: a skill may need to ask
   // the user mid-work.
   askUser(question: string, options?: string[]): Promise<string>
+  // A long-running tool (a skill) reports coarse progress here; the loop turns
+  // each update into a `skill.progress` event for the client. Skill tools get
+  // an automatic start/done pair; finer phases are the tool's to emit.
+  progress(update: SkillProgress): void
+}
+
+export interface SkillProgress {
+  phase: string
+  message?: string
+  pct?: number
 }
 
 export interface Tool {
@@ -328,14 +339,21 @@ export class TurnLoop {
       name: call.name,
       args: call.arguments,
     })
+    // A skill's own exec line is trace-only; the client's live view of a long
+    // run is the skill.progress pair bracketing it (kip#94).
+    if (tool.kind === 'skill') this.skillProgress(active, call.name, { phase: 'start' })
 
     let ok = true
     let result: string
     try {
-      result = String(await tool.run(call.arguments, this.toolContext(active)))
+      result = String(await tool.run(call.arguments, this.toolContext(active, call.name)))
     } catch (error) {
       ok = false
       result = errorMessage(error)
+    }
+
+    if (tool.kind === 'skill') {
+      this.skillProgress(active, call.name, { phase: 'done', message: ok ? undefined : result })
     }
 
     // Client gets a bounded result; the trace keeps the whole thing, and a
@@ -407,7 +425,7 @@ export class TurnLoop {
     })
   }
 
-  private toolContext(active: ActiveTurn): ToolContext {
+  private toolContext(active: ActiveTurn, skillName?: string): ToolContext {
     return {
       sessionId: active.sessionId,
       turnId: active.turnId,
@@ -417,7 +435,22 @@ export class TurnLoop {
         name: ASK_USER_NAME,
         arguments: options ? { question, options } : { question },
       }),
+      progress: (update: SkillProgress) => {
+        if (skillName) this.skillProgress(active, skillName, update)
+      },
     }
+  }
+
+  private skillProgress(active: ActiveTurn, skill: string, update: SkillProgress): void {
+    const event: SkillProgressEvent = {
+      type: 'skill.progress',
+      turnId: active.turnId,
+      skill,
+      phase: update.phase,
+      ...(update.message !== undefined ? { message: update.message } : {}),
+      ...(update.pct !== undefined ? { pct: update.pct } : {}),
+    }
+    this.dispatch(active, event)
   }
 
   private addUsage(active: ActiveTurn, usage: Usage): void {

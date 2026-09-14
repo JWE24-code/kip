@@ -19,7 +19,7 @@
 // `fetchImpl` replaces fetch, so the suite runs with no key and no network.
 
 import { createRequire } from 'node:module'
-import type { CompleteFn, CompleteResult as TurnCompleteResult } from '../session/turn.ts'
+import type { CompleteFn, CompleteResult as TurnCompleteResult } from '../session/llm-client.ts'
 import {
   KIP_BASE_URL_DEFAULT,
   missingRequiredField,

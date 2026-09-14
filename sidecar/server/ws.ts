@@ -1,7 +1,12 @@
 // The WebSocket surface: bind 127.0.0.1 only, authenticate the first frame
-// (hello/ready), then route catalogued events to the turn loop. The server
+// (hello/ready), then route catalogued events to the real turn loop. The server
 // owns the wire; process lifecycle (signals, parent death, the idle timeout)
 // lives in index.ts, which the silence hook below calls back into.
+//
+// Since kip#94 this dispatches through `session/loop.ts`'s `TurnLoop` — the
+// implementation every P1–P7 tool was built against — and never the retired P1
+// stub. `session/llm-client.ts` bridges the BYOK text client to the loop;
+// `server/turn-events.ts` maps the loop's events onto the wire.
 
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
@@ -15,20 +20,32 @@ import {
   validatePayload,
   type ServerEventType
 } from './protocol.ts'
-import { runTurn, type CompleteFn } from '../session/turn.ts'
+import { ProtocolError, type TurnEvent } from '../protocol.ts'
+import { TurnLoop, type LlmClient, type Tool } from '../session/loop.ts'
+import { createReActLlmClient, type CompleteFn } from '../session/llm-client.ts'
+import { createDefaultTools } from '../session/default-tools.ts'
+import { TurnEventTranslator } from './turn-events.ts'
 import { UndoUnavailableError, undo, workspacePaths } from '../workspace/git.ts'
 import { silentLogger, type Logger } from '../logger.ts'
 
 export interface SidecarServerOptions {
   token: string
-  complete: CompleteFn
-  /** The coop whose git-versioned `nest/` workspace undo operates on. */
+  /** The BYOK text-completion seam. Wrapped as the loop's `LlmClient` unless
+   *  `llm` is supplied directly (tests inject a scripted client this way). */
+  complete?: CompleteFn
+  /** An already-built loop client; wins over `complete`. */
+  llm?: LlmClient
+  /** Override the tool set (tests, or a future capability gate). */
+  tools?: Tool[]
+  /** The coop whose git-versioned `nest/` workspace undo operates on, and whose
+   *  notes/skills the default tool set binds to. */
   vaultRoot?: string
   port?: number
   protocolVersion?: number
   maxToolCalls?: number
-  deltaBatchMs?: number
   maxResultChars?: number
+  /** Hard ceiling for a cancel to unwind the loop (loop.ts cancelTimeoutMs). */
+  cancelTimeoutMs?: number
   /** Kills the process after this many ms with no socket traffic in either
    *  direction. 0 disables the watchdog (the default — index.ts sets 5000). */
   silenceMs?: number
@@ -46,8 +63,8 @@ export interface SidecarServer {
 interface ConnState {
   socket: WebSocket
   authed: boolean
-  turnBusy: boolean
-  abort: AbortController | null
+  loop: TurnLoop
+  translator: TurnEventTranslator
 }
 
 function safeTokenEqual (a: string, b: string): boolean {
@@ -61,6 +78,17 @@ export function generateToken (): string {
   return randomBytes(32).toString('hex')
 }
 
+/** The loop already speaks these codes; the wire only catalogues two of them
+ *  plus TURN_IN_PROGRESS. Anything else is an internal failure. */
+function protocolErrorCode (error: unknown): ErrorCode {
+  if (error instanceof ProtocolError) {
+    if (error.code === 'TURN_NOT_FOUND') return ErrorCode.TURN_NOT_FOUND
+    if (error.code === 'NO_PENDING_ASK') return ErrorCode.NO_PENDING_ASK
+    if (error.code === 'TURN_ALREADY_RUNNING') return ErrorCode.TURN_IN_PROGRESS
+  }
+  return ErrorCode.INTERNAL
+}
+
 /** Starts the server and resolves once it is listening, with the actual port
  *  (port 0 means the OS picked one). */
 export async function startSidecarServer (
@@ -71,6 +99,16 @@ export async function startSidecarServer (
   const silenceMs = options.silenceMs ?? 0
   const idleCheckMs = options.idleCheckMs ?? 250
   const sessionId = randomUUID()
+
+  const llm = options.llm ?? (options.complete ? createReActLlmClient(options.complete) : null)
+  if (!llm) throw new Error('startSidecarServer requires either `llm` or `complete`')
+
+  const tools = options.tools ?? (
+    options.vaultRoot
+      ? createDefaultTools({ vaultRoot: options.vaultRoot, ...(options.complete ? { complete: options.complete } : {}) })
+      : []
+  )
+  logger.info(`turn loop wired with ${tools.length} tool(s): ${tools.map((tool) => tool.spec.name).join(', ')}`)
 
   const wss = new WebSocketServer({ host: '127.0.0.1', port: options.port ?? 0 })
   const states = new Map<WebSocket, ConnState>()
@@ -103,7 +141,19 @@ export async function startSidecarServer (
     activeSocket = socket
     touch()
 
-    const state: ConnState = { socket, authed: false, turnBusy: false, abort: null }
+    const translator = new TurnEventTranslator()
+    const loop = new TurnLoop({
+      llm,
+      tools,
+      emit: (event: TurnEvent) => {
+        const wire = translator.translate(event)
+        if (wire) send(socket, wire.type, wire.payload)
+      },
+      maxToolCalls: options.maxToolCalls,
+      clientResultCharLimit: options.maxResultChars,
+      cancelTimeoutMs: options.cancelTimeoutMs
+    })
+    const state: ConnState = { socket, authed: false, loop, translator }
     states.set(socket, state)
 
     socket.on('message', (data) => {
@@ -111,7 +161,8 @@ export async function startSidecarServer (
       void handleMessage(state, data.toString())
     })
     socket.on('close', () => {
-      state.abort?.abort()
+      const turnId = state.loop.activeTurnId()
+      if (turnId) void state.loop.cancel(turnId).catch(() => {})
       states.delete(socket)
       if (activeSocket === socket) activeSocket = null
     })
@@ -170,12 +221,10 @@ export async function startSidecarServer (
           await handleChatSend(conn, validated.data as { text: string })
           return
         case 'chat.respond':
+          handleChatRespond(conn, validated.data as { toolCallId: string, value: string })
+          return
         case 'chat.cancel':
-          sendError(
-            conn.socket,
-            ErrorCode.NOT_IMPLEMENTED,
-            `${type} is scheduled for kip#69`
-          )
+          await handleChatCancel(conn, validated.data as { turnId?: string })
           return
         case 'undo':
           await handleUndo(conn, validated.data as { count?: number })
@@ -237,37 +286,54 @@ export async function startSidecarServer (
       conn: ConnState,
       payload: { text: string }
     ): Promise<void> {
-      if (conn.turnBusy) {
-        sendError(conn.socket, ErrorCode.TURN_IN_PROGRESS, 'a turn is already running')
-        return
-      }
-      conn.turnBusy = true
-      const controller = new AbortController()
-      conn.abort = controller
-      const turnId = randomUUID()
       try {
-        await runTurn({
-          turnId,
-          text: payload.text,
-          emit: (eventType, eventPayload) => {
-            send(conn.socket, eventType as ServerEventType, eventPayload)
-          },
-          complete: options.complete,
-          maxToolCalls: options.maxToolCalls,
-          deltaBatchMs: options.deltaBatchMs,
-          maxResultChars: options.maxResultChars,
-          signal: controller.signal,
-          logger
-        })
+        await conn.loop.start(sessionId, payload.text)
       } catch (err) {
         sendError(
           conn.socket,
-          ErrorCode.INTERNAL,
+          protocolErrorCode(err),
           err instanceof Error ? err.message : String(err)
         )
-      } finally {
-        conn.turnBusy = false
-        conn.abort = null
+      }
+    }
+
+    // A `chat.respond` only resumes the matching suspended `ask_user`; a stray
+    // one is NO_PENDING_ASK / TURN_NOT_FOUND from the loop, never a silent drop.
+    function handleChatRespond (
+      conn: ConnState,
+      payload: { toolCallId: string, value: string }
+    ): void {
+      try {
+        conn.loop.respond(payload.toolCallId, payload.value)
+      } catch (err) {
+        sendError(
+          conn.socket,
+          protocolErrorCode(err),
+          err instanceof Error ? err.message : String(err)
+        )
+      }
+    }
+
+    // `chat.cancel` aborts the in-flight turn (the only one a connection can
+    // have); `turnId` is optional, so a client that never saw `turn.start` can
+    // still cancel. `cancel` already waits out the loop's ≤1s cancel budget.
+    async function handleChatCancel (
+      conn: ConnState,
+      payload: { turnId?: string }
+    ): Promise<void> {
+      const turnId = payload.turnId ?? conn.loop.activeTurnId()
+      if (!turnId) {
+        sendError(conn.socket, ErrorCode.TURN_NOT_FOUND, 'no active turn to cancel')
+        return
+      }
+      try {
+        await conn.loop.cancel(turnId)
+      } catch (err) {
+        sendError(
+          conn.socket,
+          protocolErrorCode(err),
+          err instanceof Error ? err.message : String(err)
+        )
       }
     }
   }
@@ -300,7 +366,10 @@ export async function startSidecarServer (
       clearInterval(idleTimer)
       idleTimer = null
     }
-    for (const state of states.values()) state.abort?.abort()
+    for (const state of states.values()) {
+      const turnId = state.loop.activeTurnId()
+      if (turnId) void state.loop.cancel(turnId).catch(() => {})
+    }
     for (const client of wss.clients) client.close(1001, 'server shutdown')
     await new Promise<void>((resolve) => wss.close(() => resolve()))
   }
