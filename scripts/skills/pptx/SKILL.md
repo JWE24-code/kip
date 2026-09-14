@@ -5,8 +5,10 @@ when_to_use: >
   The user wants a slide deck, a presentation, a .pptx, or slides built from an outline
   or a set of bullet points.
 entry: run.js
-network: false
-timeout: 60
+network: none
+mounts: [exports]
+hostcalls: [read_vault_file]
+limits: { wall: 60, mem: 128, output: "64kb" }
 parameters:
   - { name: slides, type: array, required: true, description: "Slide specs, in order. Each is one of: {\"title\":\"...\",\"bullets\":[\"...\"]}, {\"title\":\"...\",\"text\":\"...\"}, {\"title\":\"...\",\"image\":\"<coop path to .png/.jpg>\"}, {\"section\":\"...\"} (a divider slide)." }
   - { name: title, type: string, required: false, description: "Deck title — adds a title slide at the front." }
