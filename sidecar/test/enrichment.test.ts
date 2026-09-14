@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -280,6 +280,47 @@ test('enrich_source runs as a real tool in the TurnLoop and reports in plain lan
   assert.match(report, /Enriched "Atlas Deadline"/)
   assert.match(report, /created \[\[atlas-deadline\]\]/)
   assert.match(report, /one commit/i)
+})
+
+test('an enrichment run detects a contradiction live and files a conflicts/ report (FR-15)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  useLocalProvider(root)
+
+  const llm = stubLLM(modelResponse([
+    { title: 'Alpha', type: 'concept', tags: [], summary: 'Alpha', body: 'Alpha launches in June.' },
+    { title: 'Beta', type: 'concept', tags: [], summary: 'Beta', body: 'Alpha launches in May.' }
+  ]))
+
+  // The live FR-15 check is injected: it should only ever see the pages this run
+  // put in play, and it reports a contradiction between the two of them.
+  const seenBatches: string[][] = []
+  const flagFn = async (group: Array<{ slug: string }>): Promise<Array<{ slugs: string[], description: string }>> => {
+    seenBatches.push(group.map((page) => page.slug))
+    if (!group.some((page) => page.slug === 'alpha') || !group.some((page) => page.slug === 'beta')) return []
+    return [{ slugs: ['alpha', 'beta'], description: 'Alpha and Beta disagree on the launch month.' }]
+  }
+
+  let result: Awaited<ReturnType<typeof enrichSource>>
+  try {
+    result = await enrichSource({ text: 'Launch notes: Alpha ships in June, or May.', title: 'Launch Notes' }, { vaultRoot: root, flagFn })
+  } finally {
+    llm.restore()
+  }
+
+  assert.equal(seenBatches.length, 1, 'only the run\'s in-play concepts were batched')
+  assert.deepEqual(seenBatches[0].slice().sort(), ['alpha', 'beta'])
+  assert.equal(result.conflicts.length, 1)
+  assert.deepEqual(result.conflicts[0].slugs.slice().sort(), ['alpha', 'beta'])
+  assert.equal(result.conflictReports.length, 1)
+
+  const reportPath = join(root, result.conflictReports[0].path)
+  assert.ok(existsSync(reportPath), 'a conflicts/ report page was written')
+  const markdown = readFileSync(reportPath, 'utf8')
+  assert.match(markdown, /\[\[alpha\]\]/)
+  assert.match(markdown, /\[\[beta\]\]/)
+  assert.match(result.report, /possible conflict between \[\[alpha\]\] and \[\[beta\]\]/)
+  assert.equal(await commitCount(root), 1, 'the report rides the run\'s single commit')
 })
 
 test('enrich_source validates its arguments: one of text/url, and no path-shaped keys', () => {

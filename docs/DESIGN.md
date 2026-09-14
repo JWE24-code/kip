@@ -347,6 +347,14 @@ findings) which Peck reads at answer time to flag a cited page that Groom
 found orphaned / contradicted / drifted (kip-app#116). Every checklist item
 is a suggestion; Groom never edits or deletes a `nest/` page.
 
+In the rebuilt harness (P5, kip#76) this same algorithm also runs live inside the
+sidecar: the enrichment pipeline runs the batch-scoped contradiction check over
+the pages a run put in play (AD-9's ≤6 ceiling, unchanged), folding in whatever
+the last full groom stored in `lint.json` (read-only). A detected contradiction
+is written to `nest/conflicts/<a>-<b>.md` — a report linking `[[a]]` and `[[b]]`
+that resolves to the two pages — and named in the chat report; the contradicted
+pages are never edited.
+
 ### 5.4 Skills — Peck's tool loop
 
 A **skill** is a Claude-Code-style folder — a `SKILL.md` manifest
