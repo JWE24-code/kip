@@ -53,6 +53,19 @@ The retrieval layer (this repo) and the desktop app
   path — the user's vault is read-only at the schema and dispatch layer
   (SPEC-1 Acceptance D).
 
+### The agent workspace (`sidecar/`, P5)
+
+- **Enrichment pipeline** (#75, SPEC-1 FR-13/FR-14/FR-21) — Hatch's
+  propose → draft → dedup → write flow is wrapped behind an `enrich_source`
+  tool in the sidecar turn loop (`sidecar/session/enrichment.ts`) for pasted
+  text or a fetched URL. It reuses `proposePlan` (the one-call
+  `proposeAndDraftPages` path) and `commitHatchPlan` unchanged, so the
+  synthesized trace hub, `source::`/`source_hatched::` provenance, and the
+  `findSimilarSlug` create-vs-update resolution are identical to the CLI.
+  Every run produces exactly one commit (the P4 git workspace) and a
+  plain-language report; an unchanged re-run is skipped by the
+  `hatched_sources` content-hash gate.
+
 ### CI
 
 - **GitHub Actions** — `.github/workflows/test.yml` runs `npm ci && npm test`

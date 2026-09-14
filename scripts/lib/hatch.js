@@ -119,6 +119,45 @@ function pickPerson (candidate) {
 }
 
 /**
+ * The propose+resolve half of Hatch, for a source already in hand (a file the
+ * caller read, pasted text, or a fetched document): ask the LLM which pages it
+ * touches, draft every body in the same call (combined), synthesize the
+ * per-document trace hub when the model didn't propose one, and resolve
+ * create-vs-update for each via findSimilarSlug(). No writes — the returned
+ * plan is exactly what commitHatchPlan()/resolvePage() would do.
+ *
+ * Shared by the file-based proposeHatchPlan() and the sidecar's enrichment
+ * entry point, so pasted text and a scanned page go through one implementation.
+ *
+ * @returns {{candidates: Array, plan: Array}}
+ */
+async function proposePlan ({ sourceTitle, sourceContent, sourceRelPath = null, sourceOriginal = null }, vaultRoot = DEFAULT_VAULT_ROOT, { combined = true } = {}) {
+  const proposed = combined
+    ? await proposeAndDraftPages(sourceTitle, sourceContent, vaultRoot)
+    : await proposeCandidatePages(sourceTitle, sourceContent, vaultRoot)
+  const candidates = proposed.filter((c) =>
+    c && typeof c.title === 'string' && c.title.trim() && VALID_TYPES.has(c.type) &&
+    (!combined || (typeof c.body === 'string' && c.body.trim())))
+
+  // The per-document trace hub (kip-app#113). The prompt asks for a
+  // type:'source' page but nothing enforced it, so a plan could hatch a whole
+  // document with nothing linking back to it. Synthesize the hub into the
+  // plan HERE — the human reviewing the plan sees it and can deselect it.
+  if (!candidates.some((c) => c.type === 'source')) {
+    const hash = hashContent(sourceContent)
+    candidates.push({
+      type: 'source',
+      title: sourceTitle,
+      body: `## Source\n\n- Source file: \`${sourceRelPath}\`${sourceOriginal ? `\n- Original document: \`${sourceOriginal}\`` : ''}\n- Content hash at hatch: \`${hash.slice(0, 12)}…\`\n- Hatched: ${new Date().toISOString().slice(0, 10)}\n\nThis page is the document's trace hub: the pages hatched from it carry \`source: ${sourceRelPath}\` in their frontmatter.`,
+      tags: [],
+      summary: `Hatched from ${sourceRelPath}`
+    })
+  }
+  const plan = planCandidates(candidates, vaultRoot, { sourceRelPath })
+  return { candidates, plan }
+}
+
+/**
  * Steps 1-3 of the Hatch workflow: (optionally) copy the source into
  * coop/pages/, ask the LLM which pages it likely touches, and resolve
  * create-vs-update for each — without writing anything to coop/nest/ yet.
@@ -151,29 +190,8 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
     if (sourceMeta && typeof sourceMeta.source === 'string' && sourceMeta.source.trim()) sourceOriginal = sourceMeta.source.trim()
   } catch { /* not frontmatter'd — fine */ }
 
-  const proposed = combined
-    ? await proposeAndDraftPages(sourceTitle, sourceContent, vaultRoot)
-    : await proposeCandidatePages(sourceTitle, sourceContent, vaultRoot)
-  const candidates = proposed.filter((c) =>
-    c && typeof c.title === 'string' && c.title.trim() && VALID_TYPES.has(c.type) &&
-    (!combined || (typeof c.body === 'string' && c.body.trim())))
-
-  // The per-document trace hub (kip-app#113). The prompt asks for a
-  // type:'source' page but nothing enforced it, so a plan could hatch a whole
-  // document with nothing linking back to it. Synthesize the hub into the
-  // plan HERE — the human reviewing the plan sees it and can deselect it.
   const sourceRelPath = path.relative(vaultRoot, sourceFilePath).split(path.sep).join('/')
-  if (!candidates.some((c) => c.type === 'source')) {
-    const hash = hashContent(sourceContent)
-    candidates.push({
-      type: 'source',
-      title: sourceTitle,
-      body: `## Source\n\n- Source file: \`${sourceRelPath}\`${sourceOriginal ? `\n- Original document: \`${sourceOriginal}\`` : ''}\n- Content hash at hatch: \`${hash.slice(0, 12)}…\`\n- Hatched: ${new Date().toISOString().slice(0, 10)}\n\nThis page is the document's trace hub: the pages hatched from it carry \`source: ${sourceRelPath}\` in their frontmatter.`,
-      tags: [],
-      summary: `Hatched from ${sourceRelPath}`
-    })
-  }
-  const plan = planCandidates(candidates, vaultRoot, { sourceRelPath })
+  const { plan } = await proposePlan({ sourceTitle, sourceContent, sourceRelPath, sourceOriginal }, vaultRoot, { combined })
 
   return { sourceTitle, sourceContent, sourceFilePath, sourceRelPath, sourceOriginal, plan }
 }
@@ -733,6 +751,7 @@ async function commitReviewedPlan (vaultRoot = DEFAULT_VAULT_ROOT, { keepSlugs =
 
 module.exports = {
   proposeHatchPlan,
+  proposePlan,
   commitHatchPlan,
   proposeNextPending,
   commitReviewedPlan,
