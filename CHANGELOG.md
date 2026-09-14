@@ -7,6 +7,32 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Hybrid retrieval** (#71, AD-8) — retrieval merges FTS5 lexical hits and
+  block-level vector hits by reciprocal rank fusion (`scripts/lib/hybrid.js`).
+  Vector search lives in its own `.roost/vectors.db` (sqlite-vec, AD-8), so the
+  FTS index still works when the native extension is unavailable. `Peck` uses
+  `hybridSearch`, which degrades to exactly the old FTS ranking when there is
+  no vector index.
+- **Local, incremental embeddings** (#71, AD-16) — `scripts/lib/embeddings.js`
+  provides a CPU-only, dependency-free default embedder behind a pluggable
+  `{ id, dimensions, embed(texts) }` contract (name via `KIP_EMBEDDING_MODEL`).
+  Blocks are identified by Logseq's `id::` property or a stable
+  path + blockIndex fallback, and only blocks whose content hash changed are
+  re-embedded; an unchanged re-save embeds zero blocks. A different model id or
+  vector width resets the store instead of mixing vector spaces.
+- **Live vault watcher** (#71, AD-15) — `scripts/lib/watcher.js` (chokidar,
+  `awaitWriteFinish` ~400/100ms, per-burst ~500ms debounce) treats watcher
+  events as hints and the disk as truth: nest edits reindex immediately, source
+  edits are handed to the app to hatch, torn writes retry at +200/+500ms and
+  keep the last-good index, sync/editor artifacts are ignored, and a boot (or
+  overflow) reconcile of the whole vault heals a mid-burst kill. Entries:
+  `node scripts/watch.js`, `--once`, `--json`; npm scripts `watch` and
+  `rebuild-vectors`.
+
 ## [0.5.5] — 2026-09-06
 
 ### The retrieval layer (`scripts/`)
