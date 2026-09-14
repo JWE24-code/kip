@@ -24,6 +24,13 @@ import { createRequire } from 'node:module'
 import { z } from 'zod'
 import type { Tool, ToolContext } from './loop.ts'
 import { knownConflictsFor } from './notes.ts'
+import {
+  findContradictionsInPlay,
+  writeConflictReports,
+  type ConflictFinding,
+  type ConflictReport,
+  type FlagContradictionsFn
+} from './groom.ts'
 import { commitAction } from '../workspace/git.ts'
 
 const require = createRequire(import.meta.url)
@@ -86,6 +93,8 @@ export interface EnrichOptions {
   vaultRoot: string
   /** Test seam for the URL fetch; defaults to the runtime's `fetch`. */
   fetchImpl?: typeof fetch
+  /** Test seam for the FR-15 contradiction check; defaults to groom's LLM fn. */
+  flagFn?: FlagContradictionsFn
 }
 
 interface ResolvedSource {
@@ -189,6 +198,8 @@ export interface EnrichResult {
   updated: string[]
   skipped: string[]
   conflicts: EnrichConflict[]
+  /** The `nest/conflicts/` report pages written for the conflicts above. */
+  conflictReports: ConflictReport[]
   commit: string | null
   committed: boolean
   /** The plain-language summary the turn loop hands back in chat. */
@@ -215,6 +226,9 @@ function summarize (result: Omit<EnrichResult, 'report'>): string {
   for (const conflict of result.conflicts) {
     lines.push(`- possible conflict between ${conflict.slugs.map((slug) => `[[${slug}]]`).join(' and ')}: ${conflict.note}`)
   }
+  for (const report of result.conflictReports) {
+    lines.push(`- wrote [[${report.slug}]] linking ${report.slugs.map((slug) => `[[${slug}]]`).join(' and ')}`)
+  }
   lines.push(result.committed
     ? `Committed the whole run as ${String(result.commit).slice(0, 12)} (one commit).`
     : 'Nothing to commit.')
@@ -227,7 +241,7 @@ function summarize (result: Omit<EnrichResult, 'report'>): string {
  * no-op (the content-hash gate), and provenance frontmatter is written by the
  * ported `resolvePage` unchanged.
  */
-export async function enrichSource (input: EnrichInput, { vaultRoot, fetchImpl }: EnrichOptions): Promise<EnrichResult> {
+export async function enrichSource (input: EnrichInput, { vaultRoot, fetchImpl, flagFn }: EnrichOptions): Promise<EnrichResult> {
   const source = await resolveSource(input, fetchImpl)
   const hash = roost.hashContent(source.content)
 
@@ -243,6 +257,7 @@ export async function enrichSource (input: EnrichInput, { vaultRoot, fetchImpl }
       updated: [],
       skipped: [],
       conflicts: [] as EnrichConflict[],
+      conflictReports: [] as ConflictReport[],
       commit: null,
       committed: false
     }
@@ -266,6 +281,7 @@ export async function enrichSource (input: EnrichInput, { vaultRoot, fetchImpl }
       updated: [],
       skipped: [],
       conflicts: [] as EnrichConflict[],
+      conflictReports: [] as ConflictReport[],
       commit: null,
       committed: false
     }
@@ -292,6 +308,7 @@ export async function enrichSource (input: EnrichInput, { vaultRoot, fetchImpl }
       updated: [],
       skipped,
       conflicts: [] as EnrichConflict[],
+      conflictReports: [] as ConflictReport[],
       commit: null,
       committed: false
     }
@@ -303,7 +320,16 @@ export async function enrichSource (input: EnrichInput, { vaultRoot, fetchImpl }
   roost.recordHatchedSource(source.source, hash, vaultRoot)
 
   const touched = [...new Set(results.map((result) => result.slug))]
-  const conflicts = knownConflictsFor(vaultRoot, touched)
+
+  // FR-13/FR-15 contradiction-check step, now live (kip#76): run Groom's
+  // batch-scoped pass over the pages this run put in play — AD-9's ≤6 ceiling,
+  // unchanged — and fold in whatever the last full groom already recorded in
+  // `.roost/lint.json` (read-only). Detected contradictions become
+  // `nest/conflicts/` reports, written before the single commit so the whole
+  // run, reports included, is one user-visible action.
+  const detected = await findContradictionsInPlay(vaultRoot, touched, flagFn ? { flagFn } : {})
+  const conflicts = mergeConflicts(detected, knownConflictsFor(vaultRoot, touched))
+  const conflictReports = writeConflictReports(vaultRoot, conflicts)
 
   // The single commit boundary for the whole run (kip#73's git wiring).
   const commit = await commitAction({ vaultRoot, message: `enrich_source: ${source.title}` })
@@ -317,10 +343,30 @@ export async function enrichSource (input: EnrichInput, { vaultRoot, fetchImpl }
     updated: results.filter((result) => result.action === 'update').map((result) => result.slug),
     skipped,
     conflicts,
+    conflictReports,
     commit: commit.sha,
     committed: commit.committed
   }
   return { ...base, report: summarize(base) }
+}
+
+/**
+ * Folds the live batch check and the last groom's stored findings into one
+ * de-duplicated, `{ slugs, note }` list, keyed on the pair. The live description
+ * wins when both sources name the same pair.
+ */
+function mergeConflicts (live: ConflictFinding[], stored: ConflictFinding[]): EnrichConflict[] {
+  const seen = new Set<string>()
+  const out: EnrichConflict[] = []
+  for (const conflict of [...live, ...stored]) {
+    const slugs = [...new Set((conflict.slugs || []).filter((slug) => typeof slug === 'string' && slug.length > 0))]
+    if (slugs.length < 2) continue
+    const key = slugs.slice().sort().join('|')
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ slugs, note: String(conflict.note ?? conflict.description ?? '') })
+  }
+  return out
 }
 
 // ---- The tool --------------------------------------------------------------
@@ -353,6 +399,7 @@ export const ENRICH_SOURCE_SPEC = {
 export interface EnrichToolDeps {
   vaultRoot: string
   fetchImpl?: typeof fetch
+  flagFn?: FlagContradictionsFn
 }
 
 /**
@@ -360,13 +407,17 @@ export interface EnrichToolDeps {
  * paste-or-URL schema; a malformed call throws so the loop reports a failed
  * tool call rather than writing anything.
  */
-export function createEnrichTools ({ vaultRoot, fetchImpl }: EnrichToolDeps): Tool[] {
+export function createEnrichTools ({ vaultRoot, fetchImpl, flagFn }: EnrichToolDeps): Tool[] {
   return [
     {
       spec: ENRICH_SOURCE_SPEC,
       run: async (args: unknown, _ctx?: ToolContext): Promise<string> => {
         const parsed = enrichSourceSchema.parse(args)
-        const result = await enrichSource(parsed, fetchImpl ? { vaultRoot, fetchImpl } : { vaultRoot })
+        const result = await enrichSource(parsed, {
+          vaultRoot,
+          ...(fetchImpl ? { fetchImpl } : {}),
+          ...(flagFn ? { flagFn } : {})
+        })
         return result.report
       }
     }
