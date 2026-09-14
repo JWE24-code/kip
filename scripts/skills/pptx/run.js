@@ -6,6 +6,17 @@
 //                                    best-effort fill of title/body placeholders
 //                                    (pptx-automizer)
 //
+// A sandboxed skill holds no vault access (kip#105, kip#106): every vault file
+// this skill needs — the template, the theme JSON, the theme logo, and each
+// slide image — comes from the parent over the `read_vault_file` hostcall, which
+// resolves the path against the real vault root and refuses anything that
+// escapes it. Because pptx-automizer and pptxgenjs.addImage both want a real
+// path (not a buffer), the hostcall's bytes are written into the run's own
+// writable scratch dir (`KIP_SCRATCH_DIR`) before either library sees them. The
+// direct-`fs` fallback below is only for the legacy `scripts/lib/skills.js` CLI
+// runner, which predates the sandbox and provides no `globalThis.kip`; it
+// enforces the same containment rule.
+//
 // Deps (pure JS): pptxgenjs, pptx-automizer. Required lazily.
 const fs = require('node:fs')
 const path = require('node:path')
@@ -20,14 +31,83 @@ const coop = process.env.KIP_COOP_ROOT ? path.resolve(process.env.KIP_COOP_ROOT)
 const exportsDir = process.env.KIP_EXPORTS_DIR
   ? path.resolve(process.env.KIP_EXPORTS_DIR)
   : path.join(coop, 'exports')
+const scratchDir = process.env.KIP_SCRATCH_DIR ? path.resolve(process.env.KIP_SCRATCH_DIR) : null
 
+// Legacy runner only: a path — relative *or* absolute — must resolve inside the
+// coop. An absolute path that happens to point elsewhere is refused, not read.
 function resolveInCoop (rel, label) {
   const abs = path.resolve(coop, rel)
-  if (!path.isAbsolute(rel) && !(abs === coop || abs.startsWith(coop + path.sep))) {
+  if (abs !== coop && !abs.startsWith(coop + path.sep)) {
     fail(`${label} "${rel}" resolves outside the coop — use a path inside it.`)
   }
   if (!fs.existsSync(abs)) fail(`${label} not found: ${rel}`)
   return abs
+}
+
+const hasBridge = () => !!(globalThis.kip && typeof globalThis.kip.hostcall === 'function')
+
+// Sandboxed: ask the parent, which owns the vault and the containment check.
+async function readViaHostcall (rel, label) {
+  let result
+  try {
+    result = await globalThis.kip.hostcall('read_vault_file', { path: String(rel) })
+  } catch (err) {
+    fail(`${label} "${rel}" — ${err && err.message ? err.message : String(err)}`)
+  }
+  if (!result || typeof result.bytes !== 'string') fail(`could not read ${label} "${rel}" from the vault.`)
+  return Buffer.from(result.bytes, 'base64')
+}
+
+// Legacy `scripts/lib/skills.js` runner: no bridge, so read it directly — with
+// the same containment rule the parent applies.
+function readViaLegacy (rel, label) {
+  return fs.readFileSync(resolveInCoop(rel, label))
+}
+
+async function readBytes (rel, label) {
+  return hasBridge() ? readViaHostcall(rel, label) : readViaLegacy(rel, label)
+}
+
+// pptx-automizer and pptxgenjs.addImage take a *path*, not bytes. Under the
+// sandbox the vault path does not exist for the child, so materialize the
+// hostcall's bytes into the run's scratch dir and hand that path over; the
+// legacy runner keeps using the real coop path.
+async function vaultPath (rel, label) {
+  if (!hasBridge()) return resolveInCoop(rel, label)
+  const bytes = await readBytes(rel, label)
+  if (!scratchDir) fail(`no scratch directory is available to stage ${label} "${rel}".`)
+  const dir = fs.mkdtempSync(path.join(scratchDir, 'vault-'))
+  const file = path.join(dir, path.basename(rel) || 'file.bin')
+  fs.writeFileSync(file, bytes)
+  return file
+}
+
+// pptxgenjs resolves `https` at module scope for its remote-image path, even
+// when a deck only references local files. The sandbox removes the network
+// built-ins outright, so requiring pptxgenjs would fail before it drew a
+// single slide. Under the bridge, install a refusing stub for `https`: the
+// library loads, and any actual use throws. This grants no capability — remote
+// media is never something this skill can fetch; only local files staged from
+// the `read_vault_file` hostcall ever reach it.
+function permitNetworklessPptxgenjs () {
+  if (!hasBridge()) return
+  const Module = require('node:module')
+  const baseLoad = Module._load
+  const denied = () => {
+    const err = new Error('network access is denied in the skill sandbox; use a declared hostcall')
+    err.code = 'ERR_ACCESS_DENIED'
+    return err
+  }
+  const httpsStub = new Proxy({}, {
+    get (_target, prop) {
+      if (prop === 'then') return undefined
+      throw denied()
+    }
+  })
+  Module._load = function (request, parent, isMain) {
+    if (request === 'https' || request === 'node:https') return httpsStub
+    return baseLoad.apply(this, arguments)
+  }
 }
 
 function relToCoop (p) {
@@ -50,7 +130,7 @@ if (!slides.length) fail('"slides" is required — an array of slide specs.')
 // template mode — pptx-automizer
 // --------------------------------------------------------------------------
 async function fromTemplate () {
-  const tpl = resolveInCoop(input.template, 'template')
+  const tpl = await vaultPath(input.template, 'template')
   const { Automizer, ModifyTextHelper } = require('pptx-automizer')
   const dir = path.dirname(tpl)
   const name = path.basename(tpl)
@@ -119,14 +199,15 @@ function hex (v, fallback) {
 }
 
 async function fromOutline () {
+  permitNetworklessPptxgenjs()
   const PptxGenJS = require('pptxgenjs')
   const pptx = new PptxGenJS()
   pptx.layout = 'LAYOUT_WIDE' // 13.33 x 7.5 in
 
   let theme = {}
   if (typeof input.theme === 'string' && input.theme.trim()) {
-    const tp = resolveInCoop(input.theme, 'theme')
-    try { theme = JSON.parse(fs.readFileSync(tp, 'utf8')) || {} } catch (err) { fail(`theme "${input.theme}" is not valid JSON: ${err.message}`) }
+    const bytes = await readBytes(input.theme, 'theme')
+    try { theme = JSON.parse(bytes.toString('utf8')) || {} } catch (err) { fail(`theme "${input.theme}" is not valid JSON: ${err.message}`) }
   }
   const primary = hex(theme.primary, '1F4E79')
   const accent = hex(theme.accent, 'ED7D31')
@@ -134,7 +215,7 @@ async function fromOutline () {
   const bg = hex(theme.background, 'FFFFFF')
   const font = typeof theme.font === 'string' && theme.font.trim() ? theme.font.trim() : 'Calibri'
   const footer = typeof theme.footer === 'string' ? theme.footer.trim() : ''
-  const logo = typeof theme.logo === 'string' && theme.logo.trim() ? resolveInCoop(theme.logo, 'theme logo') : null
+  const logo = typeof theme.logo === 'string' && theme.logo.trim() ? await vaultPath(theme.logo, 'theme logo') : null
 
   const masterObjects = []
   if (footer) masterObjects.push({ text: { text: footer, options: { x: 0.4, y: 7.02, w: 10, h: 0.35, fontSize: 9, color: textColor, fontFace: font } } })
@@ -169,7 +250,7 @@ async function fromOutline () {
     } else if (typeof spec.text === 'string' && spec.text.trim()) {
       s.addText(spec.text.trim(), { x: 0.9, y: bodyY, w: 11.5, h: bodyH, fontSize: 18, color: textColor, fontFace: font, valign: 'top' })
     } else if (typeof spec.image === 'string' && spec.image.trim()) {
-      const img = resolveInCoop(spec.image, 'slide image')
+      const img = await vaultPath(spec.image, 'slide image')
       s.addImage({ path: img, x: 0.9, y: bodyY, w: 11.5, h: bodyH, sizing: { type: 'contain', w: 11.5, h: bodyH } })
     }
   }
