@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import { startSidecarServer, generateToken, type SidecarServer } from './server/ws.ts'
 import { removeDiscovery, writeDiscovery } from './discovery.ts'
-import { createLLMCompleter } from './llm.ts'
+import { createLLMCompleter } from './llm/client.ts'
+import { createUsageReporter } from './llm/usage.ts'
 import { createLogger } from './logger.ts'
 import { PROTOCOL_VERSION } from './server/protocol.ts'
 
@@ -76,7 +77,10 @@ export async function main (argv: string[] = process.argv.slice(2)): Promise<voi
   const options = parseArgs(argv)
   const logger = createLogger('index')
   const token = options.token || generateToken()
-  const complete = createLLMCompleter(options.vaultRoot)
+  // BYOK completions plus the managed backend's token-only usage reporter —
+  // the reporter no-ops unless the active provider is the managed one.
+  const usageReporter = createUsageReporter({ vaultRoot: options.vaultRoot, logger })
+  const complete = createLLMCompleter(options.vaultRoot, { usageReporter })
 
   let parentTimer: NodeJS.Timeout | null = null
   let server: SidecarServer | null = null
@@ -88,6 +92,7 @@ export async function main (argv: string[] = process.argv.slice(2)): Promise<voi
     logger.info(`shutting down (${reason})`)
     if (parentTimer) clearInterval(parentTimer)
     if (server) await server.close()
+    await usageReporter.flush()
     if (!options.noDiscovery) removeDiscovery(options.vaultRoot)
     process.exit(0)
   }
