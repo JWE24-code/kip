@@ -36,6 +36,23 @@ The retrieval layer (this repo) and the desktop app
   kill. Entries: `node scripts/watch.js`, `--once`, `--json`; npm scripts
   `watch` and `rebuild-vectors`.
 
+### The agent workspace (`sidecar/`, P4)
+
+- **Git-versioned `nest/`** (#73, AD-5) — the nest is its own git repository,
+  driven by `isomorphic-git` (`sidecar/workspace/git.ts`) so history works on a
+  machine with no system `git` installed. The working tree stays at
+  `<coop>/nest`, but the git directory lives under the per-coop workspace
+  outside the coop (kip#67), so a sync engine never writes into `.git/`
+  mid-commit.
+- **`write_agent_note` / `update_agent_note`** (#73, SPEC-1 FR-16/FR-17) —
+  real tools in the sidecar turn loop (`sidecar/session/notes-write.ts`) that
+  port `resolvePage`'s create-vs-update duplicate prevention (AD-10), the
+  dated-append update (never a raw overwrite), the `## Sources` footer
+  (kip-app#117), and the summary-in-frontmatter mirror (kip-app#115). Every
+  write produces exactly one commit. No tool schema accepts a `pages/`-rooted
+  path — the user's vault is read-only at the schema and dispatch layer
+  (SPEC-1 Acceptance D).
+
 ### CI
 
 - **GitHub Actions** — `.github/workflows/test.yml` runs `npm ci && npm test`
