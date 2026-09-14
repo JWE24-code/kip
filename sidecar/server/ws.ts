@@ -12,6 +12,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { AddressInfo } from 'node:net'
 import {
+  CAPABILITIES,
   ErrorCode,
   PROTOCOL_VERSION,
   isClientEvent,
@@ -252,7 +253,12 @@ export async function startSidecarServer (
         return
       }
       conn.authed = true
-      send(conn.socket, 'ready', { protocolVersion, sessionId, pid: process.pid })
+      send(conn.socket, 'ready', {
+        protocolVersion,
+        sessionId,
+        pid: process.pid,
+        capabilities: [...CAPABILITIES]
+      })
     }
 
     // Undo the last N agent commits in the workspace (SPEC-1 FR-18); `count`

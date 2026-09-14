@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  CAPABILITIES,
   CLIENT_EVENT_TYPES,
   ErrorCode,
   PROTOCOL_VERSION,
@@ -43,6 +44,22 @@ test('hello payload requires a non-empty token', () => {
   assert.equal(validatePayload('hello', { token: 'abc' }).ok, true)
   assert.equal(validatePayload('hello', { token: '' }).ok, false)
   assert.equal(validatePayload('hello', {}).ok, false)
+})
+
+test('ready advertises the capabilities this build supports', () => {
+  assert.ok((CAPABILITIES as readonly string[]).includes('cancel'))
+
+  const good = validatePayload('ready', {
+    protocolVersion: PROTOCOL_VERSION,
+    sessionId: 'session-1',
+    pid: 1234,
+    capabilities: [...CAPABILITIES]
+  })
+  assert.equal(good.ok, true)
+  if (good.ok) assert.ok(good.data.capabilities.includes('cancel'))
+
+  const missing = validatePayload('ready', { protocolVersion: 1, sessionId: 's', pid: 1 })
+  assert.equal(missing.ok, false)
 })
 
 test('chat.send requires text and drops nothing the loop needs', () => {
