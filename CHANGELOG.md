@@ -26,12 +26,19 @@ The retrieval layer (this repo) and the desktop app
   vector width resets the store instead of mixing vector spaces.
 - **Live vault watcher** (#71, AD-15) — `scripts/lib/watcher.js` (chokidar,
   `awaitWriteFinish` ~400/100ms, per-burst ~500ms debounce) treats watcher
-  events as hints and the disk as truth: nest edits reindex immediately, source
-  edits are handed to the app to hatch, torn writes retry at +200/+500ms and
-  keep the last-good index, sync/editor artifacts are ignored, and a boot (or
-  overflow) reconcile of the whole vault heals a mid-burst kill. Entries:
-  `node scripts/watch.js`, `--once`, `--json`; npm scripts `watch` and
-  `rebuild-vectors`.
+  events as hints and the disk as truth: a nest edit updates both `meta.db`
+  (`pages` + `pages_fts` + `sections`, via `roost.upsertPage`) and the block
+  vectors, so the page is immediately searchable by both halves; source edits
+  are handed to the app to hatch; torn writes retry at +200/+500ms and keep the
+  last-good index; sync/editor artifacts are ignored; and a boot (or overflow)
+  reconcile of the whole vault (`rebuild-roost` + vectors) heals a mid-burst
+  kill. Entries: `node scripts/watch.js`, `--once`, `--json`; npm scripts
+  `watch` and `rebuild-vectors`.
+
+### CI
+
+- **GitHub Actions** — `.github/workflows/test.yml` runs `npm ci && npm test`
+  on Node 20 for pushes to `main` and every pull request.
 
 ## [0.5.5] — 2026-09-06
 

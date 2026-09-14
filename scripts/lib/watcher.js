@@ -14,6 +14,8 @@ const path = require('node:path')
 const chokidar = require('chokidar')
 const matter = require('gray-matter')
 const { indexPage, removePageVectors, reconcileVectors } = require('./vector-index')
+const { upsertPage, removePage, summarizeSection } = require('./roost')
+const { rebuildRoost } = require('../rebuild-roost')
 const { getEmbedder } = require('./embeddings')
 const { DEFAULT_VAULT_ROOT, nestPath, pagesPath, DIR_TYPES } = require('./paths')
 
@@ -62,26 +64,30 @@ function classifyPath (vaultRoot, filePath) {
 }
 
 /**
- * Reads a nest page, retrying a torn/parse-failing write at +200/+500ms
- * (SPEC-1 FR-10). Returns the body string, or null when the file is gone —
- * callers treat null as "remove from the index". Throws only after all
- * retries fail, and the caller keeps the last-good index in that case.
+ * Reads and parses a nest page, retrying a torn/parse-failing write at
+ * +200/+500ms (SPEC-1 FR-10). Returns `{ data, content }`, or null when the
+ * file is gone — callers treat null as "remove from the index". Throws only
+ * after all retries fail, and the caller keeps the last-good index then.
  */
-async function readPageBody (abs) {
+async function readPageDocument (abs) {
   let lastErr
   for (const delay of PARSE_RETRY_DELAYS) {
     if (delay) await sleep(delay)
     try {
-      const raw = fs.readFileSync(abs, 'utf8')
-      const { content } = matter(raw)
-      return content
+      return matter(fs.readFileSync(abs, 'utf8'))
     } catch (err) {
-      if (err && err.code === 'ENOENT') { lastErr = err; continue }
       lastErr = err
+      if (err.code === 'ENOENT') continue
     }
   }
   if (lastErr && lastErr.code === 'ENOENT') return null
   throw lastErr
+}
+
+/** The body of a nest page (frontmatter stripped), or null when it's gone. */
+async function readPageBody (abs) {
+  const doc = await readPageDocument(abs)
+  return doc ? doc.content : null
 }
 
 /**
@@ -117,14 +123,25 @@ function startVaultWatcher ({
 
   async function handlePage (abs) {
     const slug = path.basename(abs, '.md')
-    const body = await readPageBody(abs)
-    if (body === null) {
+    const doc = await readPageDocument(abs)
+    if (doc === null) {
+      // Disk is truth: the file is gone, so both derived stores drop it.
+      removePage(slug, vaultRoot)
       const removed = removePageVectors(slug, { vaultRoot, embedder })
-      if (onPageIndexed) onPageIndexed({ slug, path: abs, removed, embedded: 0 })
+      if (onPageIndexed) onPageIndexed({ slug, path: abs, removed, embedded: 0, deletedPage: true })
       return
     }
     const relPath = path.relative(vaultRoot, abs).split(path.sep).join('/')
-    const result = indexPage(slug, relPath, body, { vaultRoot, embedder })
+    const dir = path.basename(path.dirname(abs))
+    const type = doc.data.type || DIR_TYPES[dir] || 'concept'
+    // Keep meta.db (pages + FTS + sections) in step with the file, then the
+    // vectors — so a freshly edited page is searchable by both halves at once.
+    upsertPage(
+      slug, relPath, type, doc.data.tags || [],
+      doc.data.summary || summarizeSection(doc.content),
+      doc.content, vaultRoot, doc.data.aliases || []
+    )
+    const result = indexPage(slug, relPath, doc.content, { vaultRoot, embedder })
     if (onPageIndexed) onPageIndexed({ slug, path: relPath, ...result })
   }
 
@@ -185,7 +202,13 @@ function startVaultWatcher ({
   function reconcile () {
     if (!reconciling) {
       reconciling = Promise.resolve()
-        .then(() => reconcileVectors(vaultRoot, { embedder }))
+        .then(() => {
+          // Full boot reconcile treats the disk as truth for both stores:
+          // meta.db (rebuild-roost) and the block vectors.
+          const roost = rebuildRoost(vaultRoot)
+          const vectors = reconcileVectors(vaultRoot, { embedder })
+          return { ...roost, ...vectors }
+        })
         .finally(() => { reconciling = null })
     }
     return reconciling
@@ -219,6 +242,7 @@ module.exports = {
   startVaultWatcher,
   isIgnoredPath,
   classifyPath,
+  readPageDocument,
   readPageBody,
   DEFAULT_DEBOUNCE_MS,
   MAX_BURST

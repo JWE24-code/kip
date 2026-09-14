@@ -7,6 +7,8 @@ const path = require('node:path')
 const { startVaultWatcher, isIgnoredPath, classifyPath, readPageBody } = require('../lib/watcher')
 const { createHashedEmbedder } = require('../lib/embeddings')
 const { countVectors, isVectorAvailable } = require('../lib/vector-index')
+const { getPage, searchPages } = require('../lib/roost')
+const { hybridSearch } = require('../lib/hybrid')
 
 const skip = !isVectorAvailable()
 
@@ -72,15 +74,20 @@ test('watcher: boot reconcile indexes the vault, and handlePath tracks edits', {
   assert.equal(boot.pages, 1)
   assert.equal(countVectors({ vaultRoot: root, embedder }), 1)
 
-  // An edit through the same path re-embeds exactly the changed block.
+  // An edit through the same path re-embeds exactly the changed block, and
+  // keeps meta.db (pages + FTS) in step with the file.
   fs.writeFileSync(abs, '---\ntype: concept\n---\n\n- Consistent bedtime\n- No screens after 22:00\n')
   await handle.handlePath(abs)
   assert.equal(countVectors({ vaultRoot: root, embedder }), 2)
+  assert.ok(getPage('sleep', root), 'meta.db has the page')
+  assert.equal(searchPages('screens', {}, root)[0].slug, 'sleep', 'new text is FTS-searchable')
 
-  // Removing the page drops its vectors.
+  // Removing the page drops it from both stores.
   fs.rmSync(abs)
   await handle.handlePath(abs)
   assert.equal(countVectors({ vaultRoot: root, embedder }), 0)
+  assert.equal(getPage('sleep', root), null)
+  assert.equal(searchPages('screens', {}, root).length, 0)
 })
 
 test('watcher: a live write is reindexed without any manual call', { skip }, async (t) => {
@@ -109,4 +116,9 @@ test('watcher: a live write is reindexed without any manual call', { skip }, asy
   assert.equal(event.slug, 'live-edit')
   assert.equal(event.embedded, 1)
   assert.equal(countVectors({ vaultRoot: root, embedder }), 1)
+
+  // End to end: the write is now visible to retrieval, no manual step.
+  const results = hybridSearch('freshly written fact', { vaultRoot: root, embedder })
+  assert.equal(results[0].slug, 'live-edit')
+  assert.ok(results[0].sources.includes('fts'))
 })
