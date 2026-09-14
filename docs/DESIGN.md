@@ -93,7 +93,7 @@ prj01/
 │   │   ├── skills.js      # discoverSkills() + runSkill() — Peck's tool harness
 │   │   ├── telemetry.js   # per-run LLM-call timing/token recorder
 │   │   └── run-progress.js# the live progress/trace file writer (shared)
-│   ├── skills/            # built-in Peck skills: xlsx-csv/, web-search/, docx/, pptx/, kip-control/
+│   ├── skills/            # built-in Peck skills: web-search/, docx/, pptx/, kip-control/
 │   ├── hatch.js           # CLI: single source, with y/n review
 │   ├── hatch-all.js       # CLI: batched "Hatch sources", no review
 │   ├── peck.js  chat.js   # CLI: ask a question (chat.js = JSON, for the app)
@@ -400,11 +400,10 @@ The result carries `steps: [{skill, input, ok, ms, outputPreview}]`, which the
 Peck panel renders as `⚙` lines above the answer (live from
 `.roost/peck-progress.json` while it runs).
 
-Built-ins: `xlsx-csv` (SheetJS — read/summarize a spreadsheet in the coop),
-`web-search` (`scripts/skills/web-search/search.js` — **DuckDuckGo by default,
-keyless, active**; parses the `html.duckduckgo.com/html/` no-JS endpoint;
-Brave/Tavily optional, key-gated, chosen via `SEARCH_BACKEND` in `skills.json`
-`config`), `docx` and `pptx` (build a
+Built-ins: `web-search` (`scripts/skills/web-search/search.js` — **DuckDuckGo
+by default, keyless, active**; parses the `html.duckduckgo.com/html/` no-JS
+endpoint; Brave/Tavily optional, key-gated, chosen via `SEARCH_BACKEND` in
+`skills.json` `config`), `docx` and `pptx` (build a
 Word doc / a deck into `<coop>/exports/`). The document skills take an
 **optional** template kept in the coop — a `.docx` with `{tags}`
 (`docxtemplater`), a `.pptx` cloned per slide (`pptx-automizer`), or a small

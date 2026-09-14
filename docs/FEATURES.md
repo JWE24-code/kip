@@ -77,8 +77,6 @@ they're not listed here.)
   the model calls `<use_skill name="X">{args}</use_skill>`, gets the output
   back, and can call another (≤ 4) before answering. Uses Kip's configured
   LLM provider — no native function-calling.
-- **`xlsx-csv`** (built-in) — read and summarize a `.xlsx`/`.csv` in the coop
-  (columns, row count, per-column stats, first rows).
 - **`web-search`** (built-in) — searches the web. **DuckDuckGo by default —
   keyless, on out of the box**, so Peck may search whenever a question needs
   facts the wiki lacks. Switch to Brave or Tavily (each needs a key) in
