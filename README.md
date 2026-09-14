@@ -39,6 +39,7 @@ node scripts/peck.js  "what do I know about X?"  # ask
 node scripts/peck.js  "the CDO of Acme is Jane Doe"   # tell it a fact
 node scripts/reminders.js add "review friday 15h"     # a reminder
 node scripts/groom.js --json                      # health check
+node scripts/watch.js                             # live reindex on vault edits
 npm test
 ```
 
