@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// One-time / re-runnable migration: rebuilds coop/.roost/meta.db from the
-// markdown files under coop/nest/. The markdown files are the source of
-// truth; meta.db (and nest/index.md) are derived and safe to delete/rebuild
-// by running this script again.
+// One-time / re-runnable migration: rebuilds the workspace's roost/meta.db
+// (outside the coop, see paths.js) from the markdown files under coop/nest/.
+// The markdown files are the source of truth; meta.db (and nest/index.md) are
+// derived and safe to delete/rebuild by running this script again.
 const fs = require('node:fs')
 const path = require('node:path')
 const matter = require('gray-matter')

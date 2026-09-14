@@ -1,7 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const Database = require('better-sqlite3')
-const { dbPath, DEFAULT_VAULT_ROOT } = require('./paths')
+const { dbPath, DEFAULT_VAULT_ROOT, warnIfSynced } = require('./paths')
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS pages (
@@ -49,14 +49,58 @@ CREATE TABLE IF NOT EXISTS hatched_sources (
 );
 `
 
+// The SQLite sidecars that travel with meta.db.
+const DB_SIDECARS = ['', '-wal', '-shm']
+
+/**
+ * One-time migration off the old in-coop index (kip#67): if a `.roost/meta.db`
+ * exists inside the coop, move it (and its -wal/-shm) to the workspace before
+ * the new db is created, so exactly one database exists. When a healthy index
+ * already lives in the workspace, a leftover legacy file is a stale duplicate
+ * and is dropped rather than left to drift.
+ */
+function migrateLegacyDb (vaultRoot, destFile) {
+  const legacy = path.join(path.resolve(vaultRoot), '.roost', 'meta.db')
+  if (path.resolve(legacy) === path.resolve(destFile)) return
+  if (!fs.existsSync(legacy)) return
+
+  if (fs.existsSync(destFile)) {
+    for (const ext of DB_SIDECARS) fs.rmSync(legacy + ext, { force: true })
+    console.error(`Warning: removed the stale legacy index at ${legacy}; using ${destFile}.`)
+    return
+  }
+
+  let moved = 0
+  for (const ext of DB_SIDECARS) {
+    const src = legacy + ext
+    if (!fs.existsSync(src)) continue
+    const dest = destFile + ext
+    try {
+      fs.renameSync(src, dest)
+    } catch (err) {
+      // A coop under a symlink/mount can be a different filesystem than the
+      // state dir; rename across devices fails with EXDEV, so copy + unlink.
+      if (err.code !== 'EXDEV') throw err
+      fs.copyFileSync(src, dest)
+      fs.rmSync(src, { force: true })
+    }
+    moved++
+  }
+  if (moved) {
+    console.error(`Warning: moved the roost index out of the coop: ${legacy} -> ${destFile}.`)
+  }
+}
+
 /** Opens (creating if needed) the meta.db for a coop and ensures the schema exists. */
 function openDb (vaultRoot = DEFAULT_VAULT_ROOT) {
   const file = dbPath(vaultRoot)
   fs.mkdirSync(path.dirname(file), { recursive: true })
+  migrateLegacyDb(vaultRoot, file)
+  warnIfSynced(vaultRoot)
   const db = new Database(file)
   db.pragma('journal_mode = WAL')
   db.exec(SCHEMA)
   return db
 }
 
-module.exports = { openDb }
+module.exports = { openDb, migrateLegacyDb }

@@ -42,7 +42,9 @@ node scripts/groom.js --json                      # health check
 npm test
 ```
 
-It operates on `./coop/` by default, or the folder in `KIP_COOP_ROOT`.
+It operates on `./coop/` by default, or the folder in `KIP_COOP_ROOT`. The
+search index is kept out of the coop (in the `KIP_WORKSPACE_ROOT` state dir),
+so a Dropbox/OneDrive/iCloud-synced coop can't corrupt it.
 
 ## Docs
 
