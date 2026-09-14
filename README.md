@@ -54,6 +54,7 @@ It operates on `./coop/` by default, or the folder in `KIP_COOP_ROOT`.
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | build & dev-environment notes |
 | [BUILD.md](docs/BUILD.md) | packaging the app |
 | [VS-LOGSEQ.md](docs/VS-LOGSEQ.md) | what changed vs upstream Logseq |
+| [PECK-REBUILT.md](docs/PECK-REBUILT.md) | the Peck overhaul proposal (harness architecture, tracked as issues) |
 
 Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md). Changes:
 [CHANGELOG.md](CHANGELOG.md). Vulnerabilities: [SECURITY.md](SECURITY.md).
