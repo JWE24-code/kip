@@ -89,7 +89,6 @@ export const payloadSchemas = {
     turnId: z.string().min(1).optional()
   }),
   undo: z.object({
-    sessionId: z.string().min(1).optional(),
     count: z.number().int().positive().max(100).optional()
   }),
   ping: emptyPayload,

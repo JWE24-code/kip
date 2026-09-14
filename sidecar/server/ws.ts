@@ -16,14 +16,14 @@ import {
   type ServerEventType
 } from './protocol.ts'
 import { runTurn, type CompleteFn } from '../session/turn.ts'
-import { Workspace, WorkspaceError } from '../workspace/git.ts'
+import { UndoUnavailableError, undo, workspacePaths } from '../workspace/git.ts'
 import { silentLogger, type Logger } from '../logger.ts'
 
 export interface SidecarServerOptions {
   token: string
   complete: CompleteFn
-  /** The git-versioned agent workspace (`nest/`); undo is served from it. */
-  workspaceDir?: string
+  /** The coop whose git-versioned `nest/` workspace undo operates on. */
+  vaultRoot?: string
   port?: number
   protocolVersion?: number
   maxToolCalls?: number
@@ -178,7 +178,7 @@ export async function startSidecarServer (
           )
           return
         case 'undo':
-          await handleUndo(conn, validated.data as { sessionId?: string, count?: number })
+          await handleUndo(conn, validated.data as { count?: number })
           return
         default:
           sendError(conn.socket, ErrorCode.BAD_REQUEST, `unhandled event type "${type}"`)
@@ -206,30 +206,25 @@ export async function startSidecarServer (
       send(conn.socket, 'ready', { protocolVersion, sessionId, pid: process.pid })
     }
 
-    // Undo the last N agent commits in the workspace (SPEC-1 FR-18). Scoped to
-    // this sidecar session unless the client names another; `count` defaults
-    // to 1. A refusal is UNDO_UNAVAILABLE, never a silent no-op.
+    // Undo the last N agent commits in the workspace (SPEC-1 FR-18); `count`
+    // defaults to 1. A refusal is UNDO_UNAVAILABLE, never a silent no-op.
     async function handleUndo (
       conn: ConnState,
-      payload: { sessionId?: string, count?: number }
+      payload: { count?: number }
     ): Promise<void> {
-      if (!options.workspaceDir) {
+      if (!options.vaultRoot) {
         sendError(conn.socket, ErrorCode.UNDO_UNAVAILABLE, 'no agent workspace is configured')
         return
       }
       try {
-        const workspace = new Workspace(options.workspaceDir)
-        const result = await workspace.undo({
-          sessionId: payload.sessionId ?? sessionId,
-          ...(payload.count ? { count: payload.count } : {})
-        })
+        const result = await undo(workspacePaths(options.vaultRoot), { count: payload.count ?? 1 })
         send(conn.socket, 'undo.applied', {
           revertedSha: result.revertedSha,
           restoredFiles: result.restoredFiles,
           undone: true
         })
       } catch (err) {
-        const code = err instanceof WorkspaceError ? err.code : ErrorCode.INTERNAL
+        const code = err instanceof UndoUnavailableError ? err.code : ErrorCode.INTERNAL
         sendError(
           conn.socket,
           code as ErrorCode,

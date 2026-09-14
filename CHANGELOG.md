@@ -52,6 +52,14 @@ The retrieval layer (this repo) and the desktop app
   write produces exactly one commit. No tool schema accepts a `pages/`-rooted
   path — the user's vault is read-only at the schema and dispatch layer
   (SPEC-1 Acceptance D).
+- **Undo via git revert** (#74, ADD-1 AD-5; SPEC-1 FR-18/NFR-4) — every agent
+  write is undoable. There is no revert porcelain (and none is needed): the
+  workspace is single-writer and linear, so `undo` makes the tree match the
+  commit N steps back and commits that state as the new HEAD — the exact file
+  state a real `git revert` would produce. The `undo` wire event answers
+  `undo.applied{revertedSha, restoredFiles}` and refuses with
+  `UNDO_UNAVAILABLE` when it can't. A byte-for-byte restore test plus a
+  250-page under-2s test back FR-18/NFR-4.
 
 ### The agent workspace (`sidecar/`, P5)
 
@@ -70,18 +78,6 @@ The retrieval layer (this repo) and the desktop app
 
 - **GitHub Actions** — `.github/workflows/test.yml` runs `npm ci && npm test`
   on Node 20 for pushes to `main` and every pull request.
-
-### The sidecar (`sidecar/`, P4 — Workspace)
-
-- **Undo via git revert** (#74, ADD-1 AD-5; SPEC-1 FR-18/NFR-4) — `nest/` is a
-  git repository and every agent write is undoable. `sidecar/workspace/git.ts`
-  wraps `isomorphic-git` (pure JS — no system `git`, no PATH dependency) around
-  the single-writer, linear workspace; undo restores the file state from N
-  commits back and commits it as the new HEAD, reporting the revert SHA and the
-  restored paths. The `undo` wire event is scoped to the writing session via a
-  `Kip-Session` commit trailer, answers `undo.applied{revertedSha,
-  restoredFiles}`, and refuses with `UNDO_UNAVAILABLE` when it can't. A
-  byte-for-byte restore test plus a 250-page under-2s test back FR-18/NFR-4.
 
 ## [0.5.5] — 2026-09-06
 

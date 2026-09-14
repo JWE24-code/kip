@@ -51,9 +51,9 @@ test('chat.send requires text and drops nothing the loop needs', () => {
   assert.equal(validatePayload('chat.send', { text: '' }).ok, false)
 })
 
-test('undo accepts an optional session and a positive count', () => {
+test('undo accepts an optional positive count', () => {
   assert.equal(validatePayload('undo', {}).ok, true)
-  assert.equal(validatePayload('undo', { sessionId: 's1', count: 2 }).ok, true)
+  assert.equal(validatePayload('undo', { count: 2 }).ok, true)
   assert.equal(validatePayload('undo', { count: 0 }).ok, false)
   assert.equal(validatePayload('undo', { count: -1 }).ok, false)
 })
