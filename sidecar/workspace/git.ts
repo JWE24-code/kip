@@ -15,7 +15,7 @@
 // threads both `dir` (worktree) and `gitdir` through isomorphic-git.
 
 import { createRequire } from 'node:module'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rm } from 'node:fs/promises'
 import { relative, resolve, sep } from 'node:path'
 import git from 'isomorphic-git'
 import fs from 'node:fs'
@@ -160,6 +160,137 @@ export async function history (
     author: `${entry.commit.author.name} <${entry.commit.author.email}>`,
     timestamp: entry.commit.author.timestamp * 1000
   }))
+}
+
+// ---- Undo (kip#74) ---------------------------------------------------------
+
+/** Thrown when an undo cannot proceed. `code` is the wire error the sidecar
+ *  reports, matching SPEC-1's explicit UNDO_UNAVAILABLE rule. */
+export class UndoUnavailableError extends Error {
+  code = 'UNDO_UNAVAILABLE'
+
+  constructor (message: string) {
+    super(message)
+    this.name = 'UndoUnavailableError'
+  }
+}
+
+export interface UndoOptions {
+  /** How many commits to undo. Defaults to 1. */
+  count?: number
+}
+
+export interface UndoResult {
+  /** The sha of the new commit that reverts the undone history. */
+  revertedSha: string
+  /** Worktree-relative paths restored to their earlier state, sorted. */
+  restoredFiles: string[]
+}
+
+/** Every blob in a tree, `path -> oid`, recursively. */
+async function treeEntries (dir: string, gitdir: string, treeOid: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  const walk = async (oid: string, prefix: string): Promise<void> => {
+    const { tree } = await git.readTree({ fs, dir, gitdir, oid })
+    for (const entry of tree) {
+      const filepath = prefix ? `${prefix}/${entry.path}` : entry.path
+      if (entry.type === 'tree') await walk(entry.oid, filepath)
+      else out.set(filepath, entry.oid)
+    }
+  }
+  await walk(treeOid, '')
+  return out
+}
+
+/**
+ * Undoes the last `count` agent commits (kip#74, SPEC-1 FR-18).
+ *
+ * isomorphic-git has no revert porcelain, and needs none: the workspace is
+ * single-writer and linear (never shared, no merge can exist), so undoing the
+ * last N commits is exactly "make the tree match the commit N steps back, then
+ * commit that state as the new HEAD" — the same file state a real `git revert`
+ * would produce, without revert's conflict machinery.
+ *
+ * Refuses with UndoUnavailableError when the workspace is not a repo, when
+ * there is not enough history, or when the commits made no net file change.
+ */
+export async function undo (
+  { dir, gitdir }: WorkspacePaths,
+  { count = 1 }: UndoOptions = {}
+): Promise<UndoResult> {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new UndoUnavailableError(`undo count must be a positive integer (got ${count})`)
+  }
+  if (!(await isRepo({ dir, gitdir }))) {
+    throw new UndoUnavailableError('the agent workspace is not a git repository yet')
+  }
+
+  const entries = await git.log({ fs, dir, gitdir, depth: count + 1 })
+  if (entries.length < count) {
+    throw new UndoUnavailableError(
+      `cannot undo ${count} commit(s): only ${entries.length} in history`
+    )
+  }
+
+  const current = entries[0]
+  // `target` is the state before the undone commits. It is absent only when
+  // every commit is being undone, in which case the target is the empty tree
+  // (nest initialized, nothing written yet).
+  const target = entries[count]
+  const targetTree = target
+    ? target.commit.tree
+    : await git.writeTree({ fs, dir, gitdir, tree: [] })
+  if (current.commit.tree === targetTree) {
+    throw new UndoUnavailableError(`the last ${count} commit(s) changed no files`)
+  }
+
+  const before = await treeEntries(dir, gitdir, current.commit.tree)
+  const after = target ? await treeEntries(dir, gitdir, target.commit.tree) : new Map<string, string>()
+  const changed: string[] = []
+  const deleted: string[] = []
+  for (const [filepath, oid] of after) {
+    if (before.get(filepath) !== oid) changed.push(filepath)
+  }
+  for (const filepath of before.keys()) {
+    if (!after.has(filepath)) deleted.push(filepath)
+  }
+  const restoredFiles = [...changed, ...deleted].sort()
+
+  // One checkout moves every changed path to the target bytes and updates the
+  // index in the same pass. Staging per file would re-read and rewrite
+  // `.git/index` hundreds of times and blow NFR-4's 2s budget.
+  if (target && changed.length) {
+    await git.checkout({
+      fs,
+      dir,
+      gitdir,
+      ref: target.oid,
+      filepaths: changed,
+      noUpdateHead: true,
+      force: true
+    })
+  }
+  if (deleted.length) {
+    const cache: object = {}
+    for (const filepath of deleted) {
+      await rm(resolve(dir, filepath), { force: true })
+      await git.updateIndex({ fs, dir, gitdir, filepath, remove: true, force: true, cache })
+    }
+  }
+
+  // The target tree is known, so commit it directly rather than rebuilding it
+  // from the index; the index was still updated so later status and commits
+  // see a clean tree.
+  const revertedSha = await git.commit({
+    fs,
+    dir,
+    gitdir,
+    message: `undo: revert last ${count} commit(s)`,
+    author: WORKSPACE_AUTHOR,
+    tree: targetTree,
+    parent: [current.oid]
+  })
+  return { revertedSha, restoredFiles }
 }
 
 export { git }

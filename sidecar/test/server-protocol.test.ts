@@ -51,6 +51,23 @@ test('chat.send requires text and drops nothing the loop needs', () => {
   assert.equal(validatePayload('chat.send', { text: '' }).ok, false)
 })
 
+test('undo accepts an optional session and a positive count', () => {
+  assert.equal(validatePayload('undo', {}).ok, true)
+  assert.equal(validatePayload('undo', { sessionId: 's1', count: 2 }).ok, true)
+  assert.equal(validatePayload('undo', { count: 0 }).ok, false)
+  assert.equal(validatePayload('undo', { count: -1 }).ok, false)
+})
+
+test('undo.applied carries the revert sha and the restored files', () => {
+  const good = validatePayload('undo.applied', {
+    revertedSha: 'abc123',
+    restoredFiles: ['entities/a.md'],
+    undone: true
+  })
+  assert.equal(good.ok, true)
+  assert.equal(validatePayload('undo.applied', { undone: true }).ok, false)
+})
+
 test('unknown event types fail validation', () => {
   const result = validatePayload('not.real' as 'ping', {})
   assert.equal(result.ok, false)

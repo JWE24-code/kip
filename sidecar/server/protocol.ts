@@ -20,6 +20,7 @@ export const ErrorCode = {
   TURN_NOT_FOUND: 'TURN_NOT_FOUND',
   NO_PENDING_ASK: 'NO_PENDING_ASK',
   TOOL_ARGS_INVALID: 'TOOL_ARGS_INVALID',
+  UNDO_UNAVAILABLE: 'UNDO_UNAVAILABLE',
   NOT_IMPLEMENTED: 'NOT_IMPLEMENTED',
   INTERNAL: 'INTERNAL'
 } as const
@@ -88,7 +89,8 @@ export const payloadSchemas = {
     turnId: z.string().min(1).optional()
   }),
   undo: z.object({
-    turnId: z.string().min(1).optional()
+    sessionId: z.string().min(1).optional(),
+    count: z.number().int().positive().max(100).optional()
   }),
   ping: emptyPayload,
   pong: z.object({ pingId: z.string().min(1).optional() }).optional(),
@@ -141,7 +143,8 @@ export const payloadSchemas = {
     retryable: z.boolean().optional()
   }),
   'undo.applied': z.object({
-    turnId: z.string().min(1).optional(),
+    revertedSha: z.string().min(1),
+    restoredFiles: z.array(z.string()),
     undone: z.boolean()
   }),
   error: z.object({

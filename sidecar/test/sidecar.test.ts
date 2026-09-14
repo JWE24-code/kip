@@ -9,6 +9,7 @@ import { connect } from '../client.ts'
 import { startSidecarServer, generateToken } from '../server/ws.ts'
 import { discoveryPath } from '../discovery.ts'
 import { PROTOCOL_VERSION } from '../server/protocol.ts'
+import { Workspace } from '../workspace/git.ts'
 import type { CompleteFn, CompleteRequest, CompleteResult } from '../session/turn.ts'
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..')
@@ -121,6 +122,56 @@ test('ping is answered with pong and unimplemented events come back as errors', 
     client.send('chat.cancel', {})
     const error = await client.next('error')
     assert.equal((error.payload as { code: string }).code, 'NOT_IMPLEMENTED')
+  } finally {
+    client.close()
+    await server.close()
+  }
+})
+
+test('undo reverts the last agent commit and reports it over the socket', async () => {
+  const workspaceDir = TMP()
+  const workspace = new Workspace(workspaceDir)
+  await workspace.init()
+  fs.writeFileSync(path.join(workspaceDir, 'note.md'), 'v1\n')
+  await workspace.commit({ message: 'write note', sessionId: 's1', files: ['note.md'] })
+  fs.writeFileSync(path.join(workspaceDir, 'note.md'), 'v2\n')
+  await workspace.commit({ message: 'edit note', sessionId: 's1', files: ['note.md'] })
+
+  const token = generateToken()
+  const server = await startSidecarServer({
+    token,
+    complete: scriptedCompleter([{ text: 'x' }]),
+    workspaceDir
+  })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    client.send('undo', { sessionId: 's1', count: 1 })
+    const applied = await client.next('undo.applied')
+    const payload = applied.payload as { revertedSha: string, restoredFiles: string[], undone: boolean }
+
+    assert.equal(payload.undone, true)
+    assert.deepEqual(payload.restoredFiles, ['note.md'])
+    assert.equal(fs.readFileSync(path.join(workspaceDir, 'note.md'), 'utf8'), 'v1\n')
+    assert.equal(await workspace.head(), payload.revertedSha)
+  } finally {
+    client.close()
+    await server.close()
+    fs.rmSync(workspaceDir, { recursive: true, force: true })
+  }
+})
+
+test('undo before any agent write is UNDO_UNAVAILABLE', async () => {
+  const token = generateToken()
+  const server = await startSidecarServer({
+    token,
+    complete: scriptedCompleter([{ text: 'x' }]),
+    workspaceDir: TMP()
+  })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    client.send('undo', { count: 1 })
+    const error = await client.next('error')
+    assert.equal((error.payload as { code: string }).code, 'UNDO_UNAVAILABLE')
   } finally {
     client.close()
     await server.close()

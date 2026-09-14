@@ -5,6 +5,7 @@
 // silence. Everything the protocol itself does lives in server/ and session/.
 
 import { pathToFileURL } from 'node:url'
+import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { startSidecarServer, generateToken, type SidecarServer } from './server/ws.ts'
 import { removeDiscovery, writeDiscovery } from './discovery.ts'
@@ -92,9 +93,14 @@ export async function main (argv: string[] = process.argv.slice(2)): Promise<voi
     process.exit(0)
   }
 
+  // The agent workspace's git repo lives under the machine-local workspace
+  // root (kip#67), never inside the possibly-synced coop (kip#73).
+  const workspaceDir = join(paths.workspaceRoot(options.vaultRoot), 'nest')
+
   server = await startSidecarServer({
     token,
     complete,
+    workspaceDir,
     port: options.port,
     silenceMs: options.silenceMs,
     onSilence: () => {
