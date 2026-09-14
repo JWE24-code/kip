@@ -52,6 +52,14 @@ The retrieval layer (this repo) and the desktop app
   write produces exactly one commit. No tool schema accepts a `pages/`-rooted
   path — the user's vault is read-only at the schema and dispatch layer
   (SPEC-1 Acceptance D).
+- **Undo via git revert** (#74, ADD-1 AD-5; SPEC-1 FR-18/NFR-4) — every agent
+  write is undoable. There is no revert porcelain (and none is needed): the
+  workspace is single-writer and linear, so `undo` makes the tree match the
+  commit N steps back and commits that state as the new HEAD — the exact file
+  state a real `git revert` would produce. The `undo` wire event answers
+  `undo.applied{revertedSha, restoredFiles}` and refuses with
+  `UNDO_UNAVAILABLE` when it can't. A byte-for-byte restore test plus a
+  250-page under-2s test back FR-18/NFR-4.
 
 ### The agent workspace (`sidecar/`, P5)
 

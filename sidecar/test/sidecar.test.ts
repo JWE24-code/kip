@@ -9,6 +9,7 @@ import { connect } from '../client.ts'
 import { startSidecarServer, generateToken } from '../server/ws.ts'
 import { discoveryPath } from '../discovery.ts'
 import { PROTOCOL_VERSION } from '../server/protocol.ts'
+import { commitAction, workspacePaths } from '../workspace/git.ts'
 import type { CompleteFn, CompleteRequest, CompleteResult } from '../session/turn.ts'
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..')
@@ -124,6 +125,66 @@ test('ping is answered with pong and unimplemented events come back as errors', 
   } finally {
     client.close()
     await server.close()
+  }
+})
+
+test('undo reverts the last agent commit and reports it over the socket', async () => {
+  const base = TMP()
+  const vaultRoot = path.join(base, 'coop')
+  const originalWorkspaceRoot = process.env.KIP_WORKSPACE_ROOT
+  process.env.KIP_WORKSPACE_ROOT = path.join(base, 'workspace')
+  const { dir } = workspacePaths(vaultRoot)
+  fs.mkdirSync(path.join(dir, 'concepts'), { recursive: true })
+
+  fs.writeFileSync(path.join(dir, 'concepts', 'note.md'), 'v1\n')
+  await commitAction({ vaultRoot, message: 'write note' })
+  fs.writeFileSync(path.join(dir, 'concepts', 'note.md'), 'v2 — changed\n')
+  await commitAction({ vaultRoot, message: 'edit note' })
+
+  const token = generateToken()
+  const server = await startSidecarServer({
+    token,
+    complete: scriptedCompleter([{ text: 'x' }]),
+    vaultRoot
+  })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    client.send('undo', { count: 1 })
+    const applied = await client.next('undo.applied')
+    const payload = applied.payload as { revertedSha: string, restoredFiles: string[], undone: boolean }
+
+    assert.equal(payload.undone, true)
+    assert.deepEqual(payload.restoredFiles, ['concepts/note.md'])
+    assert.equal(fs.readFileSync(path.join(dir, 'concepts', 'note.md'), 'utf8'), 'v1\n')
+    assert.match(payload.revertedSha, /^[0-9a-f]{40}$/)
+  } finally {
+    client.close()
+    await server.close()
+    process.env.KIP_WORKSPACE_ROOT = originalWorkspaceRoot
+    fs.rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('undo before any agent write is UNDO_UNAVAILABLE', async () => {
+  const base = TMP()
+  const originalWorkspaceRoot = process.env.KIP_WORKSPACE_ROOT
+  process.env.KIP_WORKSPACE_ROOT = path.join(base, 'workspace')
+  const token = generateToken()
+  const server = await startSidecarServer({
+    token,
+    complete: scriptedCompleter([{ text: 'x' }]),
+    vaultRoot: path.join(base, 'coop')
+  })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    client.send('undo', { count: 1 })
+    const error = await client.next('error')
+    assert.equal((error.payload as { code: string }).code, 'UNDO_UNAVAILABLE')
+  } finally {
+    client.close()
+    await server.close()
+    process.env.KIP_WORKSPACE_ROOT = originalWorkspaceRoot
+    fs.rmSync(base, { recursive: true, force: true })
   }
 })
 

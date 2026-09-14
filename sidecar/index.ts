@@ -95,6 +95,7 @@ export async function main (argv: string[] = process.argv.slice(2)): Promise<voi
   server = await startSidecarServer({
     token,
     complete,
+    vaultRoot: options.vaultRoot,
     port: options.port,
     silenceMs: options.silenceMs,
     onSilence: () => {
