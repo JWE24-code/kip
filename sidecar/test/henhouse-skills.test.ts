@@ -75,8 +75,13 @@ test('the migrated skills declare network:none and only their hostcalls', () => 
   assert.deepEqual(docx.hostcalls, ['read_vault_file'], 'docx reads the vault only through the hostcall')
   assert.deepEqual(docx.mounts, [{ name: 'exports', mode: 'rw' }], 'docx needs no input mount')
 
+  const pptx = builtin('pptx')
+  assert.equal(pptx.network.mode, 'none')
+  assert.deepEqual(pptx.hostcalls, ['read_vault_file'], 'pptx reads the vault only through the hostcall')
+  assert.deepEqual(pptx.mounts, [{ name: 'exports', mode: 'rw' }], 'pptx needs no input mount')
+
   // Every declared hostcall is something the executor actually exposes.
-  for (const manifest of [web, reminders, control, docx]) {
+  for (const manifest of [web, reminders, control, docx, pptx]) {
     assert.ok(manifest.hostcalls.length > 0, `${manifest.name} declares a hostcall`)
     assert.equal(manifest.limits.wallMs > 0, true)
     assert.equal(manifest.limits.memMb > 0, true)
@@ -217,7 +222,7 @@ test('createBuiltinSkillTools registers the migrated skills as kind:skill tools'
   })
   assert.deepEqual(
     tools.map((tool) => tool.spec.name).sort(),
-    ['docx', 'kip-control', 'reminders', 'web-search']
+    ['docx', 'kip-control', 'pptx', 'reminders', 'web-search']
   )
   for (const tool of tools) assert.equal(tool.kind, 'skill')
 })
@@ -323,6 +328,131 @@ test('acceptance: docx refuses an absolute template path outside the coop', asyn
   assert.equal(result.ok, false)
   assert.match(result.error ?? '', /outside the vault/)
   assert.deepEqual(result.artifacts, [], 'a refused template writes nothing')
+})
+
+// ---- criterion 5: pptx reads every vault file through read_vault_file -------
+
+const PptxGenJS = require('pptxgenjs') as new () => {
+  layout: string
+  addSlide: () => { background: unknown, addText: (text: string, options: unknown) => void }
+  writeFile: (options: { fileName: string }) => Promise<void>
+}
+
+/** Every pptx part whose name matches `pattern`, concatenated as text. */
+function pptxPartText (file: string, pattern: RegExp): string {
+  const PizZip = require('pizzip') as new (data: Buffer) => {
+    file: (name: RegExp) => Array<{ asText: () => string }>
+  }
+  return new PizZip(fs.readFileSync(file)).file(pattern).map((f) => f.asText()).join('\n')
+}
+
+/** Writes a minimal branded .pptx template (one title + one body placeholder). */
+async function writePptxTemplate (root: string, rel: string): Promise<string> {
+  const g = new PptxGenJS()
+  g.layout = 'LAYOUT_WIDE'
+  const s = g.addSlide()
+  s.background = { color: 'EEEEEE' }
+  s.addText('PH TITLE', { x: 0.5, y: 0.3, w: 9, h: 1, fontSize: 28 })
+  s.addText('PH BODY', { x: 0.5, y: 1.7, w: 9, h: 4, fontSize: 16 })
+  const abs = path.join(root, rel)
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  await g.writeFile({ fileName: abs })
+  return abs
+}
+
+/** A valid 1x1 PNG — enough for pptxgenjs to embed as a slide image. */
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64'
+)
+
+test('acceptance: pptx builds an outline deck under the sandbox', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  withTempWorkspace(t)
+
+  const result = await executor.run({
+    manifest: builtin('pptx'),
+    vaultRoot: root,
+    input: {
+      title: 'Deck',
+      filename: 'd.pptx',
+      slides: [{ title: 'Goals', bullets: ['Ship v1'] }, { section: 'Next' }]
+    }
+  })
+
+  assert.equal(result.ok, true, result.error ?? '')
+  assert.deepEqual(result.artifacts, [path.join(root, 'exports', 'd.pptx')])
+  const text = pptxPartText(path.join(root, 'exports', 'd.pptx'), /ppt\/slides\/slide\d+\.xml/)
+  assert.match(text, /Goals/)
+  assert.match(text, /Ship v1/)
+  assert.match(text, /Next/)
+})
+
+test('acceptance: pptx reads a theme and its logo through read_vault_file', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  withTempWorkspace(t)
+  fs.writeFileSync(path.join(root, 'logo.png'), TINY_PNG)
+  fs.writeFileSync(path.join(root, 'theme.json'), JSON.stringify({ primary: '#102030', footer: 'CONF-MARK', logo: 'logo.png' }))
+
+  const result = await executor.run({
+    manifest: builtin('pptx'),
+    vaultRoot: root,
+    input: { filename: 't.pptx', theme: 'theme.json', slides: [{ title: 'X', text: 'y' }] }
+  })
+
+  assert.equal(result.ok, true, result.error ?? '')
+  assert.match(result.output, /themed/)
+  const chrome = pptxPartText(path.join(root, 'exports', 't.pptx'), /ppt\/slide(Masters|Layouts)\/.*\.xml/)
+  assert.match(chrome, /CONF-MARK/)
+})
+
+test('acceptance: pptx clones a vault template through read_vault_file', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  withTempWorkspace(t)
+  await writePptxTemplate(root, 'brand.pptx')
+
+  const result = await executor.run({
+    manifest: builtin('pptx'),
+    vaultRoot: root,
+    input: { template: 'brand.pptx', filename: 'out.pptx', slides: [{ title: 'Agenda', bullets: ['Intro', 'Wrap'] }] }
+  })
+
+  assert.equal(result.ok, true, result.error ?? '')
+  assert.deepEqual(result.artifacts, [path.join(root, 'exports', 'out.pptx')])
+  const text = pptxPartText(path.join(root, 'exports', 'out.pptx'), /ppt\/slides\/slide\d+\.xml/)
+  assert.match(text, /Agenda/)
+  assert.match(text, /Intro/)
+})
+
+test('acceptance: pptx refuses an absolute path outside the coop at every call site', async (t) => {
+  const root = makeCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  withTempWorkspace(t)
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-outside-'))
+  t.after(() => fs.rmSync(outsideDir, { recursive: true, force: true }))
+  const outsidePptx = path.join(outsideDir, 'secret.pptx')
+  const outsideTheme = path.join(outsideDir, 'secret.json')
+  const outsidePng = path.join(outsideDir, 'secret.png')
+  fs.writeFileSync(outsidePptx, 'not really a pptx')
+  fs.writeFileSync(outsideTheme, '{}')
+  fs.writeFileSync(outsidePng, TINY_PNG)
+
+  const refuse = async (input: unknown): Promise<void> => {
+    const result = await executor.run({ manifest: builtin('pptx'), vaultRoot: root, input })
+    assert.equal(result.ok, false)
+    assert.match(result.error ?? '', /outside the vault/)
+    assert.deepEqual(result.artifacts, [], 'a refused vault path writes nothing')
+  }
+
+  await refuse({ template: outsidePptx, slides: [{ title: 'x' }] })
+  await refuse({ theme: outsideTheme, slides: [{ title: 'x' }] })
+  // the theme itself lives in the coop; only its logo escapes
+  fs.writeFileSync(path.join(root, 'theme.json'), JSON.stringify({ logo: outsidePng }))
+  await refuse({ theme: 'theme.json', slides: [{ title: 'x' }] })
+  await refuse({ slides: [{ image: outsidePng }] })
 })
 
 // ---- the real parent handlers ---------------------------------------------

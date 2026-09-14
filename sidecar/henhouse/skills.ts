@@ -1,9 +1,10 @@
-// Registers the migrated built-in skills as turn-loop tools (kip#78, kip#105).
+// Registers the migrated built-in skills as turn-loop tools (kip#78, kip#105,
+// kip#106).
 //
-// The four skills — web-search, reminders, kip-control, docx — are discovered
-// from their `SKILL.md` manifests (with the capability fields the executor
-// enforces) and bridged into the loop's `Tool` interface. Each runs through
-// the capability-limited executor; the parent supplies the hostcall
+// The five skills — web-search, reminders, kip-control, docx, pptx — are
+// discovered from their `SKILL.md` manifests (with the capability fields the
+// executor enforces) and bridged into the loop's `Tool` interface. Each runs
+// through the capability-limited executor; the parent supplies the hostcall
 // implementations (`webSearch`, `internalActions`, and the vault-rooted
 // `read_vault_file`) and, where a turn has retrieved notes, a read-only
 // snapshot.
@@ -18,7 +19,7 @@ import type { SkillSnapshot } from './mounts.ts'
 import { discoverSkills } from './manifest.ts'
 import { createSkillTool } from './tools.ts'
 
-export const MIGRATED_BUILTIN_SKILLS = ['web-search', 'reminders', 'kip-control', 'docx'] as const
+export const MIGRATED_BUILTIN_SKILLS = ['web-search', 'reminders', 'kip-control', 'docx', 'pptx'] as const
 
 export interface BuiltinSkillToolsDeps {
   executor: SkillExecutor

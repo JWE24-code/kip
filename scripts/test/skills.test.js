@@ -403,6 +403,64 @@ test('pptx skill: clones a .pptx template and fills its placeholders', async (t)
   assert.match(texts, /Intro/)
 })
 
+/** A real file outside the coop — the pre-#106 absolute-path bypass read it. */
+function outsideFile (name) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-outside-'))
+  const file = path.join(dir, name)
+  fs.writeFileSync(file, 'LIVE VAULT SECRET')
+  return file
+}
+
+test('pptx skill: refuses an absolute template path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.pptx')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { template: outside, filename: 'x.pptx', slides: [{ title: 'x' }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+  assert.ok(!fs.existsSync(path.join(root, 'exports', 'x.pptx')), 'nothing was written')
+})
+
+test('pptx skill: refuses an absolute theme path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.json')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { theme: outside, filename: 'x.pptx', slides: [{ title: 'x' }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+})
+
+test('pptx skill: refuses a theme.logo path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.png')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+  fs.writeFileSync(path.join(root, 'theme.json'), JSON.stringify({ logo: outside }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { theme: 'theme.json', filename: 'x.pptx', slides: [{ title: 'x' }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+})
+
+test('pptx skill: refuses a slide image path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.png')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { filename: 'x.pptx', slides: [{ image: outside }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+})
+
 // ---------------------------------------------------------------------------
 // kip-control (the built-in "drive the app" skill)
 // ---------------------------------------------------------------------------
