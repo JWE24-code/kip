@@ -20,6 +20,10 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { z } from 'zod'
 import type { Tool, ToolContext } from './loop.ts'
+// The roost index now lives in the sidecar (kip#70): reads come from the
+// ported reader connection instead of requiring the retrieval-layer script.
+import { searchPages, getPage, getPageSections } from '../roost/reader.ts'
+import { extractWikilinkSlugs } from '../roost/query.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -50,7 +54,7 @@ interface HybridModule {
   ) => RoostHit[]
 }
 
-const roost = require('../../scripts/lib/roost.js') as RoostModule
+const roost: RoostModule = { searchPages, getPage, getPageSections, extractWikilinkSlugs }
 const matter = require('gray-matter') as (raw: string) => { data: Record<string, unknown>, content: string }
 
 function optionalRequire<T> (id: string): T | null {

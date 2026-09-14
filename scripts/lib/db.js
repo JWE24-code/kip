@@ -103,4 +103,4 @@ function openDb (vaultRoot = DEFAULT_VAULT_ROOT) {
   return db
 }
 
-module.exports = { openDb, migrateLegacyDb }
+module.exports = { openDb, migrateLegacyDb, SCHEMA }
