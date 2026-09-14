@@ -77,6 +77,18 @@ const emptyPayload = z.object({}).optional()
 
 const toolArgs = z.record(z.string(), z.unknown())
 
+// A prior turn the client resends with the next `chat.send` (kip#97). The
+// server persists nothing (ADD-1 AD-11 / SPEC-1 FR-6: "wiki is the memory"),
+// but a client may replay the still-open session's own turns so a follow-up
+// ("expand on that", "and their salary?") resolves against them. Roles are
+// restricted to the two conversational sides; a client cannot smuggle in a
+// `system` message. The caps are the untrusted-input bound, well above the
+// client's own 6-turn / 700-char clip.
+const chatHistoryTurn = z.object({
+  role: z.enum(['user', 'assistant']),
+  text: z.string().min(1).max(4000)
+})
+
 export const payloadSchemas = {
   hello: z.object({ token: z.string().min(1) }),
   ready: z.object({
@@ -88,7 +100,21 @@ export const payloadSchemas = {
 
   'chat.send': z.object({
     text: z.string().min(1),
-    threadId: z.string().min(1).optional()
+    threadId: z.string().min(1).optional(),
+    // Client-resent context for the current, still-open session. Folded into
+    // this one turn's seed messages; never stored server-side (kip#97).
+    history: z.array(chatHistoryTurn).max(50).optional(),
+    // "quick" = nest-only: the turn is offered only non-skill tools, matching
+    // the old `--depth quick` (no skills/web). "full" (the default) keeps the
+    // whole tool set. A real, per-turn effect — not accepted-and-ignored.
+    depth: z.enum(['quick', 'full']).optional(),
+    // kip-app#73's regenerate/arena-compare. Accepted so a kip-app frame is
+    // not rejected, but explicitly **descoped** on the sidecar for now: the
+    // managed `arena: { compareToCallId }` routing is not threaded through the
+    // ReAct completion seam, and the arena id (`turn.end`) enrichment is
+    // tracked separately by kip#98. The value is therefore a deliberate no-op
+    // until that path is revisited, not a silently stripped key.
+    arenaCompareTo: z.string().min(1).optional()
   }),
   'chat.respond': z.object({
     toolCallId: z.string().min(1),

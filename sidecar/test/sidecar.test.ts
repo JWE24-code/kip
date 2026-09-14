@@ -397,6 +397,80 @@ test('chat.cancel aborts a real in-flight turn within 1s', async () => {
   }
 })
 
+test('chat.send folds client-sent history so a follow-up resolves (kip#97)', async () => {
+  const token = generateToken()
+  const prompts: string[] = []
+  const complete: CompleteFn = async (request) => {
+    prompts.push(request.prompt)
+    // The answer depends on the replayed history: with it, "that" resolves.
+    const hasContext = request.prompt.includes('what is the coop?')
+    const text = hasContext ? 'It is the vault you open.' : 'I have no earlier context.'
+    request.onDelta?.(text)
+    return { text, usage: { input: 1, output: 1 } }
+  }
+  const server = await startSidecarServer({ token, complete })
+  const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+  try {
+    client.send('chat.send', {
+      text: 'expand on that',
+      history: [
+        { role: 'user', text: 'what is the coop?' },
+        { role: 'assistant', text: 'The coop is the folder you open.' }
+      ]
+    })
+    const end = await client.next('turn.end')
+    const payload = end.payload as { reason: string, text?: string }
+
+    assert.equal(payload.reason, 'complete')
+    assert.equal(payload.text, 'It is the vault you open.')
+    assert.match(prompts[0], /User: what is the coop\?/)
+    assert.match(prompts[0], /Assistant: The coop is the folder you open\./)
+    assert.match(prompts[0], /User: expand on that/)
+  } finally {
+    client.close()
+    await server.close()
+  }
+})
+
+test('depth: quick offers only the nest tools; full offers the skills too', async () => {
+  const noteTool: Tool = {
+    spec: { name: 'note_tool', description: 'a nest tool', parameters: { type: 'object' } },
+    run: () => 'note'
+  }
+  const skillTool: Tool = {
+    kind: 'skill',
+    spec: { name: 'skill_tool', description: 'a skill', parameters: { type: 'object' } },
+    run: () => 'skill'
+  }
+
+  async function systemPromptFor (depth: 'quick' | 'full'): Promise<string> {
+    const token = generateToken()
+    let system = ''
+    const complete: CompleteFn = async (request) => {
+      system = request.system
+      return { text: 'ok', usage: { input: 1, output: 1 } }
+    }
+    const server = await startSidecarServer({ token, complete, tools: [noteTool, skillTool] })
+    const client = await connect({ url: `ws://127.0.0.1:${server.port}`, token })
+    try {
+      client.send('chat.send', { text: 'a question', depth })
+      await client.next('turn.end')
+    } finally {
+      client.close()
+      await server.close()
+    }
+    return system
+  }
+
+  const quick = await systemPromptFor('quick')
+  const full = await systemPromptFor('full')
+
+  assert.match(quick, /note_tool/)
+  assert.doesNotMatch(quick, /skill_tool/)
+  assert.match(full, /note_tool/)
+  assert.match(full, /skill_tool/)
+})
+
 test('skill.progress streams to the client for a real skill tool call', async () => {
   const token = generateToken()
   const skillTool: Tool = {

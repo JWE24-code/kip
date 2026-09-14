@@ -490,6 +490,15 @@ micro-ratings, blind arena) that tunes the managed router.
   muddies a model-vs-model comparison). The turn result carries `arenaId`;
   the app shows a "was this better?" strip and posts the verdict.
 
+> **Sidecar `chat.send` note (kip#97).** The rebuilt sidecar takes
+> `history` (`[{ role, text }]`, client-resent, never persisted — AD-11/FR-6)
+> and folds it into the turn's seed messages, and `depth` (`"quick"|"full"`):
+> `quick` offers the turn only the non-skill tools (nest-only), `full` keeps
+> the whole set. `arenaCompareTo` is **accepted but descoped** for now: the
+> managed `arena: { compareToCallId }` routing is not threaded through the
+> ReAct completion seam, and the arena id on `turn.end` is tracked by kip#98.
+> It is a deliberate no-op, not a silently stripped key.
+
 #### `groom.js` — coop health checks
 
 ```powershell

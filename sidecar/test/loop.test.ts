@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { TurnEvent, Usage } from '../protocol.ts'
-import type { LlmStreamEvent, LlmStreamRequest, Tool } from '../session/loop.ts'
+import type { LlmMessage, LlmStreamEvent, LlmStreamRequest, Tool } from '../session/loop.ts'
 import { ASK_USER_NAME, TurnLoop } from '../session/loop.ts'
 import { TraceRecorder } from '../traces/recorder.ts'
 
@@ -223,6 +223,74 @@ test('a tool round-trips its result into the next completion', async () => {
   assert.deepEqual(seenToolResults, ['RESULT-42'])
   assert.ok(events.some((event) => event.type === 'agent.tool.start' && event.name === 'search_notes'))
   assert.ok(events.some((event) => event.type === 'agent.tool.end' && event.result === 'RESULT-42'))
+})
+
+test('client-sent history is folded ahead of the new user message (kip#97)', async () => {
+  const seen: LlmMessage[][] = []
+  const llm = new ScriptedLlm([
+    async function* (request) {
+      seen.push(request.messages)
+      yield { type: 'text', text: 'resolved' }
+      yield { type: 'usage', usage: usage(1, 1) }
+    },
+  ])
+  const loop = new TurnLoop({ llm, emit: () => {}, newId: idSequence() })
+
+  const result = await loop.start('sess-1', 'and the nest?', {
+    history: [
+      { role: 'user', content: 'what is the coop?' },
+      { role: 'assistant', content: 'The vault.' },
+    ],
+  })
+
+  assert.equal(result.reason, 'completed')
+  assert.deepEqual(seen[0], [
+    { role: 'user', content: 'what is the coop?' },
+    { role: 'assistant', content: 'The vault.' },
+    { role: 'user', content: 'and the nest?' },
+  ])
+})
+
+test('a per-turn tool set overrides the loop defaults and hides the rest', async () => {
+  const advertised: string[][] = []
+  const llm = new ScriptedLlm([
+    async function* (request) {
+      advertised.push(request.tools.map((tool) => tool.name))
+      // The model still tries a tool that this turn was not offered.
+      yield { type: 'tool-call', call: { id: 'c1', name: 'skill_tool', arguments: {} } }
+      yield { type: 'usage', usage: usage(1, 1) }
+    },
+    async function* () {
+      yield { type: 'text', text: 'done' }
+      yield { type: 'usage', usage: usage(1, 1) }
+    },
+  ])
+
+  const noteTool: Tool = {
+    spec: { name: 'note_tool', description: 'a nest tool', parameters: { type: 'object' } },
+    run: () => 'note',
+  }
+  const skillTool: Tool = {
+    kind: 'skill',
+    spec: { name: 'skill_tool', description: 'a skill', parameters: { type: 'object' } },
+    run: () => 'skill',
+  }
+
+  const events: TurnEvent[] = []
+  const loop = new TurnLoop({
+    llm,
+    emit: (event) => events.push(event),
+    tools: [noteTool, skillTool],
+    newId: idSequence(),
+  })
+  const result = await loop.start('sess-1', 'q', { tools: [noteTool] })
+
+  assert.equal(result.reason, 'completed')
+  assert.deepEqual(advertised[0], ['note_tool', ASK_USER_NAME])
+  const end = events.find((event) => event.type === 'agent.tool.end')
+  assert.ok(end && end.type === 'agent.tool.end')
+  assert.equal(end.ok, false)
+  assert.equal(end.result, 'Unknown tool: skill_tool')
 })
 
 test('every event of a turn lands in the session trace, in order', async () => {
