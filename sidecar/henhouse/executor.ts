@@ -10,9 +10,11 @@
 //                    not. Path traversal is refused twice: by the mount
 //                    resolver (mounts.ts) and, ultimately, by the kernel-level
 //                    permission scope.
-//   * network:none — the process has no network permission at all, so `fetch`,
-//                    `http`, sockets, and DNS fail; the only way out is a
-//                    declared, parent-mediated hostcall (hostcalls.ts).
+//   * network:none — the process cannot reach the network: the permission
+//                    model denies it on Node 25+, and boot.cjs removes
+//                    `fetch`, `WebSocket`, and the network built-ins on every
+//                    Node line. The only way out is a declared,
+//                    parent-mediated hostcall (hostcalls.ts).
 //   * limits       — wall clock (kill), V8 heap (`--max-old-space-size`), and
 //                    captured stdout are bounded; hitting a limit terminates
 //                    the process rather than truncating a live run.

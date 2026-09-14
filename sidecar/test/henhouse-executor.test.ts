@@ -139,17 +139,22 @@ test('acceptance: a network:none skill cannot reach the network', async (t) => {
   const manifest = writeSkill(root, 'eager', {
     frontmatter: { network: 'none' },
     run: `
+const attempt = (name) => { try { require(name); return 'allowed' } catch (err) { return err.code || 'denied' } }
+const out = { http: attempt('node:http'), net: attempt('node:net'), dns: attempt('node:dns'), fetch: 'pending' }
 fetch(process.env.TEST_URL).then(
-  () => process.stdout.write('FETCH_OK'),
-  (err) => process.stdout.write('FETCH_DENIED:' + ((err.cause && err.cause.code) || err.code || 'error'))
+  () => { out.fetch = 'OK'; process.stdout.write(JSON.stringify(out)) },
+  (err) => { out.fetch = (err.cause && err.cause.code) || err.code || 'error'; process.stdout.write(JSON.stringify(out)) }
 )
 `
   })
 
   const result = await executor.run({ manifest, vaultRoot: root, env: { TEST_URL: server.url } })
   assert.equal(result.ok, true, result.error ?? '')
-  assert.match(result.output, /FETCH_DENIED/)
-  assert.ok(!result.output.includes('FETCH_OK'))
+  const output = JSON.parse(result.output) as Record<string, string>
+  assert.notEqual(output.fetch, 'OK', 'fetch must be denied')
+  assert.notEqual(output.http, 'allowed', 'node:http must be denied')
+  assert.notEqual(output.net, 'allowed', 'node:net must be denied')
+  assert.notEqual(output.dns, 'allowed', 'node:dns must be denied')
   assert.equal(server.hits(), 0, 'no request should ever reach the server')
 })
 
