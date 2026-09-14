@@ -50,7 +50,7 @@ already installed; don't run `yarn` at `app/tldraw/` unless deps changed.
 
 - `npm test` (repo root) — the retrieval-layer suite (`node:test`, no live API).
   `skills.test.js` spawns real skill subprocesses — fixture skills plus the
-  bundled `xlsx-csv` / `docx` / `pptx` / `kip-control` end to end (a few hundred
+  bundled `docx` / `pptx` / `kip-control` end to end (a few hundred
   ms each; `kip-control`'s `status` test also spawns `hatch-all.js --preview`).
 - `cd app && npx playwright test <spec>` — the Electron e2e suite. Runs against
   a pre-built `static/`, so `clojure -M:cljs compile app` first. `mindmap.spec.ts`
@@ -64,9 +64,10 @@ Built-in skills live in `scripts/skills/<name>/` (`SKILL.md` + a Node entry).
 gulp's `scriptsGlob` includes `skills/**`, so they sync to
 `static/scripts/skills/`. Their runtime deps go in `scripts/package.json`
 alongside the others (all pure-JS — no native ABI like `better-sqlite3`):
-`xlsx` is pinned to the SheetJS CDN tarball (`xlsx-0.20.3`, the maintained
-line; npm's `0.18.5` is the offline fallback). `docx`, `docxtemplater` +
-`pizzip`, `pptxgenjs`, and `pptx-automizer` back the `docx` / `pptx` skills.
+`docx`, `docxtemplater` + `pizzip`, `pptxgenjs`, and `pptx-automizer` back the
+`docx` / `pptx` skills. `xlsx` is pinned to the SheetJS CDN tarball
+(`xlsx-0.20.3`, the maintained line; npm's `0.18.5` is the offline fallback)
+and backs the document-extraction path (`lib/office.js`).
 `kip-control` adds no deps — it uses `node:child_process` plus the retrieval
 layer's own `lib/` (llm, skills, db, roost, paths). The **reminders** feature
 (`scripts/lib/reminders.js` + the `reminders` skill + `scripts/reminders.js`)
