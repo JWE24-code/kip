@@ -36,6 +36,20 @@ The retrieval layer (this repo) and the desktop app
   kill. Entries: `node scripts/watch.js`, `--once`, `--json`; npm scripts
   `watch` and `rebuild-vectors`.
 
+### Sidecar (`sidecar/`)
+
+- **Ported roost index, worker writer + reader split** (#70, AD-4) —
+  `sidecar/roost/` carries the same schema and the same FTS5 search/dedup
+  behavior as `scripts/lib/roost.js` (`upsertPage`, `setPageSummary`,
+  `searchPages`, `findSimilarSlug` and its normalized-Levenshtein threshold,
+  `getPage`, `getPageSections`, `setSectionSummaries`, `appendLog`,
+  `regenerateIndexMd`, `hatched_sources`, `recentClucks`). Writes now run on a
+  `better-sqlite3` worker thread holding the single write connection while
+  reads use a separate read-only WAL connection, so a read never waits on an
+  in-flight write. `rebuild` merges the FTS segments after a bulk pass to keep
+  search within NFR-1's single-digit-ms p95 at 10k notes. The read path in
+  `sidecar/session/notes.ts` now uses the ported reader.
+
 ### The agent workspace (`sidecar/`, P4)
 
 - **Git-versioned `nest/`** (#73, AD-5) — the nest is its own git repository,
