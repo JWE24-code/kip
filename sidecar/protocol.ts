@@ -128,6 +128,18 @@ export interface SkillExecEvent {
   ok: boolean
 }
 
+// A long-running skill's coarse progress. `skill.exec` is trace-only; this is
+// the event that reaches the client so the UI can show a live phase while a
+// skill runs (kip#94).
+export interface SkillProgressEvent {
+  type: 'skill.progress'
+  turnId: string
+  skill: string
+  phase: string
+  message?: string
+  pct?: number
+}
+
 export type TurnEvent =
   | TurnStartEvent
   | TurnDeltaEvent
@@ -139,6 +151,7 @@ export type TurnEvent =
   | TurnEndEvent
   | TurnErrorEvent
   | SkillExecEvent
+  | SkillProgressEvent
 
 export interface TurnError {
   code: string
