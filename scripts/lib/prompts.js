@@ -569,6 +569,96 @@ async function proposeAndDraftPages (sourceTitle, sourceContent, vaultRoot) {
   return []
 }
 
+const PROPOSE_AND_DRAFT_BATCH_SYSTEM_PROMPT = `You are ingesting SEVERAL raw source documents into a personal wiki (a second brain for journaling, goals, and health tracking) in a single step: for EACH source, decide which wiki pages it touches AND write each page's body.
+
+You receive the sources labeled and delimited like this, in the exact order you must answer:
+
+--- Source 1: "<title>" ---
+<source content>
+
+--- Source 2: "<title>" ---
+<source content>
+
+Treat each labeled source independently — pages proposed for one source must come only from that source's content.
+
+The wiki has four page types:
+- "entity": a place or recurring thing (a gym, a recurring project) — not a specific person.
+- "person": a specific human. Whenever a source names a real person, propose "person" (not "entity").
+- "concept": a recurring theme (a habit, a goal, sleep, a specific idea being tracked).
+- "source": exactly one page that summarizes THIS document and links to the pages it touches.
+
+Rules (applied per source):
+- Always include exactly one "source" page for each source. Only add another page for something substantial enough in the source to warrant its own page — not every passing mention.
+- For a "person" page, also fill the contact fields the source actually states: "email", "org", "role", "phone", and "aliases" (a list of name variants and acronyms, e.g. ["CDO"]). Omit a field when the source doesn't say it.
+- "body" is the page's markdown body only — NO YAML frontmatter, NO top-level "# Title" heading. Be factual and concise; use only what the source supports; do not invent details. Every page must have a non-empty body.
+- Cross-link the other pages you are creating for the SAME source with [[slug]] wikilinks, where the slug is the title lowercased with spaces/punctuation replaced by single hyphens (e.g. "Dr. Alvarez" -> [[dr-alvarez]]).
+- If "body" uses "## " or "### " headings, also provide "sections": one {heading, summary} entry per heading, where "heading" is the EXACT heading text (without the "#") and "summary" is a one-line description of that section. Omit "sections" when the body has no such headings.
+
+Respond with a JSON object of exactly this shape:
+{"sources": [{"pages": [{"title": "...", "type": "entity"|"concept"|"source"|"person", "tags": ["..."], "summary": "one-line description", "body": "markdown body...", "sections": [{"heading": "...", "summary": "..."}], "email": "...", "org": "...", "role": "...", "phone": "...", "aliases": ["..."]}, ...]}, ...]}
+
+The "sources" array MUST have exactly one entry per input source, in the SAME ORDER as the sources above. Each entry's "pages" array follows the same rules as a single-source hatch — an otherwise empty source still contributes exactly one "source" page.`
+
+// Batch calls scale the output budget with the group size but stay under a
+// ceiling most models accept, so a large group degrades to truncation (and the
+// per-file fallback) rather than a provider 400.
+const BATCH_DRAFT_MAX_TOKENS_PER_SOURCE = 8192
+const BATCH_DRAFT_MAX_TOKENS_CEILING = 32768
+
+/** Renders the labeled source block the batch prompt expects. */
+function buildBatchDraftPrompt (sources) {
+  return sources
+    .map((s, i) => `--- Source ${i + 1}: "${s.sourceTitle}" ---\n${s.sourceContent}`)
+    .join('\n\n')
+}
+
+/**
+ * The batch one-call hatch path: proposes AND drafts the pages for several
+ * sources in a single LLM call. `sources` is [{ sourceTitle, sourceContent }].
+ * Returns an array aligned 1:1 with the input — `[{ pages: [...] }, ...]` in
+ * input order — regardless of path. If the batched response is malformed,
+ * truncated after one retry, or has the wrong source count, it silently falls
+ * back to one proposeAndDraftPages() per source, so batching is a pure
+ * optimization and never a new failure mode.
+ */
+async function proposeAndDraftPagesBatch (sources, vaultRoot) {
+  if (!Array.isArray(sources) || !sources.length) return []
+  const prompt = buildBatchDraftPrompt(sources)
+  const maxTokens = Math.min(
+    BATCH_DRAFT_MAX_TOKENS_PER_SOURCE * sources.length,
+    BATCH_DRAFT_MAX_TOKENS_CEILING
+  )
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { text, raw } = await callLLM({
+      system: PROPOSE_AND_DRAFT_BATCH_SYSTEM_PROMPT,
+      prompt,
+      json: true,
+      maxTokens,
+      label: attempt === 0 ? 'hatch:draft:batch' : 'hatch:draft:batch:retry'
+    }, { vaultRoot })
+
+    if (responseWasTruncated(raw)) continue // hit the token ceiling — one retry
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed.sources) &&
+          parsed.sources.length === sources.length &&
+          parsed.sources.every((s) => s && Array.isArray(s.pages))) {
+        return parsed.sources.map((s) => ({ pages: s.pages }))
+      }
+    } catch { /* malformed — retry once, then fall back */ }
+  }
+  return fallbackToIndividualDrafts(sources, vaultRoot)
+}
+
+/** The always-aligned fallback: one single-source proposeAndDraftPages() per input, in order. */
+async function fallbackToIndividualDrafts (sources, vaultRoot) {
+  const out = []
+  for (const s of sources) {
+    out.push({ pages: await proposeAndDraftPages(s.sourceTitle, s.sourceContent, vaultRoot) })
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // Deep-groom checks (scripts/groom.js --deep). Each is one JSON LLM call per
 // page/pair, with one retry and a safe default so a single flub never aborts
@@ -770,6 +860,7 @@ module.exports = {
   proposeCandidatePages,
   generatePageContent,
   proposeAndDraftPages,
+  proposeAndDraftPagesBatch,
   describeWhiteboard,
   reviewPageCoherence,
   checkSummaryAccuracy,

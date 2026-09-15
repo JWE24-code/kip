@@ -8,7 +8,7 @@ const { rebuildRoost } = require('../rebuild-roost')
 const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, pendingSourcesSummary, prepareSources } = require('../lib/hatch')
 const { recordHatchedSource, getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
-const { proposeAndDraftPages } = require('../lib/prompts')
+const { proposeAndDraftPages, proposeAndDraftPagesBatch } = require('../lib/prompts')
 
 /** Stub global.fetch (local OpenAI-compatible provider) to return `content` for every call; records request bodies. */
 function stubFetch (respond) {
@@ -576,6 +576,104 @@ test('proposeAndDraftPages returns [] when the model never produces usable JSON'
   const { restore } = stubFetch(() => 'not json at all')
   try {
     assert.deepEqual(await proposeAndDraftPages('Some Title', 'some body text', root), [])
+  } finally {
+    restore()
+  }
+})
+
+test('proposeAndDraftPagesBatch drafts all sources in one call, aligned in order', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const sources = [
+    { sourceTitle: 'First Note', sourceContent: 'The Alpha project kicks off.' },
+    { sourceTitle: 'Second Note', sourceContent: 'The Beta initiative rolls out.' }
+  ]
+
+  const { calls, restore } = stubFetch(() => JSON.stringify({
+    sources: [
+      { pages: [{ title: 'Alpha', type: 'source', tags: [], summary: 's', body: 'Alpha body.' }] },
+      { pages: [{ title: 'Beta', type: 'concept', tags: [], summary: 's', body: 'Beta body.' }] }
+    ]
+  }))
+
+  try {
+    const out = await proposeAndDraftPagesBatch(sources, root)
+    assert.equal(calls.length, 1, 'one batched LLM call for the whole group')
+    assert.equal(out.length, 2)
+    assert.equal(out[0].pages[0].title, 'Alpha')
+    assert.equal(out[1].pages[0].title, 'Beta')
+
+    // Both sources are present in the single prompt, labeled.
+    const sent = (calls[0].messages || []).map((m) => m.content).join('\n')
+    assert.match(sent, /--- Source 1: "First Note" ---/)
+    assert.match(sent, /--- Source 2: "Second Note" ---/)
+  } finally {
+    restore()
+  }
+})
+
+test('proposeAndDraftPagesBatch falls back per source when the batch JSON is malformed', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const sources = [
+    { sourceTitle: 'One', sourceContent: 'About one thing.' },
+    { sourceTitle: 'Two', sourceContent: 'About another thing.' }
+  ]
+
+  const labels = []
+  const { calls, restore } = stubFetch((body) => {
+    const sys = body.messages[0].content
+    if (/SEVERAL raw source documents/.test(sys)) return 'not json — the model flubbed it'
+    labels.push(sys)
+    const user = body.messages[1].content
+    if (/Source title: One\b/.test(user)) return JSON.stringify({ pages: [{ title: 'One', type: 'source', tags: [], summary: 's', body: 'One body.' }] })
+    return JSON.stringify({ pages: [{ title: 'Two', type: 'source', tags: [], summary: 's', body: 'Two body.' }] })
+  })
+
+  try {
+    const out = await proposeAndDraftPagesBatch(sources, root)
+    assert.equal(out.length, 2, 'result stays aligned with the input')
+    assert.equal(out[0].pages[0].title, 'One')
+    assert.equal(out[1].pages[0].title, 'Two')
+    assert.equal(calls.length, 4, 'one retry + two per-source fallback calls')
+    assert.equal(labels.length, 2, 'both sources re-proposed individually')
+  } finally {
+    restore()
+  }
+})
+
+test('proposeAndDraftPagesBatch falls back when the batch has the wrong source count', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const sources = [
+    { sourceTitle: 'One', sourceContent: 'About one thing.' },
+    { sourceTitle: 'Two', sourceContent: 'About another thing.' }
+  ]
+
+  const singleCalls = []
+  const { calls, restore } = stubFetch((body) => {
+    const sys = body.messages[0].content
+    if (/SEVERAL raw source documents/.test(sys)) {
+      // Only one entry for two sources — invalid batch.
+      return JSON.stringify({ sources: [{ pages: [{ title: 'Only', type: 'source', tags: [], summary: 's', body: 'Only body.' }] }] })
+    }
+    singleCalls.push(body.messages[1].content)
+    return JSON.stringify({ pages: [{ title: 'Solo', type: 'source', tags: [], summary: 's', body: 'Solo body.' }] })
+  })
+
+  try {
+    const out = await proposeAndDraftPagesBatch(sources, root)
+    assert.equal(out.length, 2)
+    assert.equal(out[0].pages[0].title, 'Solo')
+    assert.equal(out[1].pages[0].title, 'Solo')
+    assert.equal(calls.length, 4, 'batch retry + two single-source fallbacks')
+    assert.equal(singleCalls.length, 2)
   } finally {
     restore()
   }
