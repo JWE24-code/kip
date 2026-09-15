@@ -569,6 +569,87 @@ async function proposeAndDraftPages (sourceTitle, sourceContent, vaultRoot) {
   return []
 }
 
+// Output ceiling for the batched propose call. Output scales with the group
+// size (below), but a too-high max_tokens is rejected by some providers, so
+// this caps it. A group whose combined draft doesn't fit truncates, retries
+// once, then falls back to per-source calls — never a lost file.
+const MAX_BATCH_DRAFT_TOKENS = 16384
+
+const PROPOSE_AND_DRAFT_BATCH_SYSTEM_PROMPT = `You are ingesting MULTIPLE raw source documents into a personal wiki (a second brain for journaling, goals, and health tracking) in a single step: for EACH source, decide which wiki pages it touches AND write each page's body.
+
+The sources are given as labeled blocks, in order:
+--- Source 1: "<title>" ---
+<document text>
+
+--- Source 2: "<title>" ---
+<document text>
+
+The wiki has four page types:
+- "entity": a place or recurring thing (a gym, a recurring project) — not a specific person.
+- "person": a specific human. Whenever a source names a real person, propose "person" (not "entity").
+- "concept": a recurring theme (a habit, a goal, sleep, a specific idea being tracked).
+- "source": exactly one page per source document that summarizes THAT document and links to the pages it touches.
+
+Rules:
+- Process every source. Return exactly one entry per source, in the same order as the input, even if a source yields only its "source" page.
+- For each source, always include exactly one "source" page for that document. Only add another page for something substantial enough in that source to warrant its own page — not every passing mention.
+- For a "person" page, also fill the contact fields the source actually states: "email", "org", "role", "phone", and "aliases" (a list of name variants and acronyms, e.g. ["CDO"]). Omit a field when the source doesn't say it.
+- "body" is the page's markdown body only — NO YAML frontmatter, NO top-level "# Title" heading. Be factual and concise; use only what the source supports; do not invent details. Every page must have a non-empty body.
+- Cross-link the pages of the SAME source with [[slug]] wikilinks, where the slug is the title lowercased with spaces/punctuation replaced by single hyphens (e.g. "Dr. Alvarez" -> [[dr-alvarez]]). Do not cross-link pages from different sources.
+- If "body" uses "## " or "### " headings, also provide "sections": one {heading, summary} entry per heading, where "heading" is the EXACT heading text (without the "#") and "summary" is a one-line description of that section. Omit "sections" when the body has no such headings.
+
+Respond with a JSON object of exactly this shape, with one entry per input source in the same order:
+{"sources": [{"pages": [{"title": "...", "type": "entity"|"concept"|"source"|"person", "tags": ["..."], "summary": "one-line description", "body": "markdown body...", "sections": [{"heading": "...", "summary": "..."}], "email": "...", "org": "...", "role": "...", "phone": "...", "aliases": ["..."]}, ...]}, ...]}`
+
+/**
+ * Multi-source variant of the one-call hatch path: proposes pages AND drafts
+ * every body for several small sources in one LLM request, so a batch of N
+ * files costs one call instead of N. Sources are labeled and ordered in the
+ * prompt; the response is validated to line up 1:1 with the input. When the
+ * combined call can't be trusted — truncated, malformed, or the wrong number
+ * of sources, after the same single retry proposeAndDraftPages uses — it falls
+ * back to one proposeAndDraftPages call per source, so batching is never a new
+ * failure mode, only fewer requests.
+ *
+ * @param {Array<{sourceTitle: string, sourceContent: string}>} sources
+ * @returns {Promise<Array<{pages: Array, error?: Error}>>} same length/order
+ *   as `sources`; `error` is set only when the per-source fallback call itself
+ *   threw, so a caller can fail just that one file.
+ */
+async function proposeAndDraftPagesBatch (sources, vaultRoot) {
+  if (!Array.isArray(sources) || sources.length === 0) return []
+  const prompt = sources
+    .map((s, i) => `--- Source ${i + 1}: "${s.sourceTitle}" ---\n\n${s.sourceContent}`)
+    .join('\n\n')
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { text, raw } = await callLLM({
+        system: PROPOSE_AND_DRAFT_BATCH_SYSTEM_PROMPT,
+        prompt,
+        json: true,
+        maxTokens: Math.min(8192 * sources.length, MAX_BATCH_DRAFT_TOKENS),
+        label: attempt === 0 ? 'hatch:draft:batch' : 'hatch:draft:batch:retry'
+      }, { vaultRoot })
+
+      if (responseWasTruncated(raw)) continue // hit the token ceiling — one retry
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed.sources) && parsed.sources.length === sources.length &&
+          parsed.sources.every((s) => s && Array.isArray(s.pages))) {
+        return parsed.sources.map((s) => ({ pages: s.pages }))
+      }
+    } catch { /* provider error or malformed — retry once, then fall back */ }
+  }
+
+  return Promise.all(sources.map(async (s) => {
+    try {
+      return { pages: await proposeAndDraftPages(s.sourceTitle, s.sourceContent, vaultRoot) }
+    } catch (err) {
+      return { pages: [], error: err }
+    }
+  }))
+}
+
 // ---------------------------------------------------------------------------
 // Deep-groom checks (scripts/groom.js --deep). Each is one JSON LLM call per
 // page/pair, with one retry and a safe default so a single flub never aborts
@@ -770,6 +851,7 @@ module.exports = {
   proposeCandidatePages,
   generatePageContent,
   proposeAndDraftPages,
+  proposeAndDraftPagesBatch,
   describeWhiteboard,
   reviewPageCoherence,
   checkSummaryAccuracy,
