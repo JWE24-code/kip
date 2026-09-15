@@ -172,9 +172,14 @@ function pickPerson (candidate) {
  * @returns {{candidates: Array, plan: Array}}
  */
 async function proposePlan ({ sourceTitle, sourceContent, sourceRelPath = null, sourceOriginal = null }, vaultRoot = DEFAULT_VAULT_ROOT, { combined = true } = {}) {
+  // The LLM sees a cleaned copy (see stripLogseqNoise) — sourceContent itself
+  // stays exactly as read, since it's also used below for the synthesized
+  // source page's content hash and is threaded through to commitHatchPlan for
+  // later generatePageContent() calls and change-tracking.
+  const promptContent = stripLogseqNoise(sourceContent)
   const proposed = combined
-    ? await proposeAndDraftPages(sourceTitle, sourceContent, vaultRoot)
-    : await proposeCandidatePages(sourceTitle, sourceContent, vaultRoot)
+    ? await proposeAndDraftPages(sourceTitle, promptContent, vaultRoot)
+    : await proposeCandidatePages(sourceTitle, promptContent, vaultRoot)
   return buildHatchPlan(proposed, { sourceTitle, sourceContent, sourceRelPath, sourceOriginal }, vaultRoot, { combined })
 }
 
@@ -392,21 +397,34 @@ function findRelatedPages (wb, ownSlug, vaultRoot, cap = 12) {
 }
 
 /**
- * Turns one whiteboard .edn into nest/sources/<slug>.md. The **Outline** is a
- * deterministic render of the board's shapes (scripts/lib/whiteboard.js). A
- * **Context** section above it is written by the LLM (describeWhiteboard) —
- * an interpretation of the map plus [[links]] to related nest pages; it is
- * best-effort, and the page falls back to outline-only when there's no
- * provider configured or the call fails. Either way the page is a full
- * replace each time (not a dated _Update_ append): the board is the source
- * of truth, this page mirrors it.
+ * Turns one whiteboard .edn into nest/sources/<slug>.md, PLUS real entity/
+ * concept/person pages extracted from the same outline text (kip#-, "mindmap
+ * hatching produces no data"). The **Outline** is a deterministic render of
+ * the board's shapes (scripts/lib/whiteboard.js). A **Context** section above
+ * it is written by the LLM (describeWhiteboard) — an interpretation of the
+ * map plus [[links]] to related nest pages; it is best-effort, and the page
+ * falls back to outline-only when there's no provider configured or the call
+ * fails. Either way the source-mirror page is a full replace each time (not a
+ * dated _Update_ append): the board is the source of truth, this page mirrors
+ * it.
  *
- * @returns {Promise<{action: 'create'|'update', slug: string, path: string, enriched: boolean}>}
+ * A mindmap's node labels are content, not just shape data — a board with
+ * "Alice", "Q3 budget", "Backend migration" as nodes deserves the same
+ * entity/concept/person extraction any other hatched document gets, not just
+ * a bullet-list mirror nobody's wiki links point at. So the outline text is
+ * ALSO run through the standard proposePlan()/commitHatchPlan() pipeline
+ * (same as any pages/journals source), one additional LLM call, filtering out
+ * its own synthesized 'source' candidate since the mirror page above already
+ * covers that role with a richer, whiteboard-specific body.
+ *
+ * @returns {Promise<{action: 'create'|'update', slug: string, path: string,
+ *                     enriched: boolean, extracted: Array<{action, slug, path}>}>}
  */
 async function hatchWhiteboard (absPath, vaultRoot = DEFAULT_VAULT_ROOT) {
   const wb = parseWhiteboard(fs.readFileSync(absPath, 'utf8'))
   const boardName = wb.name || path.basename(absPath, path.extname(absPath))
   const slug = slugify(boardName)
+  const relBoardPath = path.relative(vaultRoot, absPath).split(path.sep).join('/')
 
   const relPath = `nest/sources/${slug}.md`
   const filePath = path.join(nestPath(vaultRoot), 'sources', `${slug}.md`)
@@ -420,6 +438,7 @@ async function hatchWhiteboard (absPath, vaultRoot = DEFAULT_VAULT_ROOT) {
 
   let context = null
   let summary = `Whiteboard: ${boardName}`
+  let extractedPlan = []
   if (wb.nodes.length) {
     try {
       const related = findRelatedPages(wb, slug, vaultRoot)
@@ -432,9 +451,16 @@ async function hatchWhiteboard (absPath, vaultRoot = DEFAULT_VAULT_ROOT) {
       // no provider configured, or a transient LLM failure — outline-only is
       // still a useful result, so don't fail the hatch over it.
     }
+
+    try {
+      const { plan } = await proposePlan({ sourceTitle: boardName, sourceContent: outline, sourceRelPath: relBoardPath }, vaultRoot, { combined: true })
+      extractedPlan = plan.filter((c) => c.type !== 'source')
+    } catch {
+      // same best-effort rule as describeWhiteboard above — an outline-only
+      // mirror page is still a useful result if extraction fails.
+    }
   }
 
-  const relBoardPath = path.relative(vaultRoot, absPath).split(path.sep).join('/')
   const intro = context
     ? `_Whiteboard **${boardName}** (source: \`${relBoardPath}\`): the Context is LLM-written, the Outline is regenerated from the board's shapes. Edit the board, not this page._`
     : `_Outline of the whiteboard **${boardName}**, generated from \`${relBoardPath}\`. Edit the board, not this page._`
@@ -447,14 +473,50 @@ async function hatchWhiteboard (absPath, vaultRoot = DEFAULT_VAULT_ROOT) {
     source: relBoardPath, source_hatched: today
   }))
   upsertPage(slug, relPath, 'source', ['whiteboard'], summary, body, vaultRoot)
-  return { action: existing ? 'update' : 'create', slug, path: relPath, enriched: !!context }
+
+  let extracted = []
+  if (extractedPlan.length) {
+    const { results } = await commitHatchPlan(
+      { plan: extractedPlan, sourceTitle: boardName, sourceContent: outline, sourceRelPath: relBoardPath, sourceHash: hashContent(outline) },
+      vaultRoot, { regenIndex: false })
+    extracted = results
+  }
+
+  return { action: existing ? 'update' : 'create', slug, path: relPath, enriched: !!context, extracted }
 }
 
-/** Rough count of real prose characters — frontmatter and list/markdown punctuation removed. */
+/**
+ * Strips Logseq-native structural noise that isn't part of a document's
+ * actual content: page/block properties (`key:: value` — Logseq's own
+ * property syntax, which gray-matter's YAML frontmatter parser doesn't
+ * recognize and so never removes, unlike a Hatch-written page's `---`
+ * frontmatter), `:LOGBOOK:` time-tracking blocks (auto-appended whenever a
+ * block's TODO/DOING/DONE marker changes), and the marker keywords
+ * themselves at the start of a bullet.
+ *
+ * Confirmed against a real mindmap page (kip-app#132's `:block/type
+ * "mindmap"`, a plain page — not a whiteboard .edn): four short topics
+ * produced zero extracted concepts when hatched as-is (the LLM had to wade
+ * through `type:: mindmap`, `LATER`/`DONE` markers, full `:LOGBOOK:`/`CLOCK:`
+ * blocks, and `mindmap-color:: red` — more noise than content), and the exact
+ * same four topics with this noise stripped produced 4 linked concept/entity
+ * pages plus the source page. This is why "hatching a mindmap records no
+ * data": the raw file was never processed into text meaningful enough for an
+ * LLM to extract from.
+ */
+function stripLogseqNoise (raw) {
+  return raw
+    .replace(/[ \t]*:LOGBOOK:[\s\S]*?:END:[ \t]*\n?/g, '')
+    .replace(/^[ \t]*[A-Za-z][A-Za-z0-9_-]*::[ \t].*$\n?/gm, '')
+    .replace(/^([ \t]*[-*+][ \t]+)(TODO|DOING|DONE|LATER|NOW|CANCELED|CANCELLED|WAITING|IN-PROGRESS)[ \t]+/gm, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+}
+
+/** Rough count of real prose characters — frontmatter, Logseq noise, and list/markdown punctuation removed. */
 function meaningfulTextLength (raw) {
   let body
   try { body = matter(raw).content } catch { body = raw }
-  return body
+  return stripLogseqNoise(body)
     .replace(/^\s*[-*+]\s+/gm, '')
     .replace(/[#>`*_~[\]()|=-]/g, '')
     .replace(/\s+/g, ' ')
@@ -1081,6 +1143,7 @@ module.exports = {
   planCandidates,
   humanizeFilename,
   meaningfulTextLength,
+  stripLogseqNoise,
   mapLimit,
   groupByByteBudget,
   collectPendingSources,

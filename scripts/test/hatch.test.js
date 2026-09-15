@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, groupByByteBudget, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, proposeNextPendingGroup, commitReviewedPlanGroup, pendingSourcesSummary, prepareSources, MAX_GROUP_BYTES } = require('../lib/hatch')
+const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, stripLogseqNoise, mapLimit, groupByByteBudget, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeHatchPlan, proposeNextPending, commitReviewedPlan, proposeNextPendingGroup, commitReviewedPlanGroup, pendingSourcesSummary, prepareSources, MAX_GROUP_BYTES } = require('../lib/hatch')
 const { recordHatchedSource, getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
 const { proposeAndDraftPages, proposeAndDraftPagesBatch } = require('../lib/prompts')
@@ -133,6 +133,88 @@ test('meaningfulTextLength ignores frontmatter and list/markdown punctuation', (
   assert.equal(meaningfulTextLength('- \n'), 0)
   assert.equal(meaningfulTextLength('---\ntype: page\n---\n- \n'), 0)
   assert.ok(meaningfulTextLength('- a real sentence with some words in it') > 20)
+})
+
+// A real Tier A mindmap page (kip-app#132: :block/type "mindmap", a plain
+// page — not a whiteboard .edn), captured verbatim from a live hatch-app
+// session: page property, TODO/DONE markers, :LOGBOOK: time-tracking
+// (auto-appended on every marker click), and a per-topic style property.
+// Confirmed empirically: hatched as-is this produced 0 extracted concepts
+// (the LLM echoed the outline into a single source page); with this noise
+// stripped, the same 4 topics produced 4 real concept/entity pages.
+const REAL_MINDMAP_PAGE = `type:: mindmap
+
+- LATER Q3-planning
+  :LOGBOOK:
+  CLOCK: [2026-09-15 Tue 09:05:25]--[2026-09-15 Tue 09:05:26] =>  00:00:01
+  :END:
+\t- hiring
+\t  mindmap-color:: red
+- DONE backend migration
+  :LOGBOOK:
+  CLOCK: [2026-09-15 Tue 09:05:34]--[2026-09-15 Tue 09:05:35] =>  00:00:01
+  :END:
+- budget`
+
+test('stripLogseqNoise removes page/block properties, :LOGBOOK: blocks, and marker keywords', () => {
+  const cleaned = stripLogseqNoise(REAL_MINDMAP_PAGE)
+  assert.ok(!cleaned.includes('type::'), 'page property gone')
+  assert.ok(!cleaned.includes(':LOGBOOK:') && !cleaned.includes('CLOCK:') && !cleaned.includes(':END:'), 'logbook gone')
+  assert.ok(!cleaned.includes('mindmap-color::'), 'block property gone')
+  assert.ok(!cleaned.includes('LATER') && !cleaned.includes('DONE'), 'marker keywords gone')
+  // the actual topics survive, in order
+  assert.match(cleaned, /Q3-planning/)
+  assert.match(cleaned, /hiring/)
+  assert.match(cleaned, /backend migration/)
+  assert.match(cleaned, /budget/)
+})
+
+test('meaningfulTextLength on a real mindmap page: noise alone already clears the gate either way, but a much noisier/smaller map would not without stripping', () => {
+  // The real captured page is long enough (mostly LOGBOOK boilerplate) to
+  // clear MIN_CONTENT_CHARS even unstripped — this test locks in that
+  // stripping doesn't regress the gate, not that the gate was broken here.
+  assert.ok(meaningfulTextLength(REAL_MINDMAP_PAGE) > 0)
+})
+
+test('hatch on a real mindmap page: noise in the prompt suppresses extraction; stripped, it does not', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+  fs.writeFileSync(path.join(root, 'pages', 'mindmap-test.md'), REAL_MINDMAP_PAGE)
+
+  // A stub standing in for a real model faced with each version: given the
+  // noisy raw text it has to guess past LOGBOOK/marker/property clutter and
+  // (per the live test that motivated this fix) tends to only manage a
+  // mirror of the outline; given the cleaned text it extracts the topics.
+  // This test isolates the one thing hatch.js controls — what text reaches
+  // the prompt — rather than re-asserting model behavior.
+  const { calls, restore } = stubFetch((body) => {
+    const content = body.messages[1].content
+    const sawNoise = /LOGBOOK|mindmap-color::|type:: mindmap/.test(content)
+    return JSON.stringify({
+      pages: sawNoise
+        ? [{ title: 'Mindmap Test', type: 'source', tags: [], summary: 'Mindmap', body: content.slice(0, 50) }]
+        : [
+            { title: 'Mindmap Test', type: 'source', tags: [], summary: 'Mindmap', body: 'Source page.' },
+            { title: 'Q3-planning', type: 'concept', tags: [], summary: 'Q3 planning', body: 'Q3 planning, with [[hiring]].' },
+            { title: 'hiring', type: 'concept', tags: [], summary: 'Hiring', body: 'Hiring under [[q3-planning]].' },
+            { title: 'backend migration', type: 'entity', tags: [], summary: 'Backend migration', body: 'A separate topic.' },
+            { title: 'budget', type: 'concept', tags: [], summary: 'Budget', body: 'A separate topic.' }
+          ]
+    })
+  })
+  try {
+    const { plan } = await proposeHatchPlan(path.join(root, 'pages', 'mindmap-test.md'), root, { copyToSources: false, combined: true })
+    assert.equal(calls.length, 1)
+    assert.ok(!/LOGBOOK|mindmap-color::|type:: mindmap/.test(calls[0].messages[1].content), 'the prompt sent to the model is the cleaned text, not the raw file')
+    assert.equal(plan.length, 5, 'source page plus 4 real concept/entity pages, not just an outline mirror')
+    assert.ok(plan.some((p) => p.title === 'Q3-planning' && p.type === 'concept'))
+    assert.ok(plan.some((p) => p.title === 'hiring'))
+    assert.ok(plan.some((p) => p.title === 'backend migration'))
+    assert.ok(plan.some((p) => p.title === 'budget'))
+  } finally {
+    restore()
+  }
 })
 
 test('collectPendingSources: buckets pages/journals by new-or-changed, size, and emptiness', async (t) => {
@@ -335,16 +417,27 @@ test('hatchWhiteboard: deterministic Outline + LLM Context section, full replace
   const boardPath = path.join(root, 'whiteboards', 'Brainstorm.edn')
   fs.writeFileSync(boardPath, MINI_BOARD)
 
-  const { calls, restore } = stubFetch(() => JSON.stringify({
-    summary: 'A two-node brainstorm about the idea and its detail.',
-    context: 'The map is one idea broken into a single detail. Relates to [[idea]].'
-  }))
+  // Two different LLM calls happen per hatch: describeWhiteboard's Context
+  // section, and the combined propose+draft call over the same outline text
+  // (entity/concept/person extraction) — route the stub's response by which
+  // system prompt is asking.
+  const { calls, restore } = stubFetch((body) => {
+    if (/mindmap \/ whiteboard/.test(body.messages[0].content)) {
+      return JSON.stringify({
+        summary: 'A two-node brainstorm about the idea and its detail.',
+        context: 'The map is one idea broken into a single detail. Relates to [[idea]].'
+      })
+    }
+    return JSON.stringify({
+      pages: [{ title: 'Detail', type: 'concept', tags: [], summary: 'A detail of the idea.', body: 'A supporting detail for [[idea]].' }]
+    })
+  })
   try {
     const r1 = await hatchWhiteboard(boardPath, root)
     assert.equal(r1.action, 'create')
     assert.equal(r1.path, 'nest/sources/brainstorm.md')
     assert.equal(r1.enriched, true)
-    assert.equal(calls.length, 1, 'one LLM call for the Context section')
+    assert.equal(calls.length, 2, 'one LLM call for the Context section, one for entity extraction')
     // the related-page search fed the matched concept page into the prompt
     assert.match(calls[0].messages[1].content, /Outline:\n- Idea/)
     assert.match(calls[0].messages[1].content, /matched node labels:\n- idea/)
@@ -355,6 +448,14 @@ test('hatchWhiteboard: deterministic Outline + LLM Context section, full replace
     assert.match(md1, /## Outline\n\n- Idea\n {2}- Detail/)
     assert.match(md1, /\[\[idea\]\]/)
     assert.match(getPage('brainstorm', root).summary, /two-node brainstorm/, 'LLM summary used for meta.db')
+
+    // the outline's node labels were also extracted into a real concept page,
+    // not just mirrored into the source page
+    assert.equal(r1.extracted.length, 1)
+    assert.equal(r1.extracted[0].slug, 'detail')
+    assert.equal(r1.extracted[0].action, 'create')
+    const detailMd = fs.readFileSync(path.join(root, r1.extracted[0].path), 'utf8')
+    assert.match(detailMd, /A supporting detail for \[\[idea\]\]/)
 
     // change the board, re-hatch -> a full replace, not an _Update_ append
     fs.writeFileSync(boardPath, MINI_BOARD.replace('Detail', 'Refined detail'))
