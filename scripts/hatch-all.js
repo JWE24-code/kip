@@ -12,6 +12,8 @@
 //                                                    (default is combined: one LLM call per file). Also KIP_HATCH_CLASSIC=1.
 //   KIP_HATCH_GROUP_BYTES=N                        -> combined mode packs pending files into groups of at
 //                                                    most N bytes per LLM call (default 153600, 150 KB).
+//   node scripts/hatch-all.js --propose-next [--group-size N] -> review-mode propose (one file, or N as a group)
+//   node scripts/hatch-all.js --commit-next [--group-size N] [--keep '["slug"]' | --keeps '{"pages/a.md":["slug"]}']
 //
 // During a run it writes <coop>/.roost/hatch-progress.json continuously
 // ({done, total, current, activity, metrics}) for the app to poll, and on
@@ -29,7 +31,7 @@ require('dotenv').config()
 const fs = require('node:fs')
 const path = require('node:path')
 const { describeProvider } = require('./lib/llm')
-const { pendingSourcesSummary, hatchAllSources, proposeNextPending, commitReviewedPlan } = require('./lib/hatch')
+const { pendingSourcesSummary, hatchAllSources, proposeNextPending, commitReviewedPlan, proposeNextPendingGroup, commitReviewedPlanGroup } = require('./lib/hatch')
 const { DEFAULT_VAULT_ROOT } = require('./lib/paths')
 const telemetry = require('./lib/telemetry')
 const { createRunReporter } = require('./lib/run-progress')
@@ -86,10 +88,25 @@ function parseKeep () {
   if (i === -1) return null
   try { const v = JSON.parse(process.argv[i + 1]); return Array.isArray(v) ? v : null } catch { return null }
 }
+/** Group-commit keep map: {"<coop-relative path>": ["slug", ...]}. */
+function parseKeeps () {
+  const i = process.argv.indexOf('--keeps')
+  if (i === -1) return null
+  try {
+    const v = JSON.parse(process.argv[i + 1])
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null
+  } catch { return null }
+}
 function parseSkip () {
   const i = process.argv.indexOf('--skip')
   const n = i === -1 ? 0 : Number(process.argv[i + 1])
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0
+}
+/** Review-mode group size; default 1 keeps the existing single-file path. */
+function parseGroupSize () {
+  const i = process.argv.indexOf('--group-size')
+  const n = i === -1 ? 1 : Number(process.argv[i + 1])
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1
 }
 
 async function main () {
@@ -104,24 +121,36 @@ async function main () {
     return
   }
 
-  // "Review before writing" — one file at a time. Each call does a single
-  // step (propose OR commit) and exits; the app drives the loop.
+  // "Review before writing" — one file at a time by default; --group-size N
+  // proposes/commits up to N per call (kip#112). Each call does a single step
+  // (propose OR commit) and exits; the app drives the loop.
   if (process.argv.includes('--propose-next')) {
     try {
       console.error(describeProvider())
-      const out = await proposeNextPending(DEFAULT_VAULT_ROOT, {
-        ...(parseLimit() ? { limit: parseLimit() } : {}),
-        skip: parseSkip(),
-        combined,
-        force: forceOn
-      })
+      const groupSize = parseGroupSize()
+      const out = groupSize > 1
+        ? await proposeNextPendingGroup(DEFAULT_VAULT_ROOT, {
+          ...(parseLimit() ? { limit: parseLimit() } : {}),
+          skip: parseSkip(),
+          groupSize,
+          combined,
+          force: forceOn
+        })
+        : await proposeNextPending(DEFAULT_VAULT_ROOT, {
+          ...(parseLimit() ? { limit: parseLimit() } : {}),
+          skip: parseSkip(),
+          combined,
+          force: forceOn
+        })
       console.log(JSON.stringify(out))
     } finally { releaseLock() }
     return
   }
   if (process.argv.includes('--commit-next')) {
     try {
-      const out = await commitReviewedPlan(DEFAULT_VAULT_ROOT, { keepSlugs: parseKeep() })
+      const out = parseGroupSize() > 1
+        ? await commitReviewedPlanGroup(DEFAULT_VAULT_ROOT, { keeps: parseKeeps() || {} })
+        : await commitReviewedPlan(DEFAULT_VAULT_ROOT, { keepSlugs: parseKeep() })
       console.log(JSON.stringify(out))
     } finally { releaseLock() }
     return

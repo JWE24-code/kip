@@ -883,12 +883,200 @@ async function commitReviewedPlan (vaultRoot = DEFAULT_VAULT_ROOT, { keepSlugs =
   }
 }
 
+/**
+ * Selects the next review group: up to `groupSize` files, in scan order,
+ * stopping early when the combined source bytes would exceed `maxBytes` (a
+ * file over budget alone still comes through, as a group of one). Unlike
+ * groupByByteBudget() — whose every group maps to one combined LLM call, so it
+ * solos whiteboards — a whiteboard may share a review group: it never enters
+ * the prompt, so grouping it with its neighbours is pure bookkeeping.
+ */
+function nextReviewGroup (files, { groupSize, maxBytes = MAX_GROUP_BYTES } = {}) {
+  const group = []
+  let bytes = 0
+  for (const file of files) {
+    if (group.length >= groupSize) break
+    if (group.length && bytes + (file.bytes || 0) > maxBytes) break
+    group.push(file)
+    bytes += file.bytes || 0
+  }
+  return group
+}
+
+/**
+ * Group-aware "review before writing" propose (kip#112). Like
+ * proposeNextPending(), but proposes up to `groupSize` pending files (under a
+ * byte budget, see nextReviewGroup) with ONE combined LLM call
+ * (proposeAndDraftPagesBatch, which falls back per-file on a bad batch
+ * response). Writes nothing; the whole group — bodies and all — is stashed at
+ * <coop>/.roost/hatch-plan.json as an ARRAY, one entry per file, for
+ * commitReviewedPlanGroup() to pick up.
+ *
+ * Whiteboards are deterministic, so they skip the LLM call and stay mixed into
+ * the same array with a `whiteboard: true` marker, matching today's per-file
+ * handling. The return value is slim (no bodies, no source text) for the UI.
+ *
+ * @returns {{done: true} | {files: Array<{source, relPath, kind, plan?,
+ *            whiteboard?, error?}>, remaining: number}}
+ */
+async function proposeNextPendingGroup (vaultRoot = DEFAULT_VAULT_ROOT,
+  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, skip = 0, groupSize = 1, combined = true, force = false } = {}) {
+  await prepareSources(vaultRoot)
+  const { pending } = collectPendingSources(vaultRoot, { roots, force })
+  const capped = pending.slice(0, limit)
+  const group = nextReviewGroup(capped.slice(skip), { groupSize })
+  if (group.length === 0) return { done: true }
+
+  const planFile = path.join(vaultRoot, '.roost', 'hatch-plan.json')
+  fs.mkdirSync(path.dirname(planFile), { recursive: true })
+
+  const entries = group.map((file) => {
+    const source = humanizeFilename(file.absPath)
+    const hash = hashContent(fs.readFileSync(file.absPath, 'utf8'))
+    if (file.kind === 'whiteboard') return { file, source, hash, whiteboard: true }
+    return { file, source, hash, prepared: prepareHatchSource(file.absPath, vaultRoot, { copyToSources: false }) }
+  })
+
+  // One combined LLM call covers every regular file in the group; whiteboards
+  // ride along without a call.
+  const regular = entries.filter((e) => !e.whiteboard)
+  if (regular.length) {
+    const sources = regular.map((e) => ({ sourceTitle: e.prepared.sourceTitle, sourceContent: e.prepared.sourceContent }))
+    const drafted = combined
+      ? await proposeAndDraftPagesBatch(sources, vaultRoot)
+      : await mapLimit(sources, HATCH_FILE_CONCURRENCY, (s) => proposeCandidatePages(s.sourceTitle, s.sourceContent, vaultRoot))
+    regular.forEach((e, i) => {
+      const result = combined ? (drafted[i] || { pages: [] }) : { pages: drafted[i] || [] }
+      if (result.error) {
+        e.error = (result.error && result.error.message) || String(result.error)
+        return
+      }
+      try {
+        e.plan = buildHatchPlan(result.pages, e.prepared, vaultRoot, { combined }).plan
+      } catch (err) {
+        e.error = (err && err.message) || String(err)
+      }
+    })
+  }
+
+  const stash = []
+  const files = []
+  for (const e of entries) {
+    if (e.whiteboard) {
+      stash.push({ relPath: e.file.relPath, kind: 'whiteboard', hash: e.hash, whiteboard: true })
+      files.push({ source: e.source, relPath: e.file.relPath, kind: 'whiteboard', whiteboard: true })
+      continue
+    }
+    if (e.error) {
+      // The per-source fallback call failed for this file alone — surface it
+      // so the UI can skip it, without stashing a bogus plan.
+      stash.push({ relPath: e.file.relPath, kind: e.file.kind, hash: e.hash, error: e.error, plan: [] })
+      files.push({ source: e.source, relPath: e.file.relPath, kind: e.file.kind, error: e.error, plan: [] })
+      continue
+    }
+    stash.push({
+      relPath: e.file.relPath, kind: e.file.kind, hash: e.hash,
+      sourceTitle: e.prepared.sourceTitle, sourceContent: e.prepared.sourceContent,
+      sourceOriginal: e.prepared.sourceOriginal, plan: e.plan
+    })
+    files.push({
+      source: e.source, relPath: e.file.relPath, kind: e.file.kind,
+      plan: e.plan.map((c) => ({ slug: c.slug, title: c.title, type: c.type, action: c.action, summary: c.summary || '' }))
+    })
+  }
+
+  fs.writeFileSync(planFile, JSON.stringify(stash))
+  return { files, remaining: capped.length - skip - group.length }
+}
+
+/**
+ * Commits the array of plans stashed by proposeNextPendingGroup() (kip#112).
+ * `keeps` maps each file's coop-relative path to the slugs to keep; a file
+ * omitted from `keeps` — or mapped to [] — is skipped (recorded as handled,
+ * mirroring today's keptNone case). Whiteboards are deterministic full
+ * replaces and are always hatched, `keeps` aside (matching the single-file
+ * path).
+ *
+ * Each file is committed with commitHatchPlan() sequentially — no change to
+ * write concurrency — and index.md is regenerated ONCE at the end rather than
+ * per file (mirroring hatchAllSources' regenIndex:false batching). Records
+ * every committed/skipped source's hash.
+ *
+ * @returns {Array<{source, results?, skipped?, ms} | {source, error, ms} |
+ *            {source, keptNone: true, ms}>}
+ */
+async function commitReviewedPlanGroup (vaultRoot = DEFAULT_VAULT_ROOT, { keeps = {} } = {}) {
+  const planFile = path.join(vaultRoot, '.roost', 'hatch-plan.json')
+  const parsed = JSON.parse(fs.readFileSync(planFile, 'utf8'))
+  const stash = Array.isArray(parsed) ? parsed : [parsed]
+
+  const results = []
+  let wroteSomething = false
+  try {
+    for (const entry of stash) {
+      const source = humanizeFilename(path.join(vaultRoot, entry.relPath))
+      const startedAt = Date.now()
+      if (entry.error) {
+        // A propose that failed for this file: report it, don't write, and
+        // leave the hash un-recorded so a later run re-proposes it.
+        results.push({ source, error: entry.error, ms: 0 })
+        continue
+      }
+      try {
+        if (entry.whiteboard) {
+          const result = await hatchWhiteboard(path.join(vaultRoot, entry.relPath), vaultRoot)
+          recordHatchedSource(entry.relPath, entry.hash, vaultRoot)
+          wroteSomething = true
+          results.push({ source, kind: 'whiteboard', results: [result], skipped: [], ms: Date.now() - startedAt })
+          continue
+        }
+
+        // Omitted / empty keep-set = "skip this file" (the group equivalent of
+        // the single-file keptNone case).
+        const keepSet = new Set(Array.isArray(keeps[entry.relPath]) ? keeps[entry.relPath] : [])
+        const kept = entry.plan.filter((c) => keepSet.has(c.slug))
+        if (kept.length === 0) {
+          recordHatchedSource(entry.relPath, entry.hash, vaultRoot)
+          results.push({ source, keptNone: true, ms: Date.now() - startedAt })
+          continue
+        }
+
+        const { results: written, skipped } = await commitHatchPlan(
+          {
+            plan: kept,
+            sourceTitle: entry.sourceTitle,
+            sourceContent: entry.sourceContent,
+            sourceRelPath: entry.relPath,
+            sourceHash: entry.hash,
+            sourceOriginal: entry.sourceOriginal
+          },
+          vaultRoot, { regenIndex: false })
+        if (written.length === 0) {
+          results.push({ source, error: 'every kept page came back empty — try again', ms: Date.now() - startedAt })
+          continue
+        }
+        recordHatchedSource(entry.relPath, entry.hash, vaultRoot)
+        wroteSomething = true
+        results.push({ source, kind: entry.kind, results: written, skipped, ms: Date.now() - startedAt })
+      } catch (err) {
+        results.push({ source, error: (err && err.message) || String(err), ms: Date.now() - startedAt })
+      }
+    }
+    if (wroteSomething) regenerateIndexMd(vaultRoot)
+    return results
+  } finally {
+    try { fs.rmSync(planFile, { force: true }) } catch { /* best-effort */ }
+  }
+}
+
 module.exports = {
   proposeHatchPlan,
   proposePlan,
   commitHatchPlan,
   proposeNextPending,
   commitReviewedPlan,
+  proposeNextPendingGroup,
+  commitReviewedPlanGroup,
   ensureInSources,
   planCandidates,
   humanizeFilename,
