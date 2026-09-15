@@ -5,7 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, groupByByteBudget, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, pendingSourcesSummary, prepareSources, MAX_GROUP_BYTES } = require('../lib/hatch')
+const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, groupByByteBudget, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, proposeNextPendingGroup, commitReviewedPlanGroup, pendingSourcesSummary, prepareSources, MAX_GROUP_BYTES } = require('../lib/hatch')
 const { recordHatchedSource, getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
 const { proposeAndDraftPages, proposeAndDraftPagesBatch } = require('../lib/prompts')
@@ -960,4 +960,115 @@ test('recordHatchedSource prunes the orphan row left by a renamed source (kip-ap
   // A missing *directory* means "maybe not synced yet" — the row must stay.
   recordHatchedSource('dropbox/report-v2.md', hashContent('Version two of a report.'), root)
   assert.ok(hatchedSourceHashes(root).has('dropbox/report-v2.md'))
+})
+
+/** Counts fs.writeFileSync calls to <root>/nest/<basename> (e.g. index.md),
+ *  regardless of which module does the write. */
+function countWrites (root, basename) {
+  const original = fs.writeFileSync
+  const target = path.resolve(root, 'nest', basename)
+  let count = 0
+  fs.writeFileSync = function (file, ...rest) {
+    if (path.resolve(String(file)) === target) count++
+    return original.apply(fs, [file, ...rest])
+  }
+  return { get count () { return count }, restore: () => { fs.writeFileSync = original } }
+}
+
+test('#112 proposeNextPendingGroup: one batched call for a mixed group, array stash', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  fs.writeFileSync(path.join(root, 'pages', 'a.md'), 'Alpha source with real prose content here.')
+  fs.writeFileSync(path.join(root, 'pages', 'b.md'), 'Beta source with real prose content here.')
+  fs.writeFileSync(path.join(root, 'whiteboards', 'Brainstorm.edn'), MINI_BOARD)
+
+  const { calls, restore } = stubFetch((body) => {
+    // Only the two regular files go through the combined prompt; the board's
+    // Context call is separate (but isn't made until commit).
+    assert.match(body.messages[0].content, /ingesting MULTIPLE/)
+    assert.match(body.messages[1].content, /--- Source 1: "A" ---/)
+    assert.match(body.messages[1].content, /--- Source 2: "B" ---/)
+    return JSON.stringify({ sources: [
+      { pages: [{ title: 'Alpha', type: 'source', tags: [], summary: 's', body: 'Alpha notes.' }] },
+      { pages: [{ title: 'Beta', type: 'source', tags: [], summary: 's', body: 'Beta notes.' }] }
+    ] })
+  })
+
+  try {
+    const out = await proposeNextPendingGroup(root, { groupSize: 3 })
+    assert.equal(calls.length, 1, 'one LLM call for both regular files; the whiteboard needs none')
+    assert.equal(out.remaining, 0)
+    assert.deepEqual(out.files.map((f) => f.relPath), ['pages/a.md', 'pages/b.md', 'whiteboards/Brainstorm.edn'])
+    assert.deepEqual(out.files[0].plan.map((p) => p.slug), ['alpha'])
+    assert.deepEqual(out.files[1].plan.map((p) => p.slug), ['beta'])
+    assert.equal(out.files[2].whiteboard, true)
+    assert.ok(!fs.existsSync(path.join(root, 'nest', 'sources', 'alpha.md')), 'nothing written during propose')
+
+    // The stash round-trips as an array with the full per-file plan + source text.
+    const stash = JSON.parse(fs.readFileSync(path.join(root, '.roost', 'hatch-plan.json'), 'utf8'))
+    assert.ok(Array.isArray(stash), 'stash is an array')
+    assert.deepEqual(stash.map((e) => e.relPath), ['pages/a.md', 'pages/b.md', 'whiteboards/Brainstorm.edn'])
+    assert.equal(stash[2].whiteboard, true)
+    assert.ok(stash[0].plan.length && stash[0].sourceContent, 'full plan + source text stashed for commit')
+  } finally {
+    restore()
+  }
+})
+
+test('#112 commitReviewedPlanGroup: per-file keeps, whiteboards always hatch, index once', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  fs.writeFileSync(path.join(root, 'pages', 'a.md'), 'Alpha source with real prose content here.')
+  fs.writeFileSync(path.join(root, 'pages', 'b.md'), 'Beta source with real prose content here.')
+  fs.writeFileSync(path.join(root, 'whiteboards', 'Brainstorm.edn'), MINI_BOARD)
+
+  const { restore } = stubFetch((body) => {
+    if (/ingesting MULTIPLE/.test(body.messages[0].content)) {
+      return JSON.stringify({ sources: [
+        { pages: [
+          { title: 'Alpha', type: 'source', tags: [], summary: 's', body: 'Alpha hub.' },
+          { title: 'Alpha Detail', type: 'concept', tags: [], summary: 's', body: 'Alpha detail body.' }
+        ] },
+        { pages: [{ title: 'Beta', type: 'source', tags: [], summary: 's', body: 'Beta hub.' }] }
+      ] })
+    }
+    // the whiteboard's Context call
+    return JSON.stringify({ summary: 'A board.', context: 'Context about the board.' })
+  })
+
+  const indexWrites = countWrites(root, 'index.md')
+  try {
+    const proposal = await proposeNextPendingGroup(root, { groupSize: 3 })
+    assert.equal(proposal.files.length, 3)
+
+    // Keep everything from A; omit B entirely = skip B's pages.
+    const results = await commitReviewedPlanGroup(root, {
+      keeps: { 'pages/a.md': ['alpha', 'alpha-detail'] }
+    })
+    assert.equal(results.length, 3)
+    const bySource = new Map(results.map((r) => [r.source, r]))
+    assert.deepEqual(bySource.get('A').results.map((r) => r.slug).sort(), ['alpha', 'alpha-detail'])
+    assert.equal(bySource.get('B').keptNone, true)
+    assert.equal(bySource.get('Brainstorm').kind, 'whiteboard')
+
+    assert.ok(fs.existsSync(path.join(root, 'nest', 'sources', 'alpha.md')))
+    assert.ok(fs.existsSync(path.join(root, 'nest', 'concepts', 'alpha-detail.md')))
+    assert.ok(!fs.existsSync(path.join(root, 'nest', 'sources', 'beta.md')), 'file B skipped (omitted from keeps)')
+    assert.ok(fs.existsSync(path.join(root, 'nest', 'sources', 'brainstorm.md')), 'whiteboard always hatched')
+
+    assert.equal(indexWrites.count, 1, 'index.md regenerated exactly once for the whole group')
+    assert.ok(!fs.existsSync(path.join(root, '.roost', 'hatch-plan.json')), 'stash cleaned up')
+
+    // Every source was recorded as handled (committed or deliberately skipped).
+    assert.deepEqual((await proposeNextPendingGroup(root, { groupSize: 3 })).done, true)
+  } finally {
+    indexWrites.restore()
+    restore()
+  }
 })
