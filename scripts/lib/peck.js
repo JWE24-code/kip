@@ -17,6 +17,7 @@ const path = require('node:path')
 const matter = require('gray-matter')
 
 const { searchPages, upsertPage, regenerateIndexMd, appendLog, extractWikilinkSlugs, getPage, getPageSections } = require('./roost')
+const { hybridSearch } = require('./hybrid')
 const { resolvePage } = require('./pages')
 const { extractKeyTerms, selectPages, answerQuestion, answerQuestionWithSkills, answerFromWeb, isNoAnswer, captureFacts } = require('./prompts')
 const { discoverSkills, runSkill } = require('./skills')
@@ -177,7 +178,9 @@ async function retrieveCandidates (question, vaultRoot, { history = [] } = {}) {
   const recentUser = (Array.isArray(history) ? history : [])
     .filter((t) => t && t.role === 'user' && typeof t.text === 'string')
     .slice(-3).map((t) => t.text).join(' ')
-  const direct = searchPages(`${recentUser} ${question}`.trim(), {}, vaultRoot)
+  // Hybrid (FTS5 + block vectors, RRF-fused) when the vector index exists;
+  // exactly the FTS ranking when it doesn't (AD-8).
+  const direct = hybridSearch(`${recentUser} ${question}`.trim(), { vaultRoot })
 
   // Skip the LLM key-term pass when the direct search already found enough —
   // one fewer round-trip per turn, and a tighter set of pages to answer over.

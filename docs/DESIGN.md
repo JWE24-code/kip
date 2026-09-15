@@ -30,9 +30,10 @@ into one clearly-bounded zone and never touches your own notes.
 The design constraints that shaped everything:
 
 1. **Files stay the source of truth.** Every LLM-written page is a plain
-   Markdown file with YAML frontmatter. Delete `.roost/` and rebuild it from
-   the files (`rebuild-roost`) — it's a derived index (the page table +
-   full-text search), machine-local, and not synced. The one thing a rebuild
+   Markdown file with YAML frontmatter. Delete the workspace's `roost/meta.db`
+   and rebuild it from the files (`rebuild-roost`) — it's a derived index (the
+   page table + full-text search), machine-local, and not synced (it lives
+   outside the coop on purpose, kip#67). The one thing a rebuild
    can't recover is `hatched_sources`, the per-file "already hatched" memory:
    after a bare rebuild the next Hatch re-proposes pages for every source
    instead of updating them. Nothing else is locked inside an app.
@@ -43,7 +44,8 @@ The design constraints that shaped everything:
    converted `.md` sibling there (its original is parked outside the graph).
    The one other exception is **skills** (§5.4), which write their
    deliverables to `exports/` and their own config under `.henhouse/`.
-   Sandboxing skill filesystem access is on the deferred list.
+   Skill filesystem access is capability-limited in the rebuilt sidecar
+   executor (§5.4), replacing the old unsandboxed runner.
 3. **Provider-agnostic.** Anthropic, OpenAI, DeepSeek, a local Ollama model,
    or any OpenAI-compatible endpoint — one config file, one code path.
 4. **Observable and reversible.** Every LLM call is timed and (optionally)
@@ -61,7 +63,7 @@ The design constraints that shaped everything:
 | **pages/** | the unified source folder — Logseq's own notes directory *and* the drop-box for source material; an Office/PDF drop becomes a converted `.md` sibling | notes + `raw/` inbox |
 | **nest/** | the LLM-maintained wiki | `wiki/` |
 | **clucks/** | append-only monthly activity log | `log/` |
-| **.roost/** | the SQLite index (`meta.db`) + per-run artifacts | `.index/` |
+| **.roost/** | per-run artifacts (progress/trace/lint/caches); the SQLite index itself lives at the workspace root, outside the coop (kip#67) | `.index/` |
 | **.henhouse/** | LLM provider config (`llm.json`, gitignored) | `.config/` |
 | **Hatch** | turn a source into nest pages | ingest |
 | **Peck** | ask a question, get a cited answer | ask / query / chat |
@@ -77,8 +79,8 @@ The design constraints that shaped everything:
 prj01/
 ├── scripts/           # the retrieval layer — plain Node
 │   ├── lib/
-│   │   ├── db.js          # opens coop/.roost/meta.db, owns the schema
-│   │   ├── paths.js       # path helpers + type↔folder map; KIP_COOP_ROOT
+│   │   ├── db.js          # opens <workspace>/roost/meta.db, migrates the old in-coop one
+│   │   ├── paths.js       # path helpers + type↔folder map; KIP_COOP_ROOT + KIP_WORKSPACE_ROOT
 │   │   ├── roost.js       # upsertPage, searchPages, findSimilarSlug,
 │   │   │                  #   appendLog, regenerateIndexMd, recentClucks,
 │   │   │                  #   hatchedSourceHashes, slug similarity, wikilinks
@@ -91,7 +93,7 @@ prj01/
 │   │   ├── skills.js      # discoverSkills() + runSkill() — Peck's tool harness
 │   │   ├── telemetry.js   # per-run LLM-call timing/token recorder
 │   │   └── run-progress.js# the live progress/trace file writer (shared)
-│   ├── skills/            # built-in Peck skills: xlsx-csv/, web-search/, docx/, pptx/, kip-control/
+│   ├── skills/            # built-in Peck skills: web-search/, docx/, pptx/, kip-control/
 │   ├── hatch.js           # CLI: single source, with y/n review
 │   ├── hatch-all.js       # CLI: batched "Hatch sources", no review
 │   ├── peck.js  chat.js   # CLI: ask a question (chat.js = JSON, for the app)
@@ -346,6 +348,14 @@ findings) which Peck reads at answer time to flag a cited page that Groom
 found orphaned / contradicted / drifted (kip-app#116). Every checklist item
 is a suggestion; Groom never edits or deletes a `nest/` page.
 
+In the rebuilt harness (P5, kip#76) this same algorithm also runs live inside the
+sidecar: the enrichment pipeline runs the batch-scoped contradiction check over
+the pages a run put in play (AD-9's ≤6 ceiling, unchanged), folding in whatever
+the last full groom stored in `lint.json` (read-only). A detected contradiction
+is written to `nest/conflicts/<a>-<b>.md` — a report linking `[[a]]` and `[[b]]`
+that resolves to the two pages — and named in the chat report; the contradicted
+pages are never edited.
+
 ### 5.4 Skills — Peck's tool loop
 
 A **skill** is a Claude-Code-style folder — a `SKILL.md` manifest
@@ -390,11 +400,10 @@ The result carries `steps: [{skill, input, ok, ms, outputPreview}]`, which the
 Peck panel renders as `⚙` lines above the answer (live from
 `.roost/peck-progress.json` while it runs).
 
-Built-ins: `xlsx-csv` (SheetJS — read/summarize a spreadsheet in the coop),
-`web-search` (`scripts/skills/web-search/search.js` — **DuckDuckGo by default,
-keyless, active**; parses the `html.duckduckgo.com/html/` no-JS endpoint;
-Brave/Tavily optional, key-gated, chosen via `SEARCH_BACKEND` in `skills.json`
-`config`), `docx` and `pptx` (build a
+Built-ins: `web-search` (`scripts/skills/web-search/search.js` — **DuckDuckGo
+by default, keyless, active**; parses the `html.duckduckgo.com/html/` no-JS
+endpoint; Brave/Tavily optional, key-gated, chosen via `SEARCH_BACKEND` in
+`skills.json` `config`), `docx` and `pptx` (build a
 Word doc / a deck into `<coop>/exports/`). The document skills take an
 **optional** template kept in the coop — a `.docx` with `{tags}`
 (`docxtemplater`), a `.pptx` cloned per slide (`pptx-automizer`), or a small
@@ -447,6 +456,18 @@ snooze, an OS-level timer for a closed app.
 privileges. Built-ins are reviewed here; a user skill is like adding a shell
 script. The runner limits blast radius but does not contain it.
 
+**Rebuilt executor (P6, kip#77).** The sidecar grows a real capability
+perimeter beside this path: `sidecar/henhouse/` parses the same `SKILL.md`
+frontmatter but treats `network`, `mounts`, and `limits` as enforced
+capabilities rather than documentation. The `node-inproc` backend runs a skill
+as its own Node process under the platform permission model — only a
+read-only input snapshot and the coop's `exports/` are mounted, direct network
+is denied outright, wall/memory/output limits are real, and the child
+environment is a whitelist that never carries provider keys (FR-25). The only
+way out of the sandbox is a manifest-declared hostcall (`fetch_url`,
+`llm.complete`) mediated by the parent. The CLI's `skills.js` remains until
+kip#78 migrates the built-in skills onto the manifest + hostcalls.
+
 ---
 
 ## 6. How the app talks to the retrieval layer
@@ -474,8 +495,10 @@ scripts/<x>.js   (runs as plain Node — the app's own Electron binary,
 - **`ELECTRON_RUN_AS_NODE`** means a packaged Kip needs no system Node — it
   runs its own bundled Electron binary as the interpreter.
 - **`KIP_COOP_ROOT`** = whatever graph folder the user has open. The scripts
-  operate on *that* coop (`pages/`, `nest/`, `.roost/`, `.henhouse/` inside
-  it), not a fixed location.
+  operate on *that* coop (`pages/`, `nest/`, `.henhouse/` inside it), not a
+  fixed location. `KIP_WORKSPACE_ROOT` is separate: the local app-data base
+  holding each coop's index (`<base>/coops/<coop>/roost/meta.db`) so a synced
+  coop never holds the SQLite WAL (kip#67).
 - **Not** routed through Logseq's `electron.shell` command-runner (that's an
   allow-list for known tools like git/pandoc); the one
   renderer-supplied string (the Peck question) is passed as an argv entry to

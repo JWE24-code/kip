@@ -7,8 +7,9 @@ when_to_use: >
   "switch the provider to deepseek", "turn off the web-search skill", "rebuild the index",
   "how's the hatch going".
 entry: run.js
-network: true
-timeout: 120
+network: false
+hostcalls: [internal_action]
+limits: { wall: 120, mem: 256, output: "256kb" }
 parameters:
   - { name: operation, type: string, required: true, enum: [status, hatch-preview, hatch, hatch-progress, groom, groom-deep, groom-progress, groom-report, rebuild-roost, settings, set-provider, test-connection, set-skill], description: "What to do." }
   - { name: limit, type: number, required: false, description: "operation=hatch: how many pending source files to process (default 10)." }

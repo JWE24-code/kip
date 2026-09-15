@@ -109,7 +109,7 @@ scripts/
 │   └── whiteboard.js # parseWhiteboard() + whiteboardToOutline() — a tldraw
 │                     # .edn board → a nested-bullet outline (deterministic;
 │                     # the Context section on top is one LLM call — prompts.js)
-├── skills/           # built-in Peck skills — xlsx-csv/, web-search/, docx/, pptx/, kip-control/ (SKILL.md + run.js)
+├── skills/           # built-in Peck skills — web-search/, docx/, pptx/, kip-control/ (SKILL.md + run.js)
 ├── rebuild-roost.js  # rebuilds meta.db + nest/index.md from coop/nest/*.md
 ├── peck.js           # thin CLI wrapper around lib/peck.js — see below
 ├── groom.js          # the Groom workflow — see below
@@ -355,7 +355,7 @@ uses whatever `PROVIDER` is configured — no native function-calling.
 
 A skill is a folder with a `SKILL.md` manifest + a Node entry script:
 
-- **built-in** — `scripts/skills/` (`xlsx-csv`, `web-search`, `docx`, `pptx`, `kip-control`).
+- **built-in** — `scripts/skills/` (`web-search`, `docx`, `pptx`, `kip-control`).
 - **user** — `<graph>/.henhouse/skills/<name>/` (a user skill of the same
   `name` overrides a built-in).
 
@@ -374,10 +374,10 @@ The app's **Settings → Skills** tab is the GUI for all of this: an on/off togg
 per skill and the web-search backend picker + key fields.
 
 `node scripts/skills-list.js` prints what's discovered (content-free — no
-secrets, no paths). `xlsx-csv` reads/summarizes a spreadsheet in the coop;
-`web-search` searches the web — **DuckDuckGo by default, no key, on out of the
-box** (Peck may search whenever a question needs facts the wiki lacks); Brave or
-Tavily can be selected instead (each needs a key). `docx` / `pptx` build a
+secrets, no paths). `web-search` searches the web — **DuckDuckGo by default,
+no key, on out of the box** (Peck may search whenever a question needs facts
+the wiki lacks); Brave or Tavily can be selected instead (each needs a key).
+`docx` / `pptx` build a
 Word doc / a deck into `<graph>/exports/` from an outline, or from an optional
 `.docx`/`.pptx`/JSON-theme template in the coop; `kip-control` drives Kip's own
 workflows from a Peck turn — `status`, `hatch-preview`/`hatch`/`hatch-progress`,
@@ -489,6 +489,15 @@ micro-ratings, blind arena) that tunes the managed router.
   `answerQuestion` path for it (no skills — they add per-run variance that
   muddies a model-vs-model comparison). The turn result carries `arenaId`;
   the app shows a "was this better?" strip and posts the verdict.
+
+> **Sidecar `chat.send` note (kip#97).** The rebuilt sidecar takes
+> `history` (`[{ role, text }]`, client-resent, never persisted — AD-11/FR-6)
+> and folds it into the turn's seed messages, and `depth` (`"quick"|"full"`):
+> `quick` offers the turn only the non-skill tools (nest-only), `full` keeps
+> the whole set. `arenaCompareTo` is **accepted but descoped** for now: the
+> managed `arena: { compareToCallId }` routing is not threaded through the
+> ReAct completion seam, and the arena id on `turn.end` is tracked by kip#98.
+> It is a deliberate no-op, not a silently stripped key.
 
 #### `groom.js` — coop health checks
 

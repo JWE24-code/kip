@@ -7,6 +7,108 @@ All notable changes to Kip. Format loosely follows
 The retrieval layer (this repo) and the desktop app
 ([kip-app](https://github.com/JWE24-code/kip-app)) are released together.
 
+## [Unreleased]
+
+### The retrieval layer (`scripts/`)
+
+- **Hybrid retrieval** (#71, AD-8) — retrieval merges FTS5 lexical hits and
+  block-level vector hits by reciprocal rank fusion (`scripts/lib/hybrid.js`).
+  Vector search lives in its own `vectors.db` beside `meta.db` in the workspace
+  roost dir (sqlite-vec, AD-8; kip#67 keeps it out of the synced coop), so the
+  FTS index still works when the native extension is unavailable. `Peck` uses
+  `hybridSearch`, which degrades to exactly the old FTS ranking when there is
+  no vector index.
+- **Local, incremental embeddings** (#71, AD-16) — `scripts/lib/embeddings.js`
+  provides a CPU-only, dependency-free default embedder behind a pluggable
+  `{ id, dimensions, embed(texts) }` contract (name via `KIP_EMBEDDING_MODEL`).
+  Blocks are identified by Logseq's `id::` property or a stable
+  path + blockIndex fallback, and only blocks whose content hash changed are
+  re-embedded; an unchanged re-save embeds zero blocks. A different model id or
+  vector width resets the store instead of mixing vector spaces.
+- **Live vault watcher** (#71, AD-15) — `scripts/lib/watcher.js` (chokidar,
+  `awaitWriteFinish` ~400/100ms, per-burst ~500ms debounce) treats watcher
+  events as hints and the disk as truth: a nest edit updates both `meta.db`
+  (`pages` + `pages_fts` + `sections`, via `roost.upsertPage`) and the block
+  vectors, so the page is immediately searchable by both halves; source edits
+  are handed to the app to hatch; torn writes retry at +200/+500ms and keep the
+  last-good index; sync/editor artifacts are ignored; and a boot (or overflow)
+  reconcile of the whole vault (`rebuild-roost` + vectors) heals a mid-burst
+  kill. Entries: `node scripts/watch.js`, `--once`, `--json`; npm scripts
+  `watch` and `rebuild-vectors`.
+
+### Sidecar (`sidecar/`)
+
+- **Ported roost index, worker writer + reader split** (#70, AD-4) —
+  `sidecar/roost/` carries the same schema and the same FTS5 search/dedup
+  behavior as `scripts/lib/roost.js` (`upsertPage`, `setPageSummary`,
+  `searchPages`, `findSimilarSlug` and its normalized-Levenshtein threshold,
+  `getPage`, `getPageSections`, `setSectionSummaries`, `appendLog`,
+  `regenerateIndexMd`, `hatched_sources`, `recentClucks`). Writes now run on a
+  `better-sqlite3` worker thread holding the single write connection while
+  reads use a separate read-only WAL connection, so a read never waits on an
+  in-flight write. `rebuild` merges the FTS segments after a bulk pass to keep
+  search within NFR-1's single-digit-ms p95 at 10k notes. The read path in
+  `sidecar/session/notes.ts` now uses the ported reader.
+
+- **Answer enrichment on `turn.end`** (#98) — a settled turn now carries the
+  evidence kip-app's `turn->message` already maps: `candidateSlugs` (the slugs
+  `search_notes`/`read_note` surfaced during the turn), `citedSlugs`,
+  `deadCitations`, `lintWarnings` (read from `.roost/lint.json`) and `sources`.
+  Tools report what they surfaced or wrote through a new `ToolOutput`; the loop
+  accounts for it and attaches it to `turn.end` (`server/turn-events.ts`), and
+  `server/turn-enrichment.ts` runs the deterministic extractors ported in
+  `session/notes.ts` against the final answer and the vault. A turn that filed
+  a note (`write_agent_note`/`update_agent_note`) without citing a page reports
+  `intent: "statement"`, `learned: true`, `pages` and a `note`, so the app
+  renders the "✓ Learned" card instead of an empty assistant bubble.
+  `callId`/`arenaId`/`webSource` are deliberately not carried yet: BYOK has no
+  per-call id and kip#79 keeps the managed backend's id on the metering
+  side-channel, while `webSource` needs per-turn capture the shared
+  `web_search` hostcall seam does not expose.
+
+### The agent workspace (`sidecar/`, P4)
+
+- **Git-versioned `nest/`** (#73, AD-5) — the nest is its own git repository,
+  driven by `isomorphic-git` (`sidecar/workspace/git.ts`) so history works on a
+  machine with no system `git` installed. The working tree stays at
+  `<coop>/nest`, but the git directory lives under the per-coop workspace
+  outside the coop (kip#67), so a sync engine never writes into `.git/`
+  mid-commit.
+- **`write_agent_note` / `update_agent_note`** (#73, SPEC-1 FR-16/FR-17) —
+  real tools in the sidecar turn loop (`sidecar/session/notes-write.ts`) that
+  port `resolvePage`'s create-vs-update duplicate prevention (AD-10), the
+  dated-append update (never a raw overwrite), the `## Sources` footer
+  (kip-app#117), and the summary-in-frontmatter mirror (kip-app#115). Every
+  write produces exactly one commit. No tool schema accepts a `pages/`-rooted
+  path — the user's vault is read-only at the schema and dispatch layer
+  (SPEC-1 Acceptance D).
+- **Undo via git revert** (#74, ADD-1 AD-5; SPEC-1 FR-18/NFR-4) — every agent
+  write is undoable. There is no revert porcelain (and none is needed): the
+  workspace is single-writer and linear, so `undo` makes the tree match the
+  commit N steps back and commits that state as the new HEAD — the exact file
+  state a real `git revert` would produce. The `undo` wire event answers
+  `undo.applied{revertedSha, restoredFiles}` and refuses with
+  `UNDO_UNAVAILABLE` when it can't. A byte-for-byte restore test plus a
+  250-page under-2s test back FR-18/NFR-4.
+
+### The agent workspace (`sidecar/`, P5)
+
+- **Enrichment pipeline** (#75, SPEC-1 FR-13/FR-14/FR-21) — Hatch's
+  propose → draft → dedup → write flow is wrapped behind an `enrich_source`
+  tool in the sidecar turn loop (`sidecar/session/enrichment.ts`) for pasted
+  text or a fetched URL. It reuses `proposePlan` (the one-call
+  `proposeAndDraftPages` path) and `commitHatchPlan` unchanged, so the
+  synthesized trace hub, `source::`/`source_hatched::` provenance, and the
+  `findSimilarSlug` create-vs-update resolution are identical to the CLI.
+  Every run produces exactly one commit (the P4 git workspace) and a
+  plain-language report; an unchanged re-run is skipped by the
+  `hatched_sources` content-hash gate.
+
+### CI
+
+- **GitHub Actions** — `.github/workflows/test.yml` runs `npm ci && npm test`
+  on Node 20 for pushes to `main` and every pull request.
+
 ## [0.5.5] — 2026-09-06
 
 ### The retrieval layer (`scripts/`)

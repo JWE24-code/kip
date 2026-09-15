@@ -47,16 +47,16 @@ test('discoverSkills: includes the built-ins, then user skills; user wins on nam
 
   let skills = discoverSkills(root)
   const names = skills.map((s) => s.name).sort()
-  assert.ok(names.includes('xlsx-csv'), 'built-in xlsx-csv discovered')
+  assert.ok(names.includes('docx'), 'built-in docx discovered')
   assert.ok(names.includes('web-search'), 'built-in web-search discovered')
-  assert.equal(skills.find((s) => s.name === 'xlsx-csv').source, 'builtin')
+  assert.equal(skills.find((s) => s.name === 'docx').source, 'builtin')
 
   writeSkill(root, 'notes-lookup', { body: 'looks stuff up' })
-  writeSkill(root, 'xlsx-csv', { frontmatter: { description: 'my override' } })
+  writeSkill(root, 'docx', { frontmatter: { description: 'my override' } })
 
   skills = discoverSkills(root)
   assert.ok(skills.some((s) => s.name === 'notes-lookup' && s.source === 'user'))
-  const overridden = skills.find((s) => s.name === 'xlsx-csv')
+  const overridden = skills.find((s) => s.name === 'docx')
   assert.equal(overridden.source, 'user')
   assert.equal(overridden.description, 'my override')
 })
@@ -99,10 +99,10 @@ test('approval gate: a user skill is not runnable until approved; the choice sti
 test('approval gate: built-ins are always allowed and ignore approval', (t) => {
   const root = makeTempCoop()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  const bi = describeSkills(root).find((s) => s.name === 'xlsx-csv')
+  const bi = describeSkills(root).find((s) => s.name === 'docx')
   assert.equal(bi.source, 'builtin')
   assert.equal(bi.approval, '')
-  assert.ok(discoverSkills(root).some((s) => s.name === 'xlsx-csv'))
+  assert.ok(discoverSkills(root).some((s) => s.name === 'docx'))
 })
 
 test('discoverSkills: skills.json "disabled" hides a skill unless includeDisabled', (t) => {
@@ -117,7 +117,7 @@ test('discoverSkills: skills.json "disabled" hides a skill unless includeDisable
 
   const all = discoverSkills(root, { includeDisabled: true })
   assert.equal(all.find((s) => s.name === 'thing').enabled, false)
-  assert.equal(all.find((s) => s.name === 'xlsx-csv').enabled, true)
+  assert.equal(all.find((s) => s.name === 'docx').enabled, true)
 })
 
 test('discoverSkills: a malformed SKILL.md is skipped, not thrown', (t) => {
@@ -215,8 +215,8 @@ test('parseSkillCall: clean, fenced, amid prose, absent, malformed', () => {
     { name: 'web-search', input: { query: 'cats' } }
   )
   assert.deepEqual(
-    parseSkillCall('sure:\n<use_skill name="xlsx-csv">\n```json\n{"file":"a.csv"}\n```\n</use_skill>'),
-    { name: 'xlsx-csv', input: { file: 'a.csv' } }
+    parseSkillCall('sure:\n<use_skill name="docx">\n```json\n{"template":"a.docx"}\n```\n</use_skill>'),
+    { name: 'docx', input: { template: 'a.docx' } }
   )
   assert.deepEqual(
     parseSkillCall('I will look: <use_skill name="thing">{"x": 1} and then</use_skill> done'),
@@ -260,36 +260,6 @@ test('loadSkillsConfig: safe default on a missing/broken file', (t) => {
   assert.deepEqual(loadSkillsConfig(root), { disabled: [], secrets: {}, config: {}, approved: {} })
   fs.writeFileSync(path.join(root, '.henhouse', 'skills.json'), '{ not json')
   assert.deepEqual(loadSkillsConfig(root), { disabled: [], secrets: {}, config: {}, approved: {} })
-})
-
-// ---------------------------------------------------------------------------
-// the bundled xlsx-csv skill, end to end
-// ---------------------------------------------------------------------------
-
-test('xlsx-csv skill: summarizes a CSV', async (t) => {
-  const root = makeTempCoop()
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  fs.writeFileSync(path.join(root, 'pages', 'data.csv'), 'name,score\na,10\nb,20\n')
-
-  const skill = discoverSkills(root).find((s) => s.name === 'xlsx-csv')
-  const res = await runSkill(skill, { file: 'pages/data.csv', operation: 'summarize' }, root)
-
-  assert.equal(res.ok, true, res.error || '')
-  assert.match(res.output, /2 rows/)
-  assert.match(res.output, /\| name \|/)
-  assert.match(res.output, /\| score \|/)
-  assert.match(res.output, /sum 30/)
-  assert.match(res.output, /mean 15/)
-})
-
-test('xlsx-csv skill: refuses a path that escapes the coop', async (t) => {
-  const root = makeTempCoop()
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  const skill = discoverSkills(root).find((s) => s.name === 'xlsx-csv')
-
-  const res = await runSkill(skill, { file: '../../etc/passwd' }, root)
-  assert.equal(res.ok, false)
-  assert.match(res.error, /outside the coop/)
 })
 
 // ---------------------------------------------------------------------------
@@ -359,6 +329,21 @@ test('docx skill: refuses a template path outside the coop', async (t) => {
   assert.match(res.error, /outside the coop/)
 })
 
+test('docx skill: refuses an absolute template path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  // A real file outside the coop — the pre-#105 absolute-path bypass read it.
+  const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'docx-outside-')), 'secret.docx')
+  fs.writeFileSync(outside, 'LIVE VAULT SECRET')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'docx')
+  const res = await runSkill(skill, { template: outside, data: {} }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+  assert.ok(!fs.existsSync(path.join(root, 'exports', 'secret-filled.docx')), 'nothing was written')
+})
+
 test('pptx skill: builds a .pptx from a slide outline', async (t) => {
   const root = makeTempCoop()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -416,6 +401,64 @@ test('pptx skill: clones a .pptx template and fills its placeholders', async (t)
   const texts = zipText(path.join(root, 'exports', 'out.pptx'), /ppt\/slides\/slide\d+\.xml/)
   assert.match(texts, /Agenda/)
   assert.match(texts, /Intro/)
+})
+
+/** A real file outside the coop — the pre-#106 absolute-path bypass read it. */
+function outsideFile (name) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-outside-'))
+  const file = path.join(dir, name)
+  fs.writeFileSync(file, 'LIVE VAULT SECRET')
+  return file
+}
+
+test('pptx skill: refuses an absolute template path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.pptx')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { template: outside, filename: 'x.pptx', slides: [{ title: 'x' }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+  assert.ok(!fs.existsSync(path.join(root, 'exports', 'x.pptx')), 'nothing was written')
+})
+
+test('pptx skill: refuses an absolute theme path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.json')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { theme: outside, filename: 'x.pptx', slides: [{ title: 'x' }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+})
+
+test('pptx skill: refuses a theme.logo path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.png')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+  fs.writeFileSync(path.join(root, 'theme.json'), JSON.stringify({ logo: outside }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { theme: 'theme.json', filename: 'x.pptx', slides: [{ title: 'x' }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
+})
+
+test('pptx skill: refuses a slide image path outside the coop', async (t) => {
+  const root = makeTempCoop()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const outside = outsideFile('secret.png')
+  t.after(() => fs.rmSync(path.dirname(outside), { recursive: true, force: true }))
+
+  const skill = discoverSkills(root).find((s) => s.name === 'pptx')
+  const res = await runSkill(skill, { filename: 'x.pptx', slides: [{ image: outside }] }, root)
+  assert.equal(res.ok, false)
+  assert.match(res.error, /outside the coop/)
 })
 
 // ---------------------------------------------------------------------------
@@ -476,7 +519,7 @@ test('kip-control: settings reports the provider and every skill', async (t) => 
   const res = await runSkill(skill, { operation: 'settings' }, root)
   assert.equal(res.ok, true, res.error || '')
   assert.match(res.output, /LLM provider/)
-  assert.match(res.output, /xlsx-csv/)
+  assert.match(res.output, /docx/)
 })
 
 test('kip-control: status runs against a fresh coop', async (t) => {
@@ -558,5 +601,5 @@ test('describeSkills: content-free, includes disabled ones', (t) => {
   assert.equal(ws.enabled, false)
   assert.equal(ws.dir, undefined, 'no filesystem path leaks')
   assert.equal(ws.entryPath, undefined)
-  assert.ok(list.find((s) => s.name === 'xlsx-csv').enabled)
+  assert.ok(list.find((s) => s.name === 'docx').enabled)
 })
