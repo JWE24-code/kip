@@ -10,6 +10,8 @@
 //   node scripts/hatch-all.js --limit N --trace   -> also record full prompts/responses to .roost/hatch-trace.jsonl
 //   node scripts/hatch-all.js --limit N --classic -> old path: one propose call + one generate call per page
 //                                                    (default is combined: one LLM call per file). Also KIP_HATCH_CLASSIC=1.
+//   KIP_HATCH_GROUP_BYTES=N                        -> combined mode packs pending files into groups of at
+//                                                    most N bytes per LLM call (default 153600, 150 KB).
 //
 // During a run it writes <coop>/.roost/hatch-progress.json continuously
 // ({done, total, current, activity, metrics}) for the app to poll, and on
@@ -45,6 +47,9 @@ const LOCK_STALE_MS = 15 * 60 * 1000
 
 const traceOn = process.argv.includes('--trace') || process.env.KIP_HATCH_TRACE === '1'
 const combined = !(process.argv.includes('--classic') || process.env.KIP_HATCH_CLASSIC === '1')
+// Combined-mode byte budget per grouped propose call (kip#111). Lets the
+// grouping be tuned against a real coop without a code change.
+const groupBytes = Number(process.env.KIP_HATCH_GROUP_BYTES) > 0 ? Number(process.env.KIP_HATCH_GROUP_BYTES) : undefined
 // Re-hatch sources that already have a trace hub in the nest (normally
 // skipped — a synced-already-hatched file is left alone, see
 // collectPendingSources). This is the explicit "hatch it again" trigger.
@@ -130,7 +135,7 @@ async function main () {
 
   try {
     console.error(describeProvider())
-    console.error(`  mode: ${combined ? 'combined (1 call/file)' : 'classic (1 + N calls/file)'}`)
+    console.error(`  mode: ${combined ? `combined (grouped, ≤${Math.round((groupBytes || 150 * 1024) / 1024)}KB/call)` : 'classic (1 + N calls/file)'}`)
 
     const limit = parseLimit()
     reporter.setProgress({ done: 0, total: null, current: null })
@@ -140,6 +145,7 @@ async function main () {
       combined,
       force: forceOn,
       ...(limit ? { limit } : {}),
+      ...(groupBytes ? { groupBytes } : {}),
       onProgress: (p) => {
         touchLock()
         reporter.setProgress({ done: p.done, total: p.total, current: p.current })
