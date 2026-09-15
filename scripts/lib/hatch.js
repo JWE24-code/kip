@@ -12,7 +12,7 @@ const {
   hashContent, hatchedSourceHashes, recordHatchedSource, searchPages, setSectionSummaries, SIMILARITY_THRESHOLD
 } = require('./roost')
 const { resolvePage, nextFreeSlug, sourceHubMustCreate, findSourceHubByPath, findPersonByEmail, hatchedSourcePaths } = require('./pages')
-const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, describeWhiteboard } = require('./prompts')
+const { proposeCandidatePages, generatePageContent, proposeAndDraftPages, proposeAndDraftPagesBatch, describeWhiteboard } = require('./prompts')
 const { parseWhiteboard, whiteboardToOutline } = require('./whiteboard')
 const { convertFile: convertOfficeFile, markdownNameFor, toStubSource, UnsupportedFormatError } = require('./office')
 const { DEFAULT_VAULT_ROOT, pagesPath, nestPath, TYPE_DIRS } = require('./paths')
@@ -42,10 +42,17 @@ const DEFAULT_BATCH_SIZE = 10
 // speedup — the calls are independent and read-only — capped to stay under
 // provider rate limits.
 const GENERATE_CONCURRENCY = 6
-// Max concurrent files hatched at once. Each file's propose/draft is one LLM
-// call and independent of the others, so batching them cuts wall-clock time by
-// ~this factor; capped to stay under provider rate limits.
+// Max concurrent phase-1 workers. In classic mode each is one file's
+// propose/draft; in combined mode each is one byte-budgeted group (one combined
+// LLM call). Independent and read-only, so concurrency just cuts wall-clock
+// time — capped to stay under provider rate limits.
 const HATCH_FILE_CONCURRENCY = 4
+// Combined-mode propose can send several small sources in one LLM call. Files
+// are packed until their combined raw bytes would exceed this budget — the
+// model must hold every source in the group at once, so this is a context/cost
+// cap, not a per-file one. A file on its own over budget still hatches, solo,
+// through the existing single-file path. Override with KIP_HATCH_GROUP_BYTES.
+const MAX_GROUP_BYTES = 150 * 1024
 // Max concurrent Office/PDF conversions in prepareSources().
 const OFFICE_CONCURRENCY = 4
 
@@ -61,6 +68,39 @@ async function mapLimit (items, limit, fn) {
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
   return results
+}
+
+/**
+ * Splits `files` into contiguous groups whose combined `bytes` stay at or under
+ * `maxBytes`, preserving input order. Each group is proposed with one combined
+ * LLM call. A file that alone exceeds the budget becomes its own group of one
+ * (so it can't drag a smaller neighbour into an oversized call), and a
+ * whiteboard is always solo: its raw .edn never goes through the combined
+ * prompt — it's rendered deterministically and enriched by its own call.
+ */
+function groupByByteBudget (files, maxBytes = MAX_GROUP_BYTES) {
+  const groups = []
+  let current = []
+  let currentBytes = 0
+  const flush = () => {
+    if (!current.length) return
+    groups.push(current)
+    current = []
+    currentBytes = 0
+  }
+  for (const file of files) {
+    if (file.kind === 'whiteboard') {
+      flush()
+      groups.push([file])
+      continue
+    }
+    const bytes = file.bytes || 0
+    if (current.length && currentBytes + bytes > maxBytes) flush()
+    current.push(file)
+    currentBytes += bytes
+  }
+  flush()
+  return groups
 }
 
 function humanizeFilename (filePath) {
@@ -135,26 +175,7 @@ async function proposePlan ({ sourceTitle, sourceContent, sourceRelPath = null, 
   const proposed = combined
     ? await proposeAndDraftPages(sourceTitle, sourceContent, vaultRoot)
     : await proposeCandidatePages(sourceTitle, sourceContent, vaultRoot)
-  const candidates = proposed.filter((c) =>
-    c && typeof c.title === 'string' && c.title.trim() && VALID_TYPES.has(c.type) &&
-    (!combined || (typeof c.body === 'string' && c.body.trim())))
-
-  // The per-document trace hub (kip-app#113). The prompt asks for a
-  // type:'source' page but nothing enforced it, so a plan could hatch a whole
-  // document with nothing linking back to it. Synthesize the hub into the
-  // plan HERE — the human reviewing the plan sees it and can deselect it.
-  if (!candidates.some((c) => c.type === 'source')) {
-    const hash = hashContent(sourceContent)
-    candidates.push({
-      type: 'source',
-      title: sourceTitle,
-      body: `## Source\n\n- Source file: \`${sourceRelPath}\`${sourceOriginal ? `\n- Original document: \`${sourceOriginal}\`` : ''}\n- Content hash at hatch: \`${hash.slice(0, 12)}…\`\n- Hatched: ${new Date().toISOString().slice(0, 10)}\n\nThis page is the document's trace hub: the pages hatched from it carry \`source: ${sourceRelPath}\` in their frontmatter.`,
-      tags: [],
-      summary: `Hatched from ${sourceRelPath}`
-    })
-  }
-  const plan = planCandidates(candidates, vaultRoot, { sourceRelPath })
-  return { candidates, plan }
+  return buildHatchPlan(proposed, { sourceTitle, sourceContent, sourceRelPath, sourceOriginal }, vaultRoot, { combined })
 }
 
 /**
@@ -176,6 +197,18 @@ async function proposePlan ({ sourceTitle, sourceContent, sourceRelPath = null, 
  * @returns {{sourceTitle: string, sourceContent: string, sourceFilePath: string, plan: Array}}
  */
 async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { copyToSources = true, combined = true } = {}) {
+  const prepared = prepareHatchSource(sourcePath, vaultRoot, { copyToSources })
+  const { plan } = await proposePlan(prepared, vaultRoot, { combined })
+  return { ...prepared, plan }
+}
+
+/**
+ * Steps 1-4 of a hatch: resolve the source file, read it, humanize its title,
+ * and pull any original-document trace out of its frontmatter. Split out of
+ * proposeHatchPlan so the combined-mode batch path can do the per-file I/O
+ * while still making one grouped LLM call (kip#111).
+ */
+function prepareHatchSource (sourcePath, vaultRoot, { copyToSources = true } = {}) {
   const sourceFilePath = copyToSources ? ensureInSources(sourcePath, vaultRoot) : path.resolve(sourcePath)
   const sourceContent = fs.readFileSync(sourceFilePath, 'utf8')
   const sourceTitle = humanizeFilename(sourceFilePath)
@@ -191,9 +224,37 @@ async function proposeHatchPlan (sourcePath, vaultRoot = DEFAULT_VAULT_ROOT, { c
   } catch { /* not frontmatter'd — fine */ }
 
   const sourceRelPath = path.relative(vaultRoot, sourceFilePath).split(path.sep).join('/')
-  const { plan } = await proposePlan({ sourceTitle, sourceContent, sourceRelPath, sourceOriginal }, vaultRoot, { combined })
+  return { sourceFilePath, sourceContent, sourceTitle, sourceOriginal, sourceRelPath }
+}
 
-  return { sourceTitle, sourceContent, sourceFilePath, sourceRelPath, sourceOriginal, plan }
+/**
+ * Steps 6-9: filter the raw proposed candidates, synthesize the per-document
+ * trace hub when the model proposed none, and resolve create-vs-update. Shared
+ * by proposePlan() (the single-source LLM call) and the grouped batch path,
+ * which runs it per file over the batch response's per-source pages (kip#111).
+ *
+ * @returns {{candidates: Array, plan: Array}}
+ */
+function buildHatchPlan (proposed, { sourceTitle, sourceContent, sourceRelPath = null, sourceOriginal = null }, vaultRoot, { combined = true } = {}) {
+  const candidates = proposed.filter((c) =>
+    c && typeof c.title === 'string' && c.title.trim() && VALID_TYPES.has(c.type) &&
+    (!combined || (typeof c.body === 'string' && c.body.trim())))
+
+  // The per-document trace hub (kip-app#113). The prompt asks for a
+  // type:'source' page but nothing enforced it, so a plan could hatch a whole
+  // document with nothing linking back to it. Synthesize the hub into the
+  // plan HERE — the human reviewing the plan sees it and can deselect it.
+  if (!candidates.some((c) => c.type === 'source')) {
+    const hash = hashContent(sourceContent)
+    candidates.push({
+      type: 'source',
+      title: sourceTitle,
+      body: `## Source\n\n- Source file: \`${sourceRelPath}\`${sourceOriginal ? `\n- Original document: \`${sourceOriginal}\`` : ''}\n- Content hash at hatch: \`${hash.slice(0, 12)}…\`\n- Hatched: ${new Date().toISOString().slice(0, 10)}\n\nThis page is the document's trace hub: the pages hatched from it carry \`source: ${sourceRelPath}\` in their frontmatter.`,
+      tags: [],
+      summary: `Hatched from ${sourceRelPath}`
+    })
+  }
+  return { candidates, plan: planCandidates(candidates, vaultRoot, { sourceRelPath }) }
 }
 
 /**
@@ -556,22 +617,98 @@ async function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {})
 }
 
 /**
+ * Phase-1 work for a single file: hash it, then either flag a whiteboard or
+ * propose its plan with the existing single-file path. Errors are captured per
+ * file, never thrown. This is the classic-mode worker and the solo-group worker
+ * (an oversized source, a whiteboard) in combined mode.
+ */
+async function proposeFile (file, vaultRoot, { combined = true } = {}) {
+  const source = humanizeFilename(file.absPath)
+  const startedAt = Date.now()
+  try {
+    const hash = hashContent(fs.readFileSync(file.absPath, 'utf8'))
+    if (file.kind === 'whiteboard') return { file, source, hash, whiteboard: true, startedAt }
+    const proposal = await proposeHatchPlan(file.absPath, vaultRoot, { copyToSources: false, combined })
+    return { file, source, hash, proposal, startedAt }
+  } catch (err) {
+    return { file, source, error: (err && err.message) || String(err), startedAt }
+  }
+}
+
+/**
+ * Phase-1 work for one byte-budgeted group. A group of one takes the unchanged
+ * single-file path (proposeFile). A larger group reads each file, makes ONE
+ * proposeAndDraftPagesBatch call, then builds each file's plan from its slice
+ * of the response. Per-file read/plan errors are captured on that file only, so
+ * one bad file can't fail its neighbours. Returns one prepared entry per file,
+ * in group order — the shape phase 2 expects.
+ */
+async function proposeBatchGroup (files, vaultRoot) {
+  if (files.length === 1) return [await proposeFile(files[0], vaultRoot, { combined: true })]
+
+  const entries = files.map((file) => {
+    const source = humanizeFilename(file.absPath)
+    const startedAt = Date.now()
+    try {
+      const hash = hashContent(fs.readFileSync(file.absPath, 'utf8'))
+      return { file, source, hash, startedAt, prepared: prepareHatchSource(file.absPath, vaultRoot, { copyToSources: false }), proposal: null, error: null }
+    } catch (err) {
+      return { file, source, hash: null, startedAt, prepared: null, proposal: null, error: (err && err.message) || String(err) }
+    }
+  })
+
+  const live = entries.filter((e) => !e.error)
+  if (live.length) {
+    const sources = live.map((e) => ({ sourceTitle: e.prepared.sourceTitle, sourceContent: e.prepared.sourceContent }))
+    try {
+      const results = await proposeAndDraftPagesBatch(sources, vaultRoot)
+      live.forEach((entry, i) => {
+        const result = results[i] || { pages: [] }
+        if (result.error) {
+          entry.error = (result.error && result.error.message) || String(result.error)
+          return
+        }
+        try {
+          entry.proposal = { ...entry.prepared, plan: buildHatchPlan(result.pages, entry.prepared, vaultRoot, { combined: true }).plan }
+        } catch (err) {
+          entry.error = (err && err.message) || String(err)
+        }
+      })
+    } catch (err) {
+      // The batch call itself failed (e.g. provider down) — that's a whole-group
+      // failure, not per file.
+      const msg = (err && err.message) || String(err)
+      for (const entry of live) entry.error = msg
+    }
+  }
+
+  return entries.map((e) => e.error
+    ? { file: e.file, source: e.source, error: e.error, startedAt: e.startedAt }
+    : { file: e.file, source: e.source, hash: e.hash, proposal: e.proposal, startedAt: e.startedAt })
+}
+
+/**
  * Hatches up to `limit` pending source files (see collectPendingSources) —
  * propose + commit per file, NO plan review. Records each in hatched_sources
  * by content hash, so a re-run skips it until it changes and a run that dies
  * part-way resumes cleanly. findSimilarSlug()-based create-vs-update still
  * runs per page (that's not what's skipped).
  *
- * `combined` (default true) — one LLM call per file (propose + draft every
- * body together). `combined:false` is the classic path: one propose call
- * plus one generate call per page.
+ * `combined` (default true) — propose + draft every body together. Pending
+ * files are packed into byte-budgeted groups (see groupByByteBudget /
+ * `groupBytes`) and each group costs one combined LLM call, so N small files
+ * cost ceil(N/groupSize) calls instead of N. The per-file I/O, create-vs-update
+ * planning and the sequential commit are unchanged — only the LLM call is
+ * grouped. A file over budget (or a whiteboard) is proposed solo.
+ * `combined:false` is the classic path: one propose call plus one generate call
+ * per page, per file, with no grouping.
  *
  * One bad source (LLM error, empty plan) goes into `failed`, not thrown.
  * `remaining` is how many pending files are left after this batch.
  *
  * `onProgress({done, total, current})` fires before each file starts and
  * after each finishes — the CLI wires it to a status file the app polls for
- * a live progress bar.
+ * a live progress bar. It stays file-granular in grouped mode.
  *
  * Each hatched/failed entry carries `ms` (wall time spent on that file).
  *
@@ -582,28 +719,25 @@ async function pendingSourcesSummary (vaultRoot = DEFAULT_VAULT_ROOT, opts = {})
  *            remaining: number}}
  */
 async function hatchAllSources (vaultRoot = DEFAULT_VAULT_ROOT,
-  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, onProgress = () => {}, combined = true, force = false } = {}) {
+  { roots = SOURCE_ROOTS, limit = DEFAULT_BATCH_SIZE, onProgress = () => {}, combined = true, force = false, groupBytes = MAX_GROUP_BYTES } = {}) {
   const conversion = await prepareSources(vaultRoot)
   const { pending, oversized, empty } = collectPendingSources(vaultRoot, { roots, force })
   const batch = pending.slice(0, limit)
 
-  // Phase 1 — propose/draft every file in parallel. This is the expensive LLM
-  // call per file; it only reads the index (findSimilarSlug), so concurrent
-  // proposals can't race each other. Writes happen in phase 2, sequentially.
-  const prepared = await mapLimit(batch, HATCH_FILE_CONCURRENCY, async (file) => {
-    const source = humanizeFilename(file.absPath)
-    const startedAt = Date.now()
-    try {
-      const hash = hashContent(fs.readFileSync(file.absPath, 'utf8'))
-      if (file.kind === 'whiteboard') {
-        return { file, source, hash, whiteboard: true, startedAt }
-      }
-      const proposal = await proposeHatchPlan(file.absPath, vaultRoot, { copyToSources: false, combined })
-      return { file, source, hash, proposal, startedAt }
-    } catch (err) {
-      return { file, source, error: (err && err.message) || String(err), startedAt }
-    }
-  })
+  // Phase 1 — propose/draft every file. This is the expensive LLM work; it
+  // only reads the index (findSimilarSlug), so concurrent proposals can't race
+  // each other. Writes happen in phase 2, sequentially. Combined mode groups
+  // pending files by byte budget and makes one call per group; classic mode
+  // keeps one call per file. Either way `prepared` stays one entry per file,
+  // in `batch` order, so phase 2 is unchanged.
+  let prepared
+  if (combined) {
+    const groups = groupByByteBudget(batch, groupBytes)
+    const grouped = await mapLimit(groups, HATCH_FILE_CONCURRENCY, (group) => proposeBatchGroup(group, vaultRoot))
+    prepared = grouped.flat()
+  } else {
+    prepared = await mapLimit(batch, HATCH_FILE_CONCURRENCY, (file) => proposeFile(file, vaultRoot, { combined: false }))
+  }
 
   // Phase 2 — commit sequentially. resolvePage re-runs findSimilarSlug at write
   // time, so a page two files both proposed still resolves correctly; the
@@ -760,11 +894,13 @@ module.exports = {
   humanizeFilename,
   meaningfulTextLength,
   mapLimit,
+  groupByByteBudget,
   collectPendingSources,
   prepareSources,
   pendingSourcesSummary,
   hatchAllSources,
   hatchWhiteboard,
   SOURCE_ROOTS,
-  MAX_SOURCE_BYTES
+  MAX_SOURCE_BYTES,
+  MAX_GROUP_BYTES
 }

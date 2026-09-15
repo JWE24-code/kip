@@ -5,10 +5,10 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { rebuildRoost } = require('../rebuild-roost')
-const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, pendingSourcesSummary, prepareSources } = require('../lib/hatch')
+const { planCandidates, ensureInSources, humanizeFilename, collectPendingSources, meaningfulTextLength, mapLimit, groupByByteBudget, commitHatchPlan, hatchAllSources, hatchWhiteboard, proposeNextPending, commitReviewedPlan, pendingSourcesSummary, prepareSources, MAX_GROUP_BYTES } = require('../lib/hatch')
 const { recordHatchedSource, getPage } = require('../lib/roost')
 const { saveLLMConfig } = require('../lib/llm')
-const { proposeAndDraftPages } = require('../lib/prompts')
+const { proposeAndDraftPages, proposeAndDraftPagesBatch } = require('../lib/prompts')
 
 /** Stub global.fetch (local OpenAI-compatible provider) to return `content` for every call; records request bodies. */
 function stubFetch (respond) {
@@ -21,6 +21,20 @@ function stubFetch (respond) {
     return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content }, finish_reason: 'stop' }] }) }
   }
   return { calls, restore: () => { global.fetch = original } }
+}
+
+/** A propose+draft stub that answers both the single-source and the batched
+ *  prompt shapes, one type:'source' page per source (titled after its label). */
+function proposeResponse (body) {
+  const system = (body.messages[0] && body.messages[0].content) || ''
+  const prompt = (body.messages[1] && body.messages[1].content) || ''
+  const pageFor = (title) => ({ title, type: 'source', tags: [], summary: 's', body: `${title} body.` })
+  if (/ingesting MULTIPLE/.test(system)) {
+    const titles = [...prompt.matchAll(/--- Source \d+: "([^"]+)"/g)].map((m) => m[1])
+    return JSON.stringify({ sources: titles.map((title) => ({ pages: [pageFor(title)] })) })
+  }
+  const m = prompt.match(/Source title: ([^\n]+)/)
+  return JSON.stringify({ pages: m ? [pageFor(m[1].trim())] : [] })
 }
 
 function makeTempVault () {
@@ -85,6 +99,34 @@ test('mapLimit runs with bounded concurrency and preserves order', async () => {
   assert.deepEqual(out, [20, 40, 60, 80, 100])
   assert.ok(peak <= 2, `peak concurrency ${peak} exceeded limit 2`)
   assert.deepEqual(await mapLimit([], 3, async () => 1), [])
+})
+
+test('groupByByteBudget packs in order under the budget, solos the oversized, never groups a whiteboard', () => {
+  const f = (name, bytes, kind = 'pages') => ({ relPath: name, bytes, kind })
+
+  // exactly at budget stays in one group; one byte over splits
+  assert.deepEqual(
+    groupByByteBudget([f('a', 100), f('b', 100)], 200),
+    [[f('a', 100), f('b', 100)]]
+  )
+  assert.deepEqual(
+    groupByByteBudget([f('a', 100), f('b', 101)], 200),
+    [[f('a', 100)], [f('b', 101)]]
+  )
+
+  // a file over budget is its own group and doesn't drag its neighbours in
+  assert.deepEqual(
+    groupByByteBudget([f('small', 10), f('huge', 500), f('small2', 10)], 200),
+    [[f('small', 10)], [f('huge', 500)], [f('small2', 10)]]
+  )
+
+  // a whiteboard is always solo, even when it would fit with neighbours
+  assert.deepEqual(
+    groupByByteBudget([f('a', 10), f('board', 10, 'whiteboard'), f('b', 10)], 200),
+    [[f('a', 10)], [f('board', 10, 'whiteboard')], [f('b', 10)]]
+  )
+
+  assert.deepEqual(groupByByteBudget([], MAX_GROUP_BYTES), [])
 })
 
 test('meaningfulTextLength ignores frontmatter and list/markdown punctuation', () => {
@@ -377,7 +419,7 @@ test('hatchAllSources — combined mode makes one LLM call per file and drafts b
   }
 })
 
-test('hatchAllSources — proposes multiple files in parallel and commits them all', async (t) => {
+test('hatchAllSources — groups small pending files into one combined call and commits them all', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   rebuildRoost(root)
@@ -387,9 +429,16 @@ test('hatchAllSources — proposes multiple files in parallel and commits them a
   fs.writeFileSync(path.join(root, 'pages', 'b.md'), 'About the Beta initiative and its rollout.')
 
   const { calls, restore } = stubFetch((body) => {
-    const text = (body.messages || []).map((m) => m.content).join('\n')
-    if (/Source title: A\b/.test(text)) return JSON.stringify({ pages: [{ title: 'Alpha', type: 'source', tags: [], summary: 's', body: 'Alpha notes.' }] })
-    if (/Source title: B\b/.test(text)) return JSON.stringify({ pages: [{ title: 'Beta', type: 'source', tags: [], summary: 's', body: 'Beta notes.' }] })
+    const system = (body.messages[0] && body.messages[0].content) || ''
+    const prompt = (body.messages[1] && body.messages[1].content) || ''
+    // The combined prompt lists the group's sources in order; echo one source
+    // entry per label so the batch stays aligned 1:1.
+    if (/ingesting MULTIPLE/.test(system)) {
+      const titles = [...prompt.matchAll(/--- Source \d+: "([^"]+)"/g)].map((m) => m[1])
+      return JSON.stringify({ sources: titles.map((title) => ({
+        pages: [{ title: title === 'A' ? 'Alpha' : 'Beta', type: 'source', tags: [], summary: 's', body: `${title} notes.` }]
+      })) })
+    }
     return JSON.stringify({ pages: [] })
   })
 
@@ -397,8 +446,106 @@ test('hatchAllSources — proposes multiple files in parallel and commits them a
     const summary = await hatchAllSources(root, { limit: 2 })
     assert.equal(summary.hatched.length, 2, 'both files hatched')
     assert.equal(summary.failed.length, 0)
-    assert.equal(calls.length, 2, 'one propose+draft call per file')
+    assert.equal(calls.length, 1, 'both small files share one grouped propose+draft call')
     assert.ok(summary.hatched.some((h) => h.source === 'A') && summary.hatched.some((h) => h.source === 'B'))
+  } finally {
+    restore()
+  }
+})
+
+test('hatchAllSources — one LLM call per byte group, ceil(N/groupSize)', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  // Four equal 300-byte files; a 600-byte budget fits exactly two per group.
+  for (const name of ['a', 'b', 'c', 'd']) fs.writeFileSync(path.join(root, 'pages', `${name}.md`), 'x'.repeat(300))
+
+  const { calls, restore } = stubFetch(proposeResponse)
+  try {
+    const summary = await hatchAllSources(root, { limit: 4, groupBytes: 600 })
+    assert.equal(summary.hatched.length, 4)
+    assert.equal(summary.failed.length, 0)
+    assert.equal(calls.length, 2, 'ceil(4 files / 2 per group) = 2 combined calls')
+    assert.ok(calls.every((c) => /ingesting MULTIPLE/.test(c.messages[0].content)), 'both calls use the combined prompt')
+  } finally {
+    restore()
+  }
+})
+
+test('hatchAllSources — an over-budget file is proposed solo and does not block grouping the rest', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  fs.writeFileSync(path.join(root, 'pages', 'aaa.md'), 'small one '.repeat(5))
+  fs.writeFileSync(path.join(root, 'pages', 'bbb.md'), 'small two '.repeat(5))
+  // ~195 KB, over the 150 KB default budget but under the 1 MB backstop.
+  fs.writeFileSync(path.join(root, 'pages', 'big.md'), 'big '.repeat(50000))
+  fs.writeFileSync(path.join(root, 'pages', 'ccc.md'), 'small three '.repeat(5))
+
+  const { calls, restore } = stubFetch(proposeResponse)
+  try {
+    const summary = await hatchAllSources(root, { limit: 4 })
+    assert.equal(summary.hatched.length, 4, 'the oversized file still hatches, solo')
+    const batched = calls.filter((c) => /ingesting MULTIPLE/.test(c.messages[0].content))
+    const solo = calls.filter((c) => !/ingesting MULTIPLE/.test(c.messages[0].content))
+    // aaa+bbb group (1 batched call), big solo, ccc solo.
+    assert.equal(batched.length, 1, 'the small files around the oversized one still group')
+    assert.equal(solo.length, 2, 'the oversized file takes the single-file path')
+  } finally {
+    restore()
+  }
+})
+
+test('hatchAllSources — grouping is a call-count optimization: results match the per-file path', async (t) => {
+  const make = () => {
+    const root = makeTempVault()
+    rebuildRoost(root)
+    saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+    fs.writeFileSync(path.join(root, 'pages', 'one.md'), 'Notes about the One project and its goals.')
+    fs.writeFileSync(path.join(root, 'pages', 'two.md'), 'Notes about the Two project and its plans.')
+    fs.writeFileSync(path.join(root, 'pages', 'three.md'), 'Notes about the Three project and its scope.')
+    return root
+  }
+  const soloRoot = make()
+  const groupedRoot = make()
+  t.after(() => {
+    fs.rmSync(soloRoot, { recursive: true, force: true })
+    fs.rmSync(groupedRoot, { recursive: true, force: true })
+  })
+
+  // groupBytes: 1 forces every file into its own group — the pre-change
+  // one-call-per-file path. The default groups all three into one call.
+  let s = stubFetch(proposeResponse)
+  let soloSummary
+  try { soloSummary = await hatchAllSources(soloRoot, { limit: 3, groupBytes: 1 }) } finally { s.restore() }
+  s = stubFetch(proposeResponse)
+  let groupedSummary
+  try { groupedSummary = await hatchAllSources(groupedRoot, { limit: 3 }) } finally { s.restore() }
+
+  const shape = (summary) => summary.hatched
+    .map((h) => ({ source: h.source, results: h.results.map((r) => `${r.action}:${r.slug}`).sort(), skipped: h.skipped }))
+    .sort((a, b) => a.source.localeCompare(b.source))
+  assert.deepEqual(shape(groupedSummary), shape(soloSummary))
+  assert.deepEqual(groupedSummary.failed, soloSummary.failed)
+})
+
+test('hatchAllSources — no pending files makes no LLM calls', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  rebuildRoost(root)
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const { calls, restore } = stubFetch(proposeResponse)
+  try {
+    const summary = await hatchAllSources(root, { limit: 5 })
+    assert.equal(calls.length, 0)
+    assert.deepEqual(summary.hatched, [])
+    assert.deepEqual(summary.failed, [])
+    assert.equal(summary.remaining, 0)
   } finally {
     restore()
   }
@@ -579,6 +726,82 @@ test('proposeAndDraftPages returns [] when the model never produces usable JSON'
   } finally {
     restore()
   }
+})
+
+test('proposeAndDraftPagesBatch returns one entry per source, in order, from a single call', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const { calls, restore } = stubFetch(() => JSON.stringify({
+    sources: [
+      { pages: [{ title: 'One', type: 'source', tags: [], summary: 's', body: 'a' }] },
+      { pages: [{ title: 'Two', type: 'source', tags: [], summary: 's', body: 'b' }] }
+    ]
+  }))
+  try {
+    const out = await proposeAndDraftPagesBatch([
+      { sourceTitle: 'One', sourceContent: 'first source' },
+      { sourceTitle: 'Two', sourceContent: 'second source' }
+    ], root)
+    assert.equal(calls.length, 1, 'one combined call for the whole group')
+    assert.equal(out.length, 2)
+    assert.deepEqual(out.map((s) => s.pages[0].title), ['One', 'Two'])
+  } finally {
+    restore()
+  }
+})
+
+test('proposeAndDraftPagesBatch falls back to per-source calls on a malformed batch response', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const { calls, restore } = stubFetch((body) => {
+    if (/ingesting MULTIPLE/.test(body.messages[0].content)) return 'not json — the model flubbed the batch'
+    const title = body.messages[1].content.match(/Source title: ([^\n]+)/)[1].trim()
+    return JSON.stringify({ pages: [{ title: `${title}-page`, type: 'source', tags: [], summary: 's', body: 'x' }] })
+  })
+  try {
+    const out = await proposeAndDraftPagesBatch([
+      { sourceTitle: 'One', sourceContent: 'first' },
+      { sourceTitle: 'Two', sourceContent: 'second' }
+    ], root)
+    assert.equal(out.length, 2, 'batch shape preserved through the fallback')
+    assert.deepEqual(out.map((s) => s.pages[0].title), ['One-page', 'Two-page'])
+    // two failed batch attempts (initial + retry) then the two per-source calls.
+    assert.equal(calls.length, 4)
+  } finally {
+    restore()
+  }
+})
+
+test('proposeAndDraftPagesBatch falls back when the response has the wrong number of sources', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  saveLLMConfig({ provider: 'local', providers: { local: { model: 'test-model' } } }, root)
+
+  const { restore } = stubFetch((body) => {
+    if (/ingesting MULTIPLE/.test(body.messages[0].content)) {
+      return JSON.stringify({ sources: [{ pages: [{ title: 'Only', type: 'source', body: 'b' }] }] }) // 1 of 2
+    }
+    const title = body.messages[1].content.match(/Source title: ([^\n]+)/)[1].trim()
+    return JSON.stringify({ pages: [{ title: `${title}-page`, type: 'source', body: 'x' }] })
+  })
+  try {
+    const out = await proposeAndDraftPagesBatch([
+      { sourceTitle: 'One', sourceContent: 'first' },
+      { sourceTitle: 'Two', sourceContent: 'second' }
+    ], root)
+    assert.equal(out.length, 2)
+    assert.deepEqual(out.map((s) => s.pages[0].title), ['One-page', 'Two-page'])
+  } finally {
+    restore()
+  }
+})
+
+test('proposeAndDraftPagesBatch is a no-op for an empty group', async () => {
+  assert.deepEqual(await proposeAndDraftPagesBatch([], '/nonexistent'), [])
 })
 
 test('planCandidates reuses findSimilarSlug for create-vs-update, without writing anything', async (t) => {
