@@ -242,6 +242,34 @@ test('runGroom --deep runs the extra checks via injected stubs and writeGroomRep
   assert.match(md, /## Broken links \(1\)/)
 })
 
+test('runGroom warns instead of silently swallowing a failed cross-reference check', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  writePage(root, 'entities', 'dr-alvarez', { type: 'entity', tags: ['clinic'], body: 'Physician.' })
+  writePage(root, 'sources', 'visit-1', { type: 'source', body: 'Saw [[dr-alvarez]].' })
+  rebuildRoost(root)
+
+  const warnings = []
+  const original = console.error
+  console.error = (...args) => warnings.push(args.join(' '))
+  let report
+  try {
+    report = await runGroom(root, {
+      deep: true,
+      flagFn: async () => { throw new Error('provider down') }
+    })
+  } finally {
+    console.error = original
+  }
+
+  assert.deepEqual(report.contradictions, [], 'no findings survive a failed cross-check')
+  assert.ok(
+    warnings.some((w) => /cross-reference contradiction check failed/.test(w) && /provider down/.test(w)),
+    'the failure is surfaced on stderr like findContradictions does'
+  )
+})
+
 test('deep-groom prompt fns fall back to a safe default on unusable output', async (t) => {
   const root = makeTempVault()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
