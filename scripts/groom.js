@@ -402,7 +402,10 @@ async function runGroom (vaultRoot = DEFAULT_VAULT_ROOT, {
     try {
       const forPrompt = group.map((p) => ({ slug: p.slug, type: p.type, content: p.body }))
       return await flagFn(forPrompt, vaultRoot)
-    } catch { return [] }
+    } catch (err) {
+      console.error(`Warning: cross-reference contradiction check failed for a group of ${group.length} page(s) (${err.message}); skipping.`)
+      return []
+    }
   })
   report.contradictions.push(...xrefResults.flat())
   report.contradictions = dedupeContradictions(report.contradictions)
