@@ -138,6 +138,30 @@ test('findContradictions aggregates across groups using an injected stub', async
   assert.deepEqual(found[0].slugs, ['a', 'b'])
 })
 
+test('findContradictions runs groups concurrently and isolates a failing group', async () => {
+  const pages = [
+    { slug: 'a', type: 'concept', tags: [], body: 'A says X.' },
+    { slug: 'b', type: 'concept', tags: [], body: 'B says not X.' },
+    { slug: 'c', type: 'person', tags: [], body: 'C.' },
+    { slug: 'd', type: 'person', tags: [], body: 'D.' },
+    { slug: 'e', type: 'entity', tags: [], body: 'E.' },
+    { slug: 'f', type: 'entity', tags: [], body: 'F.' }
+  ]
+  let inFlight = 0
+  let maxInFlight = 0
+  const stub = async (group) => {
+    inFlight++
+    maxInFlight = Math.max(maxInFlight, inFlight)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    inFlight--
+    if (group.some((p) => p.slug === 'c')) throw new Error('boom')
+    return [{ slugs: group.map((p) => p.slug), description: 'stubbed' }]
+  }
+  const found = await findContradictions(pages, undefined, stub)
+  assert.ok(maxInFlight > 1, 'groups run concurrently rather than one at a time')
+  assert.deepEqual(found.map((c) => c.slugs), [['a', 'b'], ['e', 'f']], 'order preserved, failing group skipped')
+})
+
 test('findBrokenLinks flags [[targets]] with no page, but not date refs', () => {
   const pages = [
     { slug: 'a', body: 'links [[b]] and [[No Such Page]] and journal [[2026-08-26]]' },
