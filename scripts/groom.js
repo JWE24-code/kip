@@ -217,17 +217,16 @@ function buildContradictionGroups (pages, maxSize = MAX_CONTRADICTION_GROUP_SIZE
 /** @param {Function} flagFn injectable for tests — defaults to the real LLM call. */
 async function findContradictions (pages, vaultRoot, flagFn = flagContradictions, maxSize = MAX_CONTRADICTION_GROUP_SIZE) {
   const groups = buildContradictionGroups(pages, maxSize)
-  const all = []
-  for (const group of groups) {
+  const results = await mapLimit(groups, GROOM_LLM_CONCURRENCY, async (group) => {
     const forPrompt = group.map((p) => ({ slug: p.slug, type: p.type, content: p.body }))
     try {
-      const found = await flagFn(forPrompt, vaultRoot)
-      all.push(...found)
+      return await flagFn(forPrompt, vaultRoot)
     } catch (err) {
       console.error(`Warning: contradiction check failed for a group of ${group.length} page(s) (${err.message}); skipping.`)
+      return []
     }
-  }
-  return all
+  })
+  return results.flat()
 }
 
 /** One page per entity/concept grouped with the source pages that [[link]] it (for cross-checking). */
