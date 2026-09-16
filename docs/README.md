@@ -12,6 +12,10 @@
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** — dev environment: layout, `scripts/`
   internals, running the app in dev mode, system dependencies.
 - **[BUILD.md](BUILD.md)** — packaging the desktop app (Windows / Linux / CI).
+- **[GROOM.md](GROOM.md)** — the deep technical reference for Groom: objective,
+  quick vs. deep modes, every artifact it writes, a function-by-function map of
+  `scripts/groom.js`, the rationale behind each check, and how Peck and the
+  sidecar consume it.
 - **[PECK-REBUILT.md](PECK-REBUILT.md)** — the overhaul proposal replacing Peck's
   process model, storage, retrieval, skill sandbox, and key custody with the
   Personal Knowledge-Agent Harness design, tracked as issues across all four repos.
