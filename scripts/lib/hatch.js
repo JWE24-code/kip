@@ -512,6 +512,15 @@ function stripLogseqNoise (raw) {
     .replace(/\n{3,}/g, '\n\n')
 }
 
+/** True for a source whose frontmatter carries a `source:` field (`pasted`, `kip-pwa`, …) —
+ *  written only by the app's own explicit "type/paste a note" capture flows, so it's
+ *  real user-authored content even if very short (a quick PWA jot can be a few words).
+ *  Logseq's silently auto-created page/journal stubs never carry this field, so the
+ *  near-empty gate below still catches those. */
+function isExplicitCapture (raw) {
+  try { return Boolean(matter(raw).data && matter(raw).data.source) } catch { return false }
+}
+
 /** Rough count of real prose characters — frontmatter, Logseq noise, and list/markdown punctuation removed. */
 function meaningfulTextLength (raw) {
   let body
@@ -638,7 +647,7 @@ function collectPendingSources (vaultRoot = DEFAULT_VAULT_ROOT, { roots = SOURCE
       // huge tldraw JSON behind them doesn't count against the size/prose gates.
       if (!board && bytes > MAX_SOURCE_BYTES) { oversized.push({ relPath, bytes }); continue }
 
-      if (!board && meaningfulTextLength(content) < MIN_CONTENT_CHARS) { empty.push(relPath); continue }
+      if (!board && !isExplicitCapture(content) && meaningfulTextLength(content) < MIN_CONTENT_CHARS) { empty.push(relPath); continue }
       if (hatchedPaths && hatchedPaths.has(relPath)) continue // already hatched (synced trace hub) — skip unless forced
       const priorHash = hashes.get(relPath)
       if (priorHash === hashContent(content)) continue // unchanged since last hatch
@@ -1143,6 +1152,7 @@ module.exports = {
   planCandidates,
   humanizeFilename,
   meaningfulTextLength,
+  isExplicitCapture,
   stripLogseqNoise,
   mapLimit,
   groupByByteBudget,

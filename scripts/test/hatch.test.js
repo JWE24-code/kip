@@ -246,6 +246,24 @@ test('collectPendingSources: buckets pages/journals by new-or-changed, size, and
   assert.ok(pending.map((p) => p.relPath).includes('pages/clipping.md'))
 })
 
+test('collectPendingSources: a short PWA/paste capture is never treated as near-empty', async (t) => {
+  const root = makeTempVault()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  // A quick kip-pwa jot — shorter than MIN_CONTENT_CHARS, but real user content.
+  fs.writeFileSync(path.join(root, 'pages', '20260917-buy-milk.md'),
+    '---\ntitle: Buy milk\nadded: 2026-09-17T08:00:00.000Z\nsource: kip-pwa\n---\n\nBuy milk\n')
+  // Same for the desktop's paste-source flow.
+  fs.writeFileSync(path.join(root, 'pages', 'call-mom.md'),
+    '---\ntitle: Call mom\nadded: 2026-09-17T08:00:00.000Z\nsource: pasted\n---\n\nCall mom\n')
+  // A genuine Logseq-created stub (no `source:` field) of the same length stays filtered.
+  fs.writeFileSync(path.join(root, 'pages', 'stub.md'), '---\ntitle: Untitled\n---\n\n- \n')
+
+  const { pending, empty } = collectPendingSources(root)
+  assert.deepEqual(pending.map((p) => p.relPath).sort(), ['pages/20260917-buy-milk.md', 'pages/call-mom.md'])
+  assert.deepEqual(empty, ['pages/stub.md'])
+})
+
 test('collectPendingSources: no source dirs -> everything empty', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coop-bare-'))
   try {
