@@ -11,6 +11,14 @@ The retrieval layer (this repo) and the desktop app
 
 ### The retrieval layer (`scripts/`)
 
+- **Fixed: a short kip-pwa/paste capture wasn't hatching.** Hatch's near-empty
+  filter (meant to skip Logseq's silently auto-created page/journal stubs)
+  didn't distinguish those from a genuinely short, deliberately-typed capture
+  — a one-line PWA jot like "Buy milk" landed in the `empty` bucket and was
+  never hatched. Both capture flows (kip-pwa, the desktop's paste-source
+  panel) write a `source:` frontmatter field a Logseq stub never carries;
+  `collectPendingSources` now exempts sources carrying it from the near-empty
+  gate.
 - **Hybrid retrieval** (#71, AD-8) — retrieval merges FTS5 lexical hits and
   block-level vector hits by reciprocal rank fusion (`scripts/lib/hybrid.js`).
   Vector search lives in its own `vectors.db` beside `meta.db` in the workspace
