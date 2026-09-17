@@ -1,0 +1,40 @@
+name: Idea / feature request
+description: Suggest something the retrieval layer should do
+labels: [idea]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repo is the retrieval layer (`scripts/` — Hatch, Peck, Groom,
+        Reminders, Skills). For the desktop app's UI or packaging, use
+        [kip-app](https://github.com/JWE24-code/kip-app/issues). For open-ended
+        "what if…", [Discussions](https://github.com/JWE24-code/kip/discussions)
+        is a better fit.
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What should it do, and what problem does it solve for you?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Hatch
+        - Peck
+        - Groom
+        - Reminders
+        - Skills
+        - LLM providers
+        - Roost / index
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: How you work around it now
+    validations:
+      required: false
